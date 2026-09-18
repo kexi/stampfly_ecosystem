@@ -178,10 +178,22 @@ void Plant::setImuBias(const sf::math::Vec3& accel_bias, const sf::math::Vec3& g
 
 void Plant::setStartHeight(float z)
 {
-    // Free-joint state: position (0,0,z) ENU, level orientation, zero velocity.
-    // フリージョイント状態: 位置(0,0,z) ENU・水平姿勢・速度ゼロ。
+    // Free-joint state: position (0,0,z) ENU, level + NORTH-facing attitude, zero velocity.
+    // The MuJoCo quat comes from frames (qnb_to_mujoco_quat of q_nb = identity), NOT the
+    // literal identity quat: MuJoCo world axes are ENU, so an identity framequat points the
+    // body's +X (forward) at world +X = EAST, i.e. NED yaw=+90 deg, while the firmware boots
+    // its estimator at yaw=0 (north). Writing the identity here also SILENTLY OVERRODE the
+    // MJCF body's own quat, so fixing the model alone had no effect on this path.
+    // フリージョイント状態: 位置(0,0,z) ENU・水平かつ北向き姿勢・速度ゼロ。
+    // MuJoCo quat は frames 経由（q_nb=単位元の qnb_to_mujoco_quat）で求める。単位元を直接
+    // 書かない理由: MuJoCo の世界軸は ENU なので、単位 framequat では機体 +X（前方）が
+    // 世界 +X＝東を向き NED yaw=+90° になる。一方ファームは推定器を yaw=0（北）で起動する。
+    // さらにここで単位元を書くと MJCF 側の quat を黙って上書きするため、モデルだけ直しても
+    // この経路には効かなかった。
+    const Quat q_mj_level_north = frames::qnb_to_mujoco_quat(Quat{1.0f, 0.0f, 0.0f, 0.0f});
     d_->qpos[0] = 0.0; d_->qpos[1] = 0.0; d_->qpos[2] = z;
-    d_->qpos[3] = 1.0; d_->qpos[4] = 0.0; d_->qpos[5] = 0.0; d_->qpos[6] = 0.0;
+    d_->qpos[3] = q_mj_level_north.w; d_->qpos[4] = q_mj_level_north.x;
+    d_->qpos[5] = q_mj_level_north.y; d_->qpos[6] = q_mj_level_north.z;
     for (int i = 0; i < 6; ++i) d_->qvel[i] = 0.0;
     ground_rest_z_enu_ = z;   // remember the ground rest height for handling placement
     mj_forward(m_, d_);
@@ -314,8 +326,16 @@ void Plant::handlingSubstep(float h)
         //（機体は地面に静止、再 ARM 可能）。
         Vec3 rest_enu = frames::ned_to_enu(
             {handle_place_x_ned_, handle_place_y_ned_, handle_ground_z_ned_});
+        // Level + NORTH-facing, via frames — same reason as setStartHeight(): the literal
+        // identity framequat would place the craft facing EAST (NED yaw=+90 deg), so being
+        // "placed level" would silently re-yaw the craft by 90 deg mid-scenario.
+        // 水平かつ北向き（frames 経由）。setStartHeight() と同じ理由: 単位 framequat では
+        // 東向き（NED yaw=+90°）に置かれるため、「水平に設置」がシナリオ途中で機体を
+        // 90° 回してしまう。
+        const Quat q_mj_level_north = frames::qnb_to_mujoco_quat(Quat{1.0f, 0.0f, 0.0f, 0.0f});
         d_->qpos[0] = rest_enu.x; d_->qpos[1] = rest_enu.y; d_->qpos[2] = rest_enu.z;
-        d_->qpos[3] = 1.0; d_->qpos[4] = 0.0; d_->qpos[5] = 0.0; d_->qpos[6] = 0.0;
+        d_->qpos[3] = q_mj_level_north.w; d_->qpos[4] = q_mj_level_north.x;
+        d_->qpos[5] = q_mj_level_north.y; d_->qpos[6] = q_mj_level_north.z;
         for (int i = 0; i < 6; ++i) d_->qvel[i] = 0.0;
         mj_forward(m_, d_);
         handle_accel_frd_ = {0.0f, 0.0f, -9.81f};
