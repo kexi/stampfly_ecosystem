@@ -26,8 +26,17 @@ from sfpilot.link import SilsLink, battery_percent, sample_from_state_line
 # format shows up here as a failing test.
 # 現在の simulator/sils/emu/emu_main.cpp が出力する STATE 行。手で書かず実行から
 # 採取したもの。エミュレータ側の書式が変わればこの試験が落ちて気づける。
+# The yaw was re-captured on 2026-09-19: it used to read 90.00, which was the
+# fingerprint of the SILS start-attitude bug (the MuJoCo identity quaternion is
+# level but faces EAST, NED yaw=+90 deg). With the start attitude corrected to
+# level-and-NORTH the emulator hovers at yaw~0, so a captured line no longer
+# carries 90.00. Only the value changed; the parser reads keys by name.
+# yaw は 2026-09-19 に再採取した。以前は 90.00 で、これは SILS 初期姿勢の不具合
+# （MuJoCo の単位クォータニオンは水平だが東向き＝NED yaw=+90°）の痕跡だった。
+# 初期姿勢を「水平かつ北向き」に直したのでエミュレータは yaw≒0 でホバーし、
+# 採取した行に 90.00 は現れない。変わったのは値だけで、解釈は名前で行う。
 STATE_LINE = (
-    "STATE t=18.104 alt=0.484 roll=1.50 pitch=-2.25 yaw=90.00 "
+    "STATE t=18.104 alt=0.484 roll=1.50 pitch=-2.25 yaw=0.00 "
     "mode=FLYING:POS_HOLD* vbatt=3.82 x=0.100 y=-0.200 "
     "vx=0.010 vy=0.020 vz=0.003 tof=0.484 tof_valid=1 batt=57.3"
 )
@@ -114,7 +123,7 @@ def test_state_line_becomes_a_sample_in_si_units():
     # 姿勢は度で出力され、しきい値はラジアン。
     assert sample["roll"] == pytest.approx(math.radians(1.50))
     assert sample["pitch"] == pytest.approx(math.radians(-2.25))
-    assert sample["yaw"] == pytest.approx(math.radians(90.0))
+    assert sample["yaw"] == pytest.approx(math.radians(0.0))
 
 
 def test_flight_state_drops_the_sub_mode_and_armed_marker():

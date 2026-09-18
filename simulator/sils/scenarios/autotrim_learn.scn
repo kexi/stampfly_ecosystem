@@ -1,11 +1,22 @@
 # autotrim_learn.scn — validate the ALWAYS-ON onboard trim learner
 # 常時オンボード・トリム学習器の検証
 #
-# Start with trim=0 (default), apply a steady head wind along the body forward axis,
-# and hover for a LONG time. The onboard learner (pid_controller::learnTrim) should
-# integrate the downwind drift into pitch_trim_ with time constant ~20 s, so the
+# Start with trim=0 (default), apply a steady CROSS wind, and hover for a LONG
+# time. The onboard learner (pid_controller::learnTrim) should integrate the
+# downwind drift into the matching trim axis with time constant ~20 s, so the
 # drift RATE decreases over the hover and the craft self-trims — WITHOUT any param
-# override (the learner does it on its own). Compare px drift rate early vs late.
+# override (the learner does it on its own). Compare the drift rate early vs late.
+#
+# 2026-09-19: the SILS start attitude was corrected to level-and-NORTH (it used to
+# be the MuJoCo identity quaternion, level but facing EAST because MuJoCo's world
+# is ENU), matching the firmware's yaw=0 boot state. Body forward at yaw=0 is now
+# NORTH (NED +x), so the fy (east) wind below is a CROSS wind acting on ROLL, and
+# the drift to watch is truth.csv's pos_y. Re-point the wind to fx for a
+# pitch-axis test.
+# 2026-09-19: SILS の初期姿勢を「水平かつ北向き」に修正した（以前は MuJoCo の単位
+# クォータニオン＝水平だが東向き。MuJoCo の世界が ENU のため）。yaw=0 での機体前方は
+# 北（NED +x）になったので、下の fy（東）の風は roll に効く横風であり、見るべき
+# ドリフトは truth.csv の pos_y である。pitch 軸を見たいなら風を fx へ振り直す。
 #
 # trim=0(既定)・機体前方軸の定常向かい風・長いホバーで開始。オンボード学習器
 # (pid_controller::learnTrim)が風下ドリフトを時定数~20sで pitch_trim_ に積分→ドリフト

@@ -208,26 +208,23 @@ class SilsConfig:
     # そのためのものである）。フローの過小読みだけでは押す力が無く動かない。
     # 2 つが揃ってはじめて、判断する価値のある状況になる — 機体が動かされて
     # いるのに、機体自身の制御がそれを十分に見えていない、という状況である。
-    # NOTE (2026-09-19): the force is declared here in the NED frame the
-    # Plant's wind hook documents, and it does push the craft north in
-    # GROUND TRUTH (truth.csv). The firmware's own position estimate,
-    # however, reports that same motion on its EAST axis -- measured, not
-    # assumed: with `wind 0.02 0 0`, truth.csv's pos_x reached +0.161 m
-    # while posvel.csv's pos_x stayed exactly 0 and pos_y moved -0.138 m.
-    # This predates `sf pilot` (it reproduces through the existing *.scn
-    # `wind` event, with no stdin involved) and is reported rather than
-    # worked around. It does not affect what this scene is for: the
-    # aircraft genuinely drifts, and the Monitor genuinely classifies a
-    # drift -- only the compass word it picks is affected.
+    # RESOLVED (2026-09-19): an earlier note here recorded that the force,
+    # declared in the Plant's NED frame, pushed the craft north in GROUND
+    # TRUTH while the firmware's own estimate reported that motion on its
+    # EAST axis. The cause was the SILS start attitude: the MuJoCo identity
+    # quaternion is level but faces EAST (NED yaw=+90 deg, because MuJoCo's
+    # world is ENU), while the firmware boots its estimator at yaw=0. The
+    # start attitude is now level-and-NORTH, so the two agree -- re-measured
+    # with `wind 0.02 0 0`: truth.csv's pos_x reached +0.147 m and posvel.csv's
+    # pos_x reached +0.153 m, with pos_y identically 0 on both.
     #
-    # 注記（2026-09-19）: 力は Plant の wind フックが記す NED フレームで宣言して
-    # おり、実際に「真値」では機体を北へ押す（truth.csv）。ところがファーム自身の
-    # 位置推定は同じ運動を「東」軸に出す — 推測ではなく実測である: `wind 0.02 0 0`
-    # で truth.csv の pos_x は +0.161m に達したが、posvel.csv の pos_x は厳密に 0 の
-    # まま、pos_y が -0.138m 動いた。これは `sf pilot` より前から存在する（stdin を
-    # 介さない既存の *.scn `wind` 事象でも再現する）ため、回避せず報告する。
-    # 本場面の目的には影響しない: 機体は実際に流れ、Monitor は実際に流れとして
-    # 区分する。影響するのは、選ばれる方角の語だけである。
+    # 解決済み（2026-09-19）: 以前ここには、Plant の NED フレームで宣言した力が
+    # 「真値」では機体を北へ押すのに、ファーム自身の推定は同じ運動を「東」軸に
+    # 出す、と記していた。原因は SILS の初期姿勢だった。MuJoCo の単位
+    # クォータニオンは水平だが東向き（NED yaw=+90°。MuJoCo の世界が ENU のため）
+    # で、一方ファームは推定器を yaw=0 で起動していた。初期姿勢を「水平かつ北向き」
+    # に直したので両者は一致する — `wind 0.02 0 0` で再実測: truth.csv の pos_x は
+    # +0.147m、posvel.csv の pos_x は +0.153m に達し、pos_y は双方とも厳密に 0。
     # 0.06 N chosen by measurement, not by feel: at 0.02 N position hold
     # nulls the excursion almost at once (peak ~0.16 m, speeds below the
     # Monitor's "drifting" band, so nothing is ever classified as drift),
