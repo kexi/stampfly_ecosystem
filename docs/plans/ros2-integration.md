@@ -28,7 +28,7 @@ ROS2 連携は方針として維持する（プロジェクトオーナー決定
 | UDP 8889 | PC→機体（コマンド）、機体→PC（応答） | Tello 互換テキストコマンド（`command`/`takeoff`/`land`/`rc`/移動系/クエリ系 等） | `firmware/vehicle/tasks/api_task.cpp` |
 | UDP 8890（送信専用） | 機体→PC | Tello 互換の状態文字列、10Hz | `firmware/vehicle/components/sf_telemetry/include/tello_state.hpp` |
 | UDP 8890（機体側 bind の別ソケット、`sf log wifi` 用） | PC↔機体 | 400Hzサンプルのバイナリ統合パケット、50Hz送出 | `components/sf_telemetry/{data_stream.hpp,data_stream.cpp}` |
-| UDP 5005（ブロードキャスト） | 機体→ブロードキャスト | `sf::TelemetryPacket`（104バイト：姿勢・角速度・加速度・位置・速度・推力/トルク・モータduty）、50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
+| UDP 5005（ブロードキャスト） | 機体→ブロードキャスト | `sf::TelemetryPacket`（140バイト：姿勢・角速度・加速度・位置・速度・推力/トルク・モータduty＋電池電圧・ToF・フロー・地磁気・気圧高度。旧ファームは 104バイト）、50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
 | TCP 23 | PC↔機体（対話式） | telnet的CLI。**飛行コマンドは無い** | `firmware/vehicle/tasks/cli_task.cpp` |
 | ESP-NOW | コントローラ↔機体 | RF操縦リンク | `firmware/common/protocol/include/espnow_protocol.hpp` |
 
@@ -151,7 +151,7 @@ The foundation for the redesign — what the current `firmware/vehicle` actually
 | UDP 8889 | PC→vehicle (commands), vehicle→PC (replies) | Tello-compatible text commands (`command`/`takeoff`/`land`/`rc`/movement/queries, etc.) | `firmware/vehicle/tasks/api_task.cpp` |
 | UDP 8890 (send-only) | vehicle→PC | Tello-compatible state string, 10Hz | `firmware/vehicle/components/sf_telemetry/include/tello_state.hpp` |
 | UDP 8890 (a separate socket on the vehicle, for `sf log wifi`) | PC↔vehicle | Binary bundle packets of 400Hz samples, sent at 50Hz | `components/sf_telemetry/{data_stream.hpp,data_stream.cpp}` |
-| UDP 5005 (broadcast) | vehicle→broadcast | `sf::TelemetryPacket` (104 bytes: attitude, angular rate, acceleration, position, velocity, thrust/torque, motor duty), 50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
+| UDP 5005 (broadcast) | vehicle→broadcast | `sf::TelemetryPacket` (140 bytes: attitude, angular rate, acceleration, position, velocity, thrust/torque, motor duty, plus battery voltage, ToF, optical flow, magnetometer, pressure altitude; 104 bytes on older firmware), 50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
 | TCP 23 | PC↔vehicle (interactive) | telnet-style CLI. **No flight commands** | `firmware/vehicle/tasks/cli_task.cpp` |
 | ESP-NOW | controller↔vehicle | RF control link | `firmware/common/protocol/include/espnow_protocol.hpp` |
 

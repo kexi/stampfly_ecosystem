@@ -1,15 +1,24 @@
 """
 sf telemetry - Live 50Hz telemetry monitor (vehicle)
 
-Receives the vehicle monitoring telemetry (104-byte binary packet,
-magic 0xCAFE, UDP broadcast :5005, 50Hz) and shows a live terminal
-dashboard. Optionally records to CSV. For graphs/offline analysis use the
-Data Stream instead: `sf log wifi` -> `sf log viz` (400Hz, full sensors).
+Receives the vehicle monitoring telemetry (binary packet, magic 0xCAFE,
+UDP broadcast :5005, 50Hz) and shows a live terminal dashboard. Optionally
+records to CSV. For graphs/offline analysis use the Data Stream instead:
+`sf log wifi` -> `sf log viz` (400Hz, full sensors).
 
-vehicle のモニタ用テレメトリ（104バイト固定バイナリ、magic 0xCAFE、
-UDP ブロードキャスト :5005、50Hz）を受信し、ターミナルにライブ表示します。
---csv で記録も可能。グラフ・オフライン解析には Data Stream
-（`sf log wifi` → `sf log viz`、400Hz・全センサ）を使ってください。
+Two wire versions are accepted, told apart by TOTAL LENGTH: 104 bytes (v1)
+and 140 bytes (v2, which appends battery voltage, ToF, optical flow,
+magnetometer and pressure altitude). v2 is a pure append, so the first 104
+bytes are identical in both and old firmware keeps working.
+
+vehicle のモニタ用テレメトリ（バイナリ、magic 0xCAFE、UDP ブロードキャスト
+:5005、50Hz）を受信し、ターミナルにライブ表示します。--csv で記録も可能。
+グラフ・オフライン解析には Data Stream（`sf log wifi` → `sf log viz`、
+400Hz・全センサ）を使ってください。
+
+電文は2版あり「全長」で判別します: 104バイト（v1）と 140バイト（v2。電池電圧・
+ToF・オプティカルフロー・地磁気・気圧高度を追記）。v2 は純粋な追記なので先頭
+104バイトは両版で同一で、旧ファームもそのまま動きます。
 """
 
 import argparse
@@ -25,12 +34,35 @@ COMMAND_NAME = "telemetry"
 COMMAND_HELP = "Live 50Hz telemetry — terminal dashboard, or browser with --web"
 
 # Wire format — MUST match firmware/vehicle/components/sf_telemetry/
-# include/telemetry.hpp TelemetryPacket (static_assert 104 bytes).
-# 電文形式 — ファームの TelemetryPacket（104B static_assert）と一致必須。
+# include/telemetry.hpp TelemetryPacket (static_assert 140 bytes + offsetof
+# assertions). The authoritative description is detailed_design.md §10;
+# test_telemetry.py checks these formats against that offset table.
+# 電文形式 — ファームの TelemetryPacket（140B static_assert ＋ offsetof 検査）と
+# 一致必須。様式の基準は detailed_design.md §10。test_telemetry.py が本書式を
+# 同じオフセット表と突き合わせる。
 TELEM_PORT = 5005
 TELEM_MAGIC = 0xCAFE
 TELEM_FMT = "<HBBI23fB3x"   # magic, version, type, t_us, 23 floats, mode, pad
 TELEM_SIZE = struct.calcsize(TELEM_FMT)
+
+# v2 appended block (offsets 104..139), decoded separately so the v1 prefix
+# parse stays byte-identical between versions.
+# v2 追記部（オフセット 104〜139）。v1 部の解釈を両版で完全に同一に保つため別に復号する。
+TELEM_V2_FMT = "<3f2hBB2x4f"   # voltage, tof_b, tof_f, dx, dy, squal, flags, pad, mag*3, baro
+TELEM_V2_SIZE = struct.calcsize(TELEM_V2_FMT)
+TELEM_SIZE_V2 = TELEM_SIZE + TELEM_V2_SIZE
+TELEM_VERSION_V2 = 2
+
+# Bit positions in valid_flags — mirror of TELEM_VALID_* in telemetry.hpp.
+# valid_flags のビット位置 — telemetry.hpp の TELEM_VALID_* と対応。
+VALID_BITS = {
+    "tof_bottom_valid": 1 << 0,
+    "tof_front_valid": 1 << 1,
+    "flow_valid": 1 << 2,
+    "mag_valid": 1 << 3,
+    "baro_valid": 1 << 4,
+    "power_valid": 1 << 5,
+}
 
 FLOAT_NAMES = [
     "roll", "pitch", "yaw",
@@ -41,6 +73,15 @@ FLOAT_NAMES = [
     "thrust", "tau_roll", "tau_pitch", "tau_yaw",
     "m1", "m2", "m3", "m4",
 ]
+
+# v2 field names in CSV/display order. Absent (None) when a v1 packet arrives.
+# CSV・表示順の v2 項目名。v1 パケットでは存在しない（None）。
+V2_NAMES = [
+    "voltage", "tof_bottom", "tof_front",
+    "flow_dx_sum", "flow_dy_sum", "flow_squal",
+    "mag_x", "mag_y", "mag_z", "baro_altitude",
+]
+V2_FLAG_NAMES = list(VALID_BITS)
 
 # FlightState enum order (firmware/vehicle/components/sf_state flight_state.hpp)
 # FlightState の列挙順（ファーム側と一致必須）
@@ -86,23 +127,100 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.set_defaults(func=run)
 
 
-def _decode(data: bytes):
-    """Decode one packet; returns dict or None if not a telemetry packet.
-    1 パケットをデコード。テレメトリでなければ None。"""
-    if len(data) != TELEM_SIZE:
+def decode_packet(data: bytes):
+    """Decode one telemetry packet; return a dict, or None if it is not one.
+
+    Dispatches on TOTAL LENGTH (104 = v1, 140 = v2) because the v2 block is
+    appended, never inserted — the same rule the Data Stream's status packet
+    uses for its 17/53/57B revisions. `version` is then only validated, so a
+    140-byte packet claiming version != 2 is rejected as malformed.
+
+    For a v1 packet every v2 key is present but None, so callers can use a
+    single code path and treat None as "this firmware does not send it".
+
+    1 パケットを復号し dict を返す。テレメトリでなければ None。
+
+    判別は「全長」で行う（104=v1、140=v2）。v2 部は挿入ではなく追記だからで、
+    Data Stream のステータスパケットが 17/53/57B の版で採る規則と同じ。`version`
+    は検証にのみ使い、140バイトなのに version != 2 なら異常として None を返す。
+
+    v1 パケットでは v2 の各キーは存在するが None になる。呼び出し側は分岐を
+    増やさず、None を「このファームは送らない」と扱えばよい。
+    """
+    is_v2 = len(data) == TELEM_SIZE_V2
+    if len(data) != TELEM_SIZE and not is_v2:
         return None
-    fields = struct.unpack(TELEM_FMT, data)
+    fields = struct.unpack(TELEM_FMT, data[:TELEM_SIZE])
     magic, version, ptype, t_us = fields[0], fields[1], fields[2], fields[3]
     if magic != TELEM_MAGIC:
+        return None
+    if is_v2 and version != TELEM_VERSION_V2:
         return None
     out = {"version": version, "type": ptype, "t_us": t_us}
     out.update(dict(zip(FLOAT_NAMES, fields[4:4 + len(FLOAT_NAMES)])))
     out["mode"] = fields[4 + len(FLOAT_NAMES)]
+
+    if not is_v2:
+        # Old firmware: the keys exist so the display and CSV stay one shape.
+        # 旧ファーム: 表示と CSV の形を一定に保つためキーだけ用意する。
+        out.update({name: None for name in V2_NAMES})
+        out.update({name: None for name in V2_FLAG_NAMES})
+        return out
+
+    (voltage, tof_bottom, tof_front, flow_dx, flow_dy, squal, flags,
+     mag_x, mag_y, mag_z, baro_altitude) = struct.unpack(
+        TELEM_V2_FMT, data[TELEM_SIZE:])
+    out.update({
+        "voltage": voltage,
+        "tof_bottom": tof_bottom,
+        "tof_front": tof_front,
+        "flow_dx_sum": flow_dx,
+        "flow_dy_sum": flow_dy,
+        "flow_squal": squal,
+        "mag_x": mag_x, "mag_y": mag_y, "mag_z": mag_z,
+        "baro_altitude": baro_altitude,
+    })
+    # Validity is carried by the flag bits alone. Never infer it from a value
+    # (e.g. tof_front == -1.0): a live sensor may report a negative reading on
+    # error, and the firmware documents the bit as the authority.
+    # 有効性はフラグビットだけが持つ。値から推測しないこと（例: tof_front == -1.0）。
+    # 実センサは異常時に負値を返しうるし、ファーム側も「正はビット」と明記している。
+    out.update({name: bool(flags & bit) for name, bit in VALID_BITS.items()})
     return out
+
+
+# Kept as the historical name; telemetry_web.py and external callers may use
+# either. decode_packet is the public spelling (lib/sfpilot uses it).
+# 旧来の名前を残す。telemetry_web.py や外部からはどちらでも呼べる。公開名は
+# decode_packet（lib/sfpilot はこちらを使う）。
+_decode = decode_packet
 
 
 def _state_name(mode: int) -> str:
     return STATE_NAMES[mode] if 0 <= mode < len(STATE_NAMES) else f"?{mode}"
+
+
+# CSV columns are fixed across firmware versions so one file stays loadable
+# even if the vehicle is reflashed mid-session; v1 rows leave the v2 columns
+# empty rather than writing a zero that would read as a real measurement.
+# CSV の列はファーム版によらず固定する。途中で書き換えても1つのファイルを読み続け
+# られるようにするため。v1 の行は v2 列を空欄にする（0 を書くと実測値に見えるため）。
+CSV_HEADER = ("t_us,mode," + ",".join(FLOAT_NAMES) + ","
+              + ",".join(V2_NAMES) + "," + ",".join(V2_FLAG_NAMES) + "\n")
+
+
+def csv_row(pkt: dict) -> str:
+    """One CSV line for a decoded packet (v1 leaves the v2 columns empty).
+    復号済みパケット1件の CSV 行（v1 では v2 列を空欄にする）。"""
+    cells = [str(pkt["t_us"]), str(pkt["mode"])]
+    cells += [f"{pkt[name]:.6g}" for name in FLOAT_NAMES]
+    for name in V2_NAMES:
+        value = pkt.get(name)
+        cells.append("" if value is None else f"{value:.6g}")
+    for name in V2_FLAG_NAMES:
+        value = pkt.get(name)
+        cells.append("" if value is None else ("1" if value else "0"))
+    return ",".join(cells) + "\n"
 
 
 def _bar(duty: float, width: int = 10) -> str:
@@ -133,10 +251,49 @@ def _dashboard(pkt: dict, rate_hz: float, n_packets: int) -> str:
         f"M2 {_bar(pkt['m2'])} {pkt['m2']:4.2f}",
         f"        M3 {_bar(pkt['m3'])} {pkt['m3']:4.2f}   "
         f"M4 {_bar(pkt['m4'])} {pkt['m4']:4.2f}",
+    ]
+    lines += _sensor_lines(pkt)
+    lines += [
         "",
         "Ctrl-C to quit. For graphs use the Data Stream: sf log wifi -> sf log viz",
     ]
     return "\n".join(lines)
+
+
+def _format_reading(pkt: dict, key: str, valid_key: str, fmt: str, unit: str) -> str:
+    """Format one v2 reading, or say why there is no number to show.
+    v2 の値を1つ整形する。数値が無い場合はその理由を示す。"""
+    value = pkt.get(key)
+    if value is None:
+        return "--"                       # v1 firmware / 旧ファーム
+    if valid_key and not pkt.get(valid_key):
+        return "invalid"                  # flag bit clear / 有効ビットが立っていない
+    return f"{value:{fmt}}{unit}"
+
+
+def _sensor_lines(pkt: dict) -> list:
+    """Sensor rows for the dashboard; a v1 packet shows blanks, not zeros.
+    ダッシュボードのセンサ行。v1 パケットでは 0 ではなく空欄を表示する。"""
+    if pkt.get("voltage") is None:
+        return ["sensor: -- (firmware sends the 104B v1 packet; no sensor block)"]
+
+    flow = "--"
+    if pkt.get("flow_dx_sum") is not None:
+        flow = (f"dx {pkt['flow_dx_sum']:+5d} dy {pkt['flow_dy_sum']:+5d} "
+                f"q {pkt['flow_squal']:3d}")
+        if not pkt.get("flow_valid"):
+            flow += " (stale)"
+    return [
+        f"power : {_format_reading(pkt, 'voltage', 'power_valid', '5.2f', ' V')}",
+        f"tof   : down {_format_reading(pkt, 'tof_bottom', 'tof_bottom_valid', '5.3f', ' m')}"
+        f"   front {_format_reading(pkt, 'tof_front', 'tof_front_valid', '5.3f', ' m')}"
+        f" (front: not supported / 未対応)",
+        f"baro  : {_format_reading(pkt, 'baro_altitude', 'baro_valid', '+7.2f', ' m')}",
+        f"mag   : {_format_reading(pkt, 'mag_x', 'mag_valid', '+7.1f', '')} "
+        f"{_format_reading(pkt, 'mag_y', 'mag_valid', '+7.1f', '')} "
+        f"{_format_reading(pkt, 'mag_z', 'mag_valid', '+7.1f', '')} [uT]",
+        f"flow  : {flow}",
+    ]
 
 
 def run(args: argparse.Namespace) -> int:
@@ -176,7 +333,7 @@ def run(args: argparse.Namespace) -> int:
     if args.csv:
         csv_file = open(args.csv, "a", buffering=1)
         if csv_file.tell() == 0:
-            csv_file.write("t_us,mode," + ",".join(FLOAT_NAMES) + "\n")
+            csv_file.write(CSV_HEADER)
 
     # The dashboard redraw uses ANSI escapes. Legacy Windows consoles need VT
     # processing enabled first — the empty system() call is the documented
@@ -220,12 +377,10 @@ def run(args: argparse.Namespace) -> int:
             rate_hz = len(window) / 2.0
 
             if csv_file:
-                csv_file.write(
-                    f"{pkt['t_us']},{pkt['mode']},"
-                    + ",".join(f"{pkt[k]:.6g}" for k in FLOAT_NAMES) + "\n")
+                csv_file.write(csv_row(pkt))
 
             if args.once:
-                for key in ["t_us", "mode"] + FLOAT_NAMES:
+                for key in ["t_us", "mode"] + FLOAT_NAMES + V2_NAMES + V2_FLAG_NAMES:
                     print(f"{key} = {pkt[key]}")
                 return 0
 

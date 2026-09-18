@@ -2,15 +2,15 @@
 sf telemetry --web — browser telemetry view (UDP -> SSE proxy)
 
 Receives the vehicle 50Hz monitoring telemetry (UDP broadcast :5005,
-104-byte binary packet — decoder shared with `sf telemetry`) and serves a
+104B v1 or 140B v2 binary packet — decoder shared with `sf telemetry`) and serves a
 single-page browser dashboard. Zero external dependencies, matching the SILS
 GUI policy: a stdlib ThreadingHTTPServer serves the embedded page and pushes
 live JSON over Server-Sent Events (`/events`) — SSE is the stdlib-friendly
 equivalent of the WebSocket proxy named in requirements §7 (one-way push is
 all a monitor needs).
 
-vehicle の 50Hz モニタ用テレメトリ（UDP ブロードキャスト :5005、104B
-バイナリ — デコーダは `sf telemetry` と共有）を受信し、ブラウザ用の
+vehicle の 50Hz モニタ用テレメトリ（UDP ブロードキャスト :5005、104B の v1 または
+140B の v2 バイナリ — デコーダは `sf telemetry` と共有）を受信し、ブラウザ用の
 シングルページダッシュボードを提供する。SILS GUI と同じ「外部依存ゼロ」方針:
 stdlib の ThreadingHTTPServer が埋め込みページを配信し、Server-Sent Events
 （`/events`）でライブ JSON をプッシュする — SSE は requirements §7 の
@@ -54,11 +54,11 @@ def _udp_listener(port: int, csv_path=None) -> None:
     if csv_path:
         csv_file = open(csv_path, "a", buffering=1)
         if csv_file.tell() == 0:
-            csv_file.write("t_us,mode," + ",".join(telem.FLOAT_NAMES) + "\n")
+            csv_file.write(telem.CSV_HEADER)
     window = []
     while True:
         data, _addr = sock.recvfrom(2048)
-        pkt = telem._decode(data)
+        pkt = telem.decode_packet(data)
         if pkt is None:
             continue
         now = time.monotonic()
@@ -70,8 +70,7 @@ def _udp_listener(port: int, csv_path=None) -> None:
         _latest["count"] += 1
         _latest["rate_hz"] = len(window) / 2.0
         if csv_file:
-            csv_file.write(f"{pkt['t_us']},{pkt['mode']},"
-                           + ",".join(f"{pkt[k]:.6g}" for k in telem.FLOAT_NAMES) + "\n")
+            csv_file.write(telem.csv_row(pkt))
 
 
 # The dashboard page lives as a sibling asset (it grew a full SILS-GUI-ported 3D

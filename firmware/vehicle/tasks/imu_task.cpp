@@ -283,6 +283,17 @@ static void processAsyncSensors()
         // 失われる — オフライン再生には全量が要る。
         sf::log_flow.publish(flow);
         snap.flow_dx = flow.dx; snap.flow_dy = flow.dy; snap.flow_squal = flow.squal;
+        // Add EVERY sample to the running totals as well, so a reader slower
+        // than the sensor (the 50Hz telemetry) can recover the full
+        // displacement from the difference between two reads instead of
+        // sampling the incremental value and dropping what it did not see.
+        // Unsigned arithmetic: these are meant to wrap (see SensorSnapshot).
+        // 累積にも「全」サンプルを加える。これによりセンサより遅い読み手（50Hz の
+        // テレメトリ）は、差分量を覗いて見落とした分を失う代わりに、2回の読み取りの
+        // 差から変位の全量を復元できる。符号なし演算なのは折り返す前提だからである
+        // （SensorSnapshot 参照）。
+        snap.flow_dx_total += static_cast<uint32_t>(flow.dx);
+        snap.flow_dy_total += static_cast<uint32_t>(flow.dy);
         snap.flow_timestamp = flow.timestamp;
         snap_dirty = true;
     }

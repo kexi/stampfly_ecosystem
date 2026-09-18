@@ -70,12 +70,14 @@ class Sample(dict):
     それを 0 ではなく「不明」として扱う。
 
     Why a dict subclass and not a dataclass: sources have different
-    subsets of fields (UDP:5005 has no battery; the 10Hz state string has
-    no velocity), and `in` / `.get()` express "absent" directly, where a
+    subsets of fields (the 10Hz state string has no velocity; UDP:5005
+    carries the battery only from the 140-byte v2 packet, so older firmware
+    omits it), and `in` / `.get()` express "absent" directly, where a
     dataclass would need a sentinel per field.
     なぜ dataclass ではなく dict の派生か: 入力源ごとに持つ項目が違う
-    （UDP:5005 に電池は無く、10Hz 状態文字列に速度は無い）。`in` と `.get()`
-    なら「無い」をそのまま表せるが、dataclass では項目ごとに番人の値が要る。
+    （10Hz 状態文字列に速度は無く、UDP:5005 の電池は 140バイトの v2 パケットに
+    しか無いので旧ファームでは欠ける）。`in` と `.get()` なら「無い」をそのまま
+    表せるが、dataclass では項目ごとに番人の値が要る。
     """
 
 
@@ -319,11 +321,18 @@ class RealLink:
         RealLink's UDP:5005 50Hz reader is P2 work (it belongs with SILS
         so both paths are tested together); until then the pilot reads the
         10Hz state string, which RealLink already receives for `sf blocks`.
+        The decoder for that packet already exists as
+        `sfcli.commands.telemetry.decode_packet` (104B v1 / 140B v2, the
+        latter carrying battery, ToF, flow, mag and pressure altitude), so
+        this step is wiring up a socket, not writing a parser.
         最新の 10Hz 状態を最大 1 件の Sample として返す。
 
         UDP:5005 の 50Hz 受信は P2 の作業（SILS と同時に整備して両経路を
         まとめて検証するため）。それまでは `sf blocks` 用に既に受信している
-        10Hz 状態文字列を使う。
+        10Hz 状態文字列を使う。当該パケットの復号器は
+        `sfcli.commands.telemetry.decode_packet` として既にある（104B の v1 /
+        140B の v2。後者は電池・ToF・フロー・地磁気・気圧高度を含む）ので、
+        この段階の作業は解析器の作成ではなくソケットの接続である。
         """
         state, ts = self.snapshot_state()
         if state is None:

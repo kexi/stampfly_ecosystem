@@ -90,6 +90,17 @@
     </table></div>
   </div>
   <div class="row">
+   <div class="card"><div class="muted">sensors</div>
+    <table>
+     <tr><td>battery [V]</td><td class="big" id="voltage">--</td></tr>
+     <tr><td>ToF down [m]</td><td id="tof_bottom">--</td></tr>
+     <tr><td>ToF front [m]</td><td id="tof_front">--</td></tr>
+     <tr><td>baro alt [m]</td><td id="baro_altitude">--</td></tr>
+     <tr><td>mag x/y/z [&micro;T]</td><td id="mag">--</td></tr>
+     <tr><td>flow dx/dy (q)</td><td id="flow">--</td></tr>
+    </table></div>
+  </div>
+  <div class="row">
    <div class="card"><div class="muted">attitude [deg] (30 s)</div><canvas id="c_att" width="560" height="140"></canvas></div>
   </div>
  </div>
@@ -209,6 +220,36 @@ function drawAttitudeIndicator() {
   ctx.fillText("P: " + (pitch * R2D).toFixed(1) + "°", 8, h - 6);
 }
 
+// v2 sensor block. A v1 (104B) packet decodes these as null, so "--" means
+// "this firmware does not send it". Validity comes from the flag bits only —
+// never from the value (tof_front is -1.0 while the sensor is not driven, but
+// a live sensor could report a negative number on error).
+// v2 センサ部。v1（104B）パケットではこれらは null になるので、"--" は
+// 「このファームは送らない」の意。有効性はフラグビットだけで判断し、値では
+// 判断しない（未駆動の間 tof_front は -1.0 だが、実センサも異常時に負値を返しうる）。
+function sensorText(value, valid, digits, suffix){
+  if(value === null || value === undefined) return "--";
+  if(valid === false) return "invalid";
+  return value.toFixed(digits) + (suffix || "");
+}
+
+function updateSensors(p){
+  $("voltage").textContent       = sensorText(p.voltage, p.power_valid, 2);
+  $("tof_bottom").textContent    = sensorText(p.tof_bottom, p.tof_bottom_valid, 3);
+  $("tof_front").textContent     = p.tof_front === null || p.tof_front === undefined
+    ? "--" : "未対応 / not supported";
+  $("baro_altitude").textContent = sensorText(p.baro_altitude, p.baro_valid, 2);
+  $("mag").textContent = (p.mag_x === null || p.mag_x === undefined) ? "--"
+    : (p.mag_valid === false ? "invalid"
+       : fmt(p.mag_x,1)+" "+fmt(p.mag_y,1)+" "+fmt(p.mag_z,1));
+  if(p.flow_dx_sum === null || p.flow_dx_sum === undefined){
+    $("flow").textContent = "--";
+  } else {
+    $("flow").textContent = fmt(p.flow_dx_sum,0)+" "+fmt(p.flow_dy_sum,0)
+      +" (q "+p.flow_squal+")"+(p.flow_valid ? "" : " stale");
+  }
+}
+
 const es = new EventSource("/events");
 es.onmessage = (ev)=>{
   const d = JSON.parse(ev.data);
@@ -230,6 +271,7 @@ es.onmessage = (ev)=>{
     $(m).textContent = p[m].toFixed(2);
     $(m+"b").style.width = Math.min(100, p[m]*100)+"%";
   }
+  updateSensors(p);
   if (use2DFallback) {
     currentState.roll = p.roll; currentState.pitch = p.pitch;
     drawAttitudeIndicator();

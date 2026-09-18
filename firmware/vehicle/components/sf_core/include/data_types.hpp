@@ -103,6 +103,29 @@ struct SensorSnapshot {
     int16_t  flow_dx;         // Optical flow dx [counts] / フロー dx
     int16_t  flow_dy;         // Optical flow dy [counts] / フロー dy
     uint8_t  flow_squal;      // Flow surface quality     / フロー品質
+    // Running totals of flow displacement since boot. flow_dx/dy above are
+    // INCREMENTAL, so a reader slower than the sensor sees only the last
+    // sample and loses the rest; a total loses nothing, because a reader takes
+    // the DIFFERENCE between two reads and that difference covers every sample
+    // ImuTask added in between. ImuTask is the only writer (R5, "one data
+    // source = one variable").
+    //
+    // These are unsigned on purpose: the totals are meant to wrap, and
+    // unsigned overflow is defined to wrap in C++ while SIGNED overflow is
+    // undefined behaviour. Readers subtract in uint32 and cast the difference
+    // to int32, which recovers the correct signed delta across a wrap.
+    //
+    // 起動からのフロー変位の累積。上の flow_dx/dy は「差分量」なので、センサより
+    // 遅い読み手は最後のサンプルしか見られず残りを失う。累積なら失われない。読み手は
+    // 2回の読み取りの「差」を取り、その差には間に ImuTask が加えた全サンプルが
+    // 含まれるからである。書き手は ImuTask だけ（R5「1 データソース = 1 変数」）。
+    //
+    // 符号なしなのは意図的である。累積は桁あふれして折り返す前提だが、C++ では
+    // 符号なしの桁あふれは折り返しと定義される一方、符号付きの桁あふれは未定義動作
+    // だからである。読み手は uint32 のまま引き算し、その差を int32 にキャストすれば
+    // 折り返しを跨いでも正しい符号付き差分が得られる。
+    uint32_t flow_dx_total;   // [counts] cumulative dx / 累積 dx
+    uint32_t flow_dy_total;   // [counts] cumulative dy / 累積 dy
     // Per-sensor sample timestamps (the producing sensor's own stamp). The Data
     // Stream uses a CHANGE in these to detect "new sample" per sensor — the
     // shared snapshot timestamp below cannot tell which sensor updated.
