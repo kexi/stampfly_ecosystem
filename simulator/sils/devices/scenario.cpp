@@ -40,10 +40,6 @@ namespace {
 // シンボル直参照は ApiTask を持たない emu ターゲットのリンクを壊す）。
 // 未登録ターゲットでは未対応として記録。
 static void (*g_api_inject_fn)(const char*) = nullptr;
-extern "C" void sils_scenario_register_api_inject(void (*fn)(const char*))
-{
-    g_api_inject_fn = fn;
-}
 
 enum class Channel { Rc, RcRamp, Key, Btn, Wind, Fault, Bias, Handle, Api };
 
@@ -210,6 +206,23 @@ bool in_adc(long v) { return v >= 0 && v <= 4095; }
 }  // namespace
 
 extern "C" {
+
+void sils_scenario_register_api_inject(void (*fn)(const char*))
+{
+    g_api_inject_fn = fn;
+}
+
+bool sils_scenario_api_inject(const char* line)
+{
+    // Guard the line too, not just the hook: rc_stdin.cpp hands over whatever
+    // the operator typed, and an empty `api` line would otherwise reach the
+    // firmware parser as an empty command.
+    // フックだけでなく行も検査する: rc_stdin.cpp は操作者が打った文字列を
+    // そのまま渡すため、空の `api` 行がファームのパーサへ届いてしまう。
+    if (g_api_inject_fn == nullptr || line == nullptr || line[0] == '\0') return false;
+    g_api_inject_fn(line);
+    return true;
+}
 
 int sils_scenario_load(const char* path)
 {
@@ -536,8 +549,11 @@ void sils_scenario_driver_task(void* /*arg*/)
                 sils_console_write(e.text.data(), (int)e.text.size());
                 break;
             case Channel::Api: {
-                if (g_api_inject_fn) {
-                    g_api_inject_fn(e.text.c_str());
+                // Same seam rc_stdin.cpp's live `api <line>` verb uses, so a
+                // scripted event and a typed line cannot diverge.
+                // rc_stdin.cpp のライブ `api <行>` と同じ継ぎ目を通す。台本の事象と
+                // 手打ちの行が食い違わないようにするため。
+                if (sils_scenario_api_inject(e.text.c_str())) {
                     sils_emu_record_note("api", e.text.c_str());
                 } else {
                     sils_emu_record_note("api", "(unsupported on this target)");

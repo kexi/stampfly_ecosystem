@@ -78,6 +78,21 @@ void sils_board_get_motor_duty(float out[4]);
 void sils_board_set_wind(float fx, float fy, float fz);
 void sils_board_set_motor_health(int motor, float gain);
 
+// Override the battery terminal voltage [V] the INA3221 shim reports, or pass a
+// non-positive value to return to the Plant's own discharge model. This is a
+// SILS-only bench seam for rehearsing a low-battery decision: the Plant's 300mAh
+// pack barely sags over a one-minute run, so `sf pilot run --scene battery_drop`
+// walks this value down instead of waiting for a real discharge. The firmware is
+// untouched — it reads the same INA3221 registers it always does, so power_task,
+// the failsafe thresholds and the thrust→duty compensation all see one voltage.
+// INA3221 シムが報告する電池端子電圧 [V] を上書きする。0 以下を渡すと Plant 自身の
+// 放電モデルに戻る。電池低下の判断を試すための SILS 専用の継ぎ目である: Plant の
+// 300mAh パックは 1 分程度の実行ではほとんど低下しないため、`sf pilot run
+// --scene battery_drop` は実際の放電を待たずにこの値を下げていく。ファームは
+// 無改変 — いつもどおり同じ INA3221 レジスタを読むので、power_task・フェイルセーフ
+// のしきい値・thrust→duty 補償はすべて同じ電圧を見る。
+void sils_board_set_battery_voltage(float volts);
+
 // Set a deterministic raw IMU bias (body FRD): accel [m/s²], gyro [rad/s]. Models a
 // pre-calibration MEMS offset so the firmware boot calibration has something to remove
 // (P2-3 contrast test). No-op until a Plant is attached.

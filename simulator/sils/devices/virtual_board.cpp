@@ -40,6 +40,16 @@ namespace {
 sils::Plant* g_plant = nullptr;
 float g_motor_duty[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
+// Bench override for the reported battery voltage. <= 0 means "not overridden"
+// (the Plant's own discharge model answers), which is the default on every path
+// that never calls sils_board_set_battery_voltage() — so the normal/regression
+// runs are unaffected. virtual_board.hpp documents why the seam exists.
+// 報告する電池電圧のベンチ用上書き。0 以下は「上書きなし」（Plant 自身の放電
+// モデルが答える）。sils_board_set_battery_voltage() を呼ばない経路ではこれが
+// 既定なので、通常実行・再確認試験には影響しない。継ぎ目の理由は
+// virtual_board.hpp に記す。
+float g_battery_override_v = -1.0f;
+
 // --- BMI270 register addresses (match sf_hal_bmi270 defines) ------------------
 constexpr uint8_t REG_CHIP_ID         = 0x00;
 constexpr uint8_t REG_STATUS          = 0x03;
@@ -215,6 +225,15 @@ uint16_t ina3221_read_reg(uint8_t reg)
         case INA3221_REG_DIE:    return INA3221_DIE_ID;
         case INA3221_REG_CONFIG: return g_ina.config;
         case 0x02: case 0x04: case 0x06: {   // CH1/CH2/CH3 bus voltage
+            // The bench override wins over the Plant so the whole firmware —
+            // power_task, the failsafe thresholds, the thrust→duty
+            // compensation — sees one voltage, exactly as it would on a real
+            // pack that is running down.
+            // ベンチ用の上書きを Plant より優先する。power_task・フェイルセーフの
+            // しきい値・thrust→duty 補償まで、ファーム全体が 1 つの電圧を見る
+            // ようにするため（実際に減っていくパックと同じ状態）。
+            const bool is_overridden = g_battery_override_v > 0.0f;
+            if (is_overridden) return ina3221_bus_reg(g_battery_override_v);
             const float v = (g_plant != nullptr) ? g_plant->batteryVoltage() : 3.7f;
             return ina3221_bus_reg(v);
         }
@@ -424,6 +443,16 @@ void sils_board_set_motor_health(int motor, float gain)
 {
     if (g_plant == nullptr) return;
     g_plant->setHealth(motor, gain);
+}
+
+void sils_board_set_battery_voltage(float volts)
+{
+    // No Plant guard here, unlike the hooks above: this override replaces the
+    // Plant's answer rather than driving the Plant, so it is meaningful even
+    // before one is attached.
+    // 上のフックと違い Plant の有無を確認しない: この上書きは Plant を操作する
+    // のではなく Plant の答えを置き換えるものなので、接続前でも意味を持つ。
+    g_battery_override_v = volts;
 }
 
 void sils_board_set_imu_bias(float ax, float ay, float az, float gx, float gy, float gz)

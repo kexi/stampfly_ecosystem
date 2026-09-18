@@ -141,6 +141,110 @@ class ArbiterConfig:
 
 
 @dataclass(frozen=True)
+class SilsConfig:
+    """How a `sf pilot run --sils` flight is staged and how scenes drive it.
+
+    These are the numbers the SILS rehearsal needs and the flight itself
+    does not, so they sit apart from the thresholds above: changing a scene
+    must not be able to change what the Monitor considers a low battery.
+
+    `sf pilot run --sils` の飛行の進め方と、場面の駆動に使う値。
+
+    SILS での予行に必要で、飛行そのものには不要な数値である。場面を変えたことが
+    Monitor の「電池残量が少ない」の判定を変えてしまわないよう、上のしきい値とは
+    分けてある。
+    """
+
+    # Boot calibration must finish before an ARM (or an API `takeoff`) is
+    # accepted — scenarios/api_flight.scn holds neutral sticks for 6 s for
+    # this reason, and the same wait applies here.
+    # 起動校正が終わるまで ARM（API の `takeoff` も）は受理されない。
+    # scenarios/api_flight.scn が 6 秒間中立を保つのと同じ理由・同じ待ち時間。
+    boot_settle_s: float = 6.0
+
+    # After `takeoff`, the aircraft climbs to its own 0.5 m target and the
+    # guidance holds it. Judging before it settles would classify a normal
+    # climb as an altitude deviation.
+    # `takeoff` の後、機体は自前の 0.5m 目標まで上昇し、誘導がそれを保つ。
+    # 落ち着く前に判断させると、正常な上昇を高度の逸脱と区分してしまう。
+    takeoff_settle_s: float = 8.0
+
+    # Grace period for the vehicle's own descent after a `land` before the
+    # emulator is asked to quit.
+    # `land` の後、エミュレータに終了を求めるまで機体自身の降下を待つ時間。
+    land_grace_s: float = 5.0
+
+    # `battery_drop`: walk the reported pack voltage from here to here over
+    # the flight, via the emulator's `vbatt` stdin verb. The end value sits
+    # below MonitorConfig.battery_danger_pct's equivalent voltage so the
+    # scene is guaranteed to reach a decision rather than merely approach
+    # one; the start value is a healthy pack.
+    # `battery_drop`: 報告されるパック電圧を、エミュレータの `vbatt` で飛行中に
+    # ここからここまで下げていく。終端は MonitorConfig.battery_danger_pct に
+    # 相当する電圧より下に置き、判断に「近づく」だけでなく必ず到達するようにして
+    # ある。始端は健全なパックである。
+    battery_scene_start_v: float = 4.05
+    battery_scene_end_v: float = 3.35
+
+    # `drift`: a steady sideways force [N] pushing the aircraft east, plus an
+    # under-reading optical flow so position hold does not fully correct for
+    # it. Both are existing SILS mechanisms -- the Plant's wind hook (the
+    # *.scn `wind` event) and SILS_EMU_FLOW_SCALE (`sf sils scenario
+    # --flow-scale`) -- so this scene adds no new fault model.
+    #
+    # Why both: wind alone is corrected away by a healthy position hold
+    # (that is what position hold is FOR), and an under-reading flow alone
+    # produces no motion because nothing is pushing. Together they are the
+    # situation worth judging: the aircraft is being moved and its own
+    # controller does not fully see it.
+    #
+    # `drift`: 機体を東へ押す定常の横力 [N] と、位置保持がそれを完全には補正
+    # しないようフローを過小に読ませる設定の組み合わせ。どちらも既存の SILS の
+    # 機構である（Plant の wind フック＝*.scn の `wind` 事象、および
+    # SILS_EMU_FLOW_SCALE＝`sf sils scenario --flow-scale`）。この場面のために
+    # 新しい故障モデルは足していない。
+    #
+    # 両方を使う理由: 風だけなら健全な位置保持が打ち消してしまう（位置保持とは
+    # そのためのものである）。フローの過小読みだけでは押す力が無く動かない。
+    # 2 つが揃ってはじめて、判断する価値のある状況になる — 機体が動かされて
+    # いるのに、機体自身の制御がそれを十分に見えていない、という状況である。
+    # NOTE (2026-09-19): the force is declared here in the NED frame the
+    # Plant's wind hook documents, and it does push the craft north in
+    # GROUND TRUTH (truth.csv). The firmware's own position estimate,
+    # however, reports that same motion on its EAST axis -- measured, not
+    # assumed: with `wind 0.02 0 0`, truth.csv's pos_x reached +0.161 m
+    # while posvel.csv's pos_x stayed exactly 0 and pos_y moved -0.138 m.
+    # This predates `sf pilot` (it reproduces through the existing *.scn
+    # `wind` event, with no stdin involved) and is reported rather than
+    # worked around. It does not affect what this scene is for: the
+    # aircraft genuinely drifts, and the Monitor genuinely classifies a
+    # drift -- only the compass word it picks is affected.
+    #
+    # 注記（2026-09-19）: 力は Plant の wind フックが記す NED フレームで宣言して
+    # おり、実際に「真値」では機体を北へ押す（truth.csv）。ところがファーム自身の
+    # 位置推定は同じ運動を「東」軸に出す — 推測ではなく実測である: `wind 0.02 0 0`
+    # で truth.csv の pos_x は +0.161m に達したが、posvel.csv の pos_x は厳密に 0 の
+    # まま、pos_y が -0.138m 動いた。これは `sf pilot` より前から存在する（stdin を
+    # 介さない既存の *.scn `wind` 事象でも再現する）ため、回避せず報告する。
+    # 本場面の目的には影響しない: 機体は実際に流れ、Monitor は実際に流れとして
+    # 区分する。影響するのは、選ばれる方角の語だけである。
+    # 0.06 N chosen by measurement, not by feel: at 0.02 N position hold
+    # nulls the excursion almost at once (peak ~0.16 m, speeds below the
+    # Monitor's "drifting" band, so nothing is ever classified as drift),
+    # while at 0.06 N the craft swings out to ~0.9 m at 0.2-0.5 m/s before
+    # the controller pulls it back -- a disturbance the controller is
+    # visibly fighting, which is the situation worth judging.
+    #
+    # 0.06N は実測で選んだ（感覚ではない）: 0.02N では位置保持がほぼ即座に
+    # 打ち消してしまい（最大約 0.16m、速度は Monitor の「流されている」区分に
+    # 届かず、流れとして区分されない）、0.06N では制御が引き戻すまでに
+    # 0.2〜0.5m/s で約 0.9m まで振れる — 制御が目に見えて抗っている外乱であり、
+    # 判断する価値のある状況である。
+    drift_flow_scale: float = 0.35
+    drift_wind_n: float = 0.060
+
+
+@dataclass(frozen=True)
 class PilotConfig:
     """The whole configuration, passed as one object.
     設定一式。1 つのオブジェクトとして受け渡す。"""
@@ -149,6 +253,7 @@ class PilotConfig:
     envelope: EnvelopeConfig = field(default_factory=EnvelopeConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     arbiter: ArbiterConfig = field(default_factory=ArbiterConfig)
+    sils: SilsConfig = field(default_factory=SilsConfig)
 
     monitor_hz: float = MONITOR_HZ
     executor_rc_hz: float = EXECUTOR_RC_HZ

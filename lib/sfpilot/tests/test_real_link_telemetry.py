@@ -1,0 +1,186 @@
+"""
+What RealLink's 50Hz path guarantees: a UDP:5005 packet becomes a Sample,
+a 140-byte v2 packet supplies the battery and ToF by itself, and a
+104-byte v1 packet omits them rather than inventing zeros.
+
+RealLink の 50Hz 経路が保証すること: UDP:5005 のパケットが Sample になること、
+140 バイトの v2 パケットは電池と ToF を単独で供給すること、104 バイトの v1
+パケットはそれらを 0 で捏造せず省くこと。
+
+Packets are built here with the SAME struct format the firmware encoder and
+`sfcli.commands.telemetry` share, so a format change breaks this test rather
+than silently producing wrong numbers in flight.
+パケットはファームの符号化器と `sfcli.commands.telemetry` が共有するのと同じ
+struct 書式で組み立てる。書式が変われば飛行中に静かに誤った数値が出るのではなく、
+この試験が落ちる。
+"""
+
+import socket
+import struct
+import time
+
+import pytest
+
+from sfcli.commands.telemetry import (
+    FLOAT_NAMES, TELEM_FMT, TELEM_MAGIC, TELEM_SIZE, TELEM_SIZE_V2,
+    TELEM_V2_FMT, TELEM_VERSION_V2, VALID_BITS,
+)
+from sfpilot.link import TELEM_PORT, RealLink
+
+# A hovering craft, 0.8 m up, sliding slowly north-east.
+# 0.8m でホバリングし、北東へゆっくり流れている機体。
+FLOATS = {
+    "roll": 0.02, "pitch": -0.01, "yaw": 1.57,
+    "pos_x": 0.30, "pos_y": -0.40, "pos_z": -0.80,   # NED: z down / z は下向き
+    "vel_x": 0.12, "vel_y": 0.05, "vel_z": -0.01,
+}
+FLYING_MODE = 5   # STATE_NAMES index for "FLYING" / 「FLYING」の番号
+
+
+def _v1_packet(mode: int = FLYING_MODE) -> bytes:
+    """A 104-byte v1 telemetry packet. / 104 バイトの v1 テレメトリパケット。"""
+    values = [FLOATS.get(name, 0.0) for name in FLOAT_NAMES]
+    return struct.pack(TELEM_FMT, TELEM_MAGIC, 1, 0, 1234, *values, mode)
+
+
+def _v2_packet(voltage: float = 3.9, tof: float = 0.79,
+               valid: bool = True, mode: int = FLYING_MODE) -> bytes:
+    """A 140-byte v2 packet: v1 prefix plus the appended block.
+    140 バイトの v2 パケット: v1 の前半に追記部を足したもの。"""
+    values = [FLOATS.get(name, 0.0) for name in FLOAT_NAMES]
+    head = struct.pack(TELEM_FMT, TELEM_MAGIC, TELEM_VERSION_V2, 0, 1234, *values, mode)
+    flags = 0
+    if valid:
+        flags = VALID_BITS["tof_bottom_valid"] | VALID_BITS["power_valid"]
+    tail = struct.pack(
+        TELEM_V2_FMT, voltage, tof, -1.0, 0, 0, 0, flags, 0.0, 0.0, 0.0, 0.80,
+    )
+    return head + tail
+
+
+@pytest.fixture
+def link():
+    """A RealLink whose :5005 socket is bound, or the test is skipped.
+
+    Skipped rather than failed when the port is taken: another session or
+    a djitellopy script legitimately holds it, and that is not a defect in
+    this code.
+    :5005 を bind できた RealLink。取れなければ試験を飛ばす。
+
+    ポートが使用中のときは失敗ではなく skip とする。別のセッションや
+    djitellopy のスクリプトが正当に握っている場合があり、本コードの不具合では
+    ないためである。
+    """
+    try:
+        real_link = RealLink("127.0.0.1")
+    except OSError as exc:
+        pytest.skip(f"cannot bind the telemetry ports: {exc}")
+    if real_link._telem_sock is None:
+        real_link.close()
+        pytest.skip(f"UDP:{TELEM_PORT} is already in use")
+    yield real_link
+    real_link.close()
+
+
+def _deliver(link, packets, timeout_s: float = 2.0) -> list:
+    """Send packets to :5005 and return what read_samples() makes of them.
+    パケットを :5005 へ送り、read_samples() の結果を返す。"""
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        for packet in packets:
+            sender.sendto(packet, ("127.0.0.1", TELEM_PORT))
+    finally:
+        sender.close()
+
+    # The receiver runs on its own thread; poll rather than sleep a fixed
+    # time, so the test is neither flaky nor slower than it has to be.
+    # 受信は別スレッドで走る。固定時間待たずに待ち合わせる。不安定にも、
+    # 必要以上に遅くもしないためである。
+    deadline = time.monotonic() + timeout_s
+    collected: list = []
+    while time.monotonic() < deadline and len(collected) < len(packets):
+        collected.extend(link.read_samples())
+        time.sleep(0.01)
+    return collected
+
+
+def test_a_v2_packet_supplies_position_velocity_battery_and_tof(link):
+    """One 140-byte packet carries everything the Monitor needs, alone.
+    140 バイトのパケット 1 つで Monitor に必要な情報が揃うこと。"""
+    samples = _deliver(link, [_v2_packet(voltage=3.75, tof=0.79)])
+
+    assert len(samples) == 1
+    sample = samples[0]
+    # NED position is down-positive; altitude is up-positive.
+    # NED の位置は下向き正、高度は上向き正。
+    assert sample["altitude_m"] == pytest.approx(0.80, abs=1e-5)
+    assert sample["pos_n"] == pytest.approx(0.30, abs=1e-5)
+    assert sample["pos_e"] == pytest.approx(-0.40, abs=1e-5)
+    assert sample["vel_n"] == pytest.approx(0.12, abs=1e-5)
+    assert sample["tof_m"] == pytest.approx(0.79, abs=1e-5)
+    assert sample["battery_pct"] == pytest.approx(50.0, abs=0.5)
+    assert sample["flight_state"] == "FLYING"
+
+
+def test_a_v1_packet_omits_battery_and_tof_rather_than_sending_zero(link):
+    """104-byte firmware reports no battery and no ToF, not 0% and 0 m.
+
+    A zero would read as a flat battery and a craft on the ground, either
+    of which would trigger an immediate safety rule on a healthy flight.
+    104 バイトのファームでは電池と ToF を「無し」とすること（0%・0m ではない）。
+
+    0 は「電池切れ」「接地」として読まれ、健全な飛行で即時安全則を作動させて
+    しまう。
+    """
+    samples = _deliver(link, [_v1_packet()])
+
+    assert len(samples) == 1
+    assert samples[0]["altitude_m"] == pytest.approx(0.80, abs=1e-5)
+    assert "battery_pct" not in samples[0]
+    assert "tof_m" not in samples[0]
+
+
+def test_an_invalid_flag_suppresses_the_value_it_guards(link):
+    """v2 fields whose validity bit is clear are omitted, not trusted.
+    有効ビットが立っていない v2 の項目は採用せず省くこと。"""
+    samples = _deliver(link, [_v2_packet(valid=False)])
+
+    assert len(samples) == 1
+    assert "tof_m" not in samples[0]
+    assert "battery_pct" not in samples[0]
+
+
+def test_every_packet_since_the_last_call_is_returned(link):
+    """The whole 50Hz stream reaches the Monitor, not just the newest packet.
+
+    The trend rules measure a duration, so they need the intervening
+    samples; keeping only the latest would erase the history they read.
+    最新の 1 件ではなく 50Hz の流れ全体が Monitor に届くこと。
+
+    傾向の判定は継続時間を測るため間のサンプルを必要とする。最新だけを保持
+    すると、その履歴が消えてしまう。
+    """
+    samples = _deliver(link, [_v2_packet() for _ in range(5)])
+
+    assert len(samples) == 5
+
+
+def test_a_packet_that_is_not_telemetry_is_ignored(link):
+    """Stray datagrams on :5005 do not become Samples.
+    :5005 に紛れ込んだ datagram が Sample にならないこと。"""
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sender.sendto(b"not a telemetry packet at all", ("127.0.0.1", TELEM_PORT))
+        sender.sendto(b"\x00" * TELEM_SIZE, ("127.0.0.1", TELEM_PORT))  # bad magic
+    finally:
+        sender.close()
+
+    time.sleep(0.3)
+    assert link.read_samples() == []
+
+
+def test_packet_sizes_match_the_shared_format():
+    """The packets this test builds are the sizes the decoder dispatches on.
+    本試験が組むパケットが、復号器が判別に使う大きさと一致すること。"""
+    assert len(_v1_packet()) == TELEM_SIZE
+    assert len(_v2_packet()) == TELEM_SIZE_V2

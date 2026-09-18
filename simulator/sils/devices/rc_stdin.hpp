@@ -29,12 +29,49 @@
  *                                        applies). `land` is the same pulse
  *                                        under the name a mid-flight pilot
  *                                        would reach for.
+ *   api <command line>                   feed one Tello-style API command line
+ *                                        (`command`, `takeoff`, `rc a b c d`,
+ *                                        `land`, ...) to the firmware's OWN
+ *                                        ApiTask parser, through the scenario
+ *                                        engine's registered hook — the same
+ *                                        entry a *.scn `api` event uses. NOTE
+ *                                        this is NOT the `rc` verb above: `rc`
+ *                                        is the transmitter's sticks (ADC raw),
+ *                                        while `api rc a b c d` is the API's
+ *                                        velocity command (-100..100). Added
+ *                                        for `sf pilot run --sils`
+ *                                        (docs/plans/jev-autopilot.md P2).
+ *   wind <fx> <fy> <fz>                  sustained external force in NED [N],
+ *                                        the live equivalent of a *.scn `wind`
+ *                                        event (same Plant hook). Send
+ *                                        "wind 0 0 0" to stop it.
+ *   vbatt <volts>                        override the battery terminal voltage
+ *                                        the INA3221 shim reports; <= 0 returns
+ *                                        to the Plant's own discharge model.
+ *                                        SILS-only bench seam for rehearsing a
+ *                                        low-battery decision without waiting
+ *                                        for a real discharge (the firmware is
+ *                                        untouched — see virtual_board.hpp).
  *   quit                                  request a clean emulator shutdown
  *
  * SILS_EMU_RC_STDIN=1 でプロセスの実 stdin（ターミナル、または `sf sils fly` の
  * パイプ）から行指向コマンドを読み、*.scn シナリオドライバと同じビルダ
  * （scenario_inject.hpp）で ESP-NOW ControlPacket として注入する — 電波バイト・
  * ADC生スケール（0..4095, 中央2048）とも共通、別規格を同期させる必要がない。
+ *
+ * `api <コマンド行>` は Tello 風 API コマンド行（`command`・`takeoff`・
+ * `rc a b c d`・`land` 等）を、シナリオエンジンの登録済みフック経由でファーム
+ * 自身の ApiTask パーサへ流す — *.scn の `api` 事象と同じ入口である。上の `rc`
+ * とは別物である点に注意: `rc` は送信機のスティック（ADC 生値）、`api rc a b c d`
+ * は API の速度指令（-100..100）。`sf pilot run --sils` のために追加した
+ * （docs/plans/jev-autopilot.md の P2）。
+ *
+ * `wind <fx> <fy> <fz>` は NED の定常外乱力 [N]。*.scn の `wind` 事象のライブ版で
+ * Plant のフックも同じである。「wind 0 0 0」で止める。
+ *
+ * `vbatt <電圧>` は INA3221 シムが報告する電池端子電圧を上書きする（0 以下で
+ * Plant 自身の放電モデルに戻る）。実際の放電を待たずに電池低下の判断を試すための
+ * SILS 専用のベンチ継ぎ目で、ファームは無改変（virtual_board.hpp 参照）。
  *
  * Read-side note: the emulator's main() re-points STDIN_FILENO at a private
  * non-blocking pipe for the FIRMWARE's own CLI (see emu_main.cpp). This module

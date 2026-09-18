@@ -14,6 +14,8 @@
 
 #include "rc_stdin.hpp"
 #include "scenario_inject.hpp"   // sils::inject_rc / kAdcCentre / kFlagArm (SSOT builder)
+#include "scenario.hpp"          // sils_scenario_api_inject (registered ApiTask entry)
+#include "virtual_board.hpp"     // sils_board_set_battery_voltage (SILS-only fault seam)
 
 #include <cerrno>
 #include <cstdio>
@@ -102,10 +104,65 @@ void process_line(const std::string& raw_line, int64_t now_us)
         // （state_task.cpp）が現在状態から決める — 実機送信機の単一モーメンタリ
         // ボタンと同じ。
         g_arm_pulse_until = now_us + kArmPulseUs;
+    } else if (cmd == "api") {
+        // Everything after "api " is the firmware's own API command line, passed
+        // through untouched (it contains spaces: "rc 0 0 0 0", "forward 50").
+        // Routed via the scenario engine's registered hook rather than calling
+        // sf_api_inject_line directly: rc_stdin.cpp also links into emu targets
+        // that have no ApiTask, where a direct symbol reference would fail to
+        // link — the same reason scenario.cpp uses a registered hook.
+        // 「api 」より後ろはファーム自身の API コマンド行で、そのまま渡す
+        // （空白を含む: "rc 0 0 0 0"、"forward 50"）。sf_api_inject_line を直接
+        // 呼ばずシナリオエンジンの登録済みフックを経由する: rc_stdin.cpp は
+        // ApiTask を持たない emu ターゲットにもリンクされ、直接参照するとリンクが
+        // 通らないためである（scenario.cpp がフックを使うのと同じ理由）。
+        const size_t api_prefix_len = 4;   // "api " / 「api 」
+        std::string api_line =
+            (line.size() > api_prefix_len) ? line.substr(api_prefix_len) : std::string();
+        while (!api_line.empty() && (api_line.front() == ' ' || api_line.front() == '\t')) {
+            api_line.erase(0, 1);
+        }
+        if (api_line.empty()) {
+            std::fprintf(stderr, "[rc_stdin] bad 'api' line (need 'api <command>'): %s\n",
+                         line.c_str());
+            return;
+        }
+        if (!sils_scenario_api_inject(api_line.c_str())) {
+            std::fprintf(stderr,
+                "[rc_stdin] 'api' ignored — no API entry registered on this emu target "
+                "(only emu_vehicle has an ApiTask)\n");
+        }
+    } else if (cmd == "wind") {
+        // Live equivalent of the *.scn `wind` event: a sustained external force
+        // in NED [N]. Same Plant hook (sils_board_set_wind), so a scene driven
+        // from stdin and one scripted in a scenario disturb the craft
+        // identically. No dur_ms here — a live driver ends a gust by sending
+        // "wind 0 0 0", which a scripted timeline cannot do.
+        // *.scn の `wind` 事象のライブ版: NED の定常外乱力 [N]。Plant のフックも
+        // 同じ（sils_board_set_wind）なので、stdin から駆動した場面と台本に書いた
+        // 場面は同じように機体を乱す。dur_ms は取らない — ライブの駆動側は
+        // 「wind 0 0 0」を送れば突風を終えられる（台本にはそれができない）。
+        double fx = 0.0, fy = 0.0, fz = 0.0;
+        if (!(iss >> fx >> fy >> fz)) {
+            std::fprintf(stderr, "[rc_stdin] bad 'wind' line (need 'wind <fx> <fy> <fz>'): %s\n",
+                         line.c_str());
+            return;
+        }
+        sils_board_set_wind(static_cast<float>(fx), static_cast<float>(fy),
+                            static_cast<float>(fz));
+    } else if (cmd == "vbatt") {
+        double volts = 0.0;
+        if (!(iss >> volts)) {
+            std::fprintf(stderr, "[rc_stdin] bad 'vbatt' line (need 'vbatt <volts>'): %s\n",
+                         line.c_str());
+            return;
+        }
+        sils_board_set_battery_voltage(static_cast<float>(volts));
     } else if (cmd == "quit") {
         g_quit_requested = true;
     } else {
-        std::fprintf(stderr, "[rc_stdin] unknown command '%s' (want: rc/arm/land/quit)\n",
+        std::fprintf(stderr,
+                     "[rc_stdin] unknown command '%s' (want: rc/arm/land/api/wind/vbatt/quit)\n",
                      cmd.c_str());
     }
 }
@@ -137,7 +194,8 @@ void sils_rc_stdin_init(void)
     }
     g_fd = real_stdin;
     std::printf("[rc_stdin] SILS_EMU_RC_STDIN enabled — reading "
-                "'rc <roll> <pitch> <yaw> <throttle>' / 'arm' / 'land' / 'quit' from stdin\n");
+                "'rc <roll> <pitch> <yaw> <throttle>' / 'arm' / 'land' / "
+                "'api <command>' / 'wind <fx> <fy> <fz>' / 'vbatt <volts>' / 'quit' from stdin\n");
 }
 
 void sils_rc_stdin_tick(int64_t now_us)

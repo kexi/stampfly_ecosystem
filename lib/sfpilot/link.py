@@ -11,12 +11,10 @@ Three implementations share one `Link` interface so the layers above
                    `sf blocks` and `sf pilot` must not drift apart.
   - `ReplayLink` — a recorded flight (`lib/sflog` bundle) played back in
                    time order. Sends are recorded, never transmitted.
-  - (SilsLink)   — NOT implemented. SILS needs a firmware-side change
-                   (an `api <line>` stdin verb); that is P2 in
-                   `docs/plans/jev-autopilot.md`. No placeholder class is
-                   defined here: an importable stub that raises would let
-                   `--sils` be typed and fail late, which is worse than
-                   the option simply not existing.
+  - `SilsLink`   — a real-time SILS run (emu_vehicle). Samples come from
+                   the emulator's `STATE k=v` stdout line; commands go to
+                   its stdin as `api <line>` (P2). SILS has no network, so
+                   the pipe replaces both UDP ports.
 
 3 つの実装が 1 つの `Link` インターフェースを共有し、上の層（Monitor /
 Executor）はサンプルの出所を知らずに済む:
@@ -26,10 +24,9 @@ Executor）はサンプルの出所を知らずに済む:
                    import する。`sf blocks` と `sf pilot` の実装を分岐させないため。
   - `ReplayLink` — 記録済みの飛行（`lib/sflog` の一式）を時刻順に流す。送信は
                    記録するだけで、実際には送らない。
-  - （SilsLink） — **未実装**。SILS 連携にはファーム側の変更（stdin の
-                   `api <行>`）が必要で、これは計画文書の P2。例外を出すだけの
-                   代替実装も置かない。import できてしまうと `--sils` を打てて
-                   遅れて失敗することになり、選択肢が無いほうがまだ良いため。
+  - `SilsLink`   — 実時間の SILS 実行（emu_vehicle）。サンプルはエミュレータの
+                   `STATE k=v` 行から、指令は stdin へ `api <行>` として送る（P2）。
+                   SILS にネットワークは無く、パイプが 2 つの UDP ポートを兼ねる。
 """
 
 import queue
@@ -44,7 +41,39 @@ from typing import Optional, Protocol, runtime_checkable
 DEFAULT_DRONE_HOST = "192.168.10.1"   # StampFly AP-mode address / AP モード時の機体アドレス
 API_PORT = 8889                       # ApiTask command port / コマンドポート
 STATE_PORT = 8890                     # TelloStateTask state port / 状態ストリームポート
+TELEM_PORT = 5005                     # 50Hz telemetry port / 50Hz テレメトリポート
 POLL_INTERVAL_S = 0.05                # reply/abort polling granularity / 待機ポーリング粒度
+
+# Battery: both the flight log and the telemetry packet carry pack voltage,
+# but every threshold in config.py is a percentage. A 1S LiPo runs from about
+# 4.2 V charged to 3.3 V empty; the mapping is linear between those, which is
+# crude but monotonic -- enough to place a reading in a band, which is all the
+# Monitor needs.
+#
+# The SAME two constants are hard-coded in simulator/sils/emu/emu_main.cpp
+# (`kBatteryFullV` / `kBatteryEmptyV`), which computes the `batt=` field of
+# the SILS STATE line. They are deliberately kept equal so a SILS run and a
+# replayed log put the same voltage in the same band; the two cannot share
+# code across the C++/Python boundary.
+#
+# 電池: フライトログもテレメトリパケットもパック電圧を持つが、config.py の
+# しきい値は百分率。1S LiPo は満充電約 4.2 V、空で約 3.3 V。その間を線形に
+# 対応させる。粗いが単調であり、区分に入れるには足りる（Monitor が必要と
+# するのはそれだけ）。
+#
+# 同じ 2 つの定数が simulator/sils/emu/emu_main.cpp にも書かれている
+#（`kBatteryFullV` / `kBatteryEmptyV`。SILS の STATE 行の `batt=` を計算する）。
+# SILS の実行と再生したログが同じ電圧を同じ区分に置くよう、意図的に等しく
+# 保っている。C++ と Python の境界を越えてコードは共有できないためである。
+BATTERY_FULL_V = 4.2
+BATTERY_EMPTY_V = 3.3
+
+
+def battery_percent(voltage: float) -> float:
+    """Pack voltage [V] -> remaining percentage, clamped to 0..100.
+    パック電圧 [V] → 残量の百分率（0〜100 に丸める）。"""
+    ratio = (voltage - BATTERY_EMPTY_V) / (BATTERY_FULL_V - BATTERY_EMPTY_V)
+    return max(0.0, min(100.0, ratio * 100.0))
 
 
 # =============================================================================
@@ -209,17 +238,42 @@ class RealLink:
                 f"djitellopy / sf blocks を終了してください)"
             )
 
+        # Telemetry socket (UDP:5005, 50Hz). Bound separately from :8890 and
+        # allowed to fail: `sf blocks` never needed it, and firmware older
+        # than the v2 packet still flies -- losing it costs the fast sample
+        # rate, not the flight, so read_samples() falls back to the 10Hz
+        # state string rather than refusing to start.
+        # テレメトリソケット（UDP:5005、50Hz）。:8890 とは別に bind し、失敗して
+        # よいものとする。`sf blocks` は使っておらず、v2 パケット以前のファームでも
+        # 飛行はできる — 失うのは速いサンプル周期であって飛行ではないため、
+        # read_samples() は起動を拒まず 10Hz 状態文字列へ退く。
+        self._telem_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            self._telem_sock.bind(("", TELEM_PORT))
+        except OSError:
+            self._telem_sock.close()
+            self._telem_sock = None
+
         self._reply_q: "queue.Queue[str]" = queue.Queue()
         self._send_lock = threading.Lock()     # serializes socket writes / 送信の直列化
         self._abort_evt = threading.Event()
         self._closed = threading.Event()
         self._latest_state: Optional[dict] = None
         self._latest_state_ts = 0.0
+        # Every telemetry sample since the last read_samples(), so the Monitor
+        # sees the whole 50Hz stream rather than only the newest packet: the
+        # trend rules need the intervening samples to measure a duration.
+        # 前回の read_samples() 以降のテレメトリを全て溜める。Monitor が最新の
+        # 1 件ではなく 50Hz の流れ全体を見られるようにするためである。傾向の
+        # 判定は、継続時間を測るために間のサンプルを必要とする。
+        self._telem_q: "queue.Queue[Sample]" = queue.Queue()
 
         self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
         self._state_thread = threading.Thread(target=self._state_loop, daemon=True)
         self._rx_thread.start()
         self._state_thread.start()
+        if self._telem_sock is not None:
+            threading.Thread(target=self._telem_loop, daemon=True).start()
 
     def _rx_loop(self) -> None:
         """Push every command-socket reply into the queue. / 全応答をキューへ積む。"""
@@ -239,6 +293,21 @@ class RealLink:
                 return
             self._latest_state = parse_state_line(data.decode(errors="replace"))
             self._latest_state_ts = time.monotonic()
+
+    def _telem_loop(self) -> None:
+        """Decode every UDP:5005 packet into a Sample on the queue.
+        UDP:5005 の各パケットを Sample にしてキューへ積む。"""
+        from sfcli.commands.telemetry import decode_packet
+
+        while not self._closed.is_set():
+            try:
+                data, _addr = self._telem_sock.recvfrom(2048)
+            except OSError:
+                return
+            packet = decode_packet(data)
+            if packet is None:
+                continue   # not a telemetry packet / テレメトリではない
+            self._telem_q.put(_sample_from_packet(packet, time.monotonic()))
 
     def handshake(self, timeout: float):
         """Enter SDK mode ("command"). Returns (ok, error|None).
@@ -316,36 +385,118 @@ class RealLink:
         self.priority(line)
 
     def read_samples(self) -> list:
-        """Return the newest 10Hz state as at most one Sample.
+        """Return every 50Hz telemetry Sample that arrived since the last
+        call, falling back to the newest 10Hz state when :5005 is silent.
 
-        RealLink's UDP:5005 50Hz reader is P2 work (it belongs with SILS
-        so both paths are tested together); until then the pilot reads the
-        10Hz state string, which RealLink already receives for `sf blocks`.
-        The decoder for that packet already exists as
-        `sfcli.commands.telemetry.decode_packet` (104B v1 / 140B v2, the
-        latter carrying battery, ToF, flow, mag and pressure altitude), so
-        this step is wiring up a socket, not writing a parser.
-        最新の 10Hz 状態を最大 1 件の Sample として返す。
+        Two sources, one preference order. UDP:5005 is the primary: it runs
+        at the Monitor's own rate and, from the 140-byte v2 packet, carries
+        the battery and the downward ToF directly. A 104-byte v1 packet has
+        neither, so those two fields are filled in from the 10Hz state
+        string this link already receives -- that is why the fallback is a
+        merge and not a replacement.
 
-        UDP:5005 の 50Hz 受信は P2 の作業（SILS と同時に整備して両経路を
-        まとめて検証するため）。それまでは `sf blocks` 用に既に受信している
-        10Hz 状態文字列を使う。当該パケットの復号器は
-        `sfcli.commands.telemetry.decode_packet` として既にある（104B の v1 /
-        140B の v2。後者は電池・ToF・フロー・地磁気・気圧高度を含む）ので、
-        この段階の作業は解析器の作成ではなくソケットの接続である。
+        前回の呼び出し以降に届いた 50Hz テレメトリを全て返す。:5005 が無音の
+        ときは最新の 10Hz 状態へ退く。
+
+        入力源は 2 つ、優先順位は 1 つ。主となるのは UDP:5005 である。Monitor と
+        同じ周期で届き、140 バイトの v2 パケットなら電池と下向き ToF をそのまま
+        載せている。104 バイトの v1 パケットはどちらも持たないため、この 2 項目は
+        本リンクが既に受けている 10Hz 状態文字列から補う — 退避が置き換えではなく
+        併合なのはそのためである。
         """
+        samples = []
+        while True:
+            try:
+                samples.append(self._telem_q.get_nowait())
+            except queue.Empty:
+                break
+
         state, ts = self.snapshot_state()
-        if state is None:
-            return []
-        return [_sample_from_state_dict(state, ts)]
+        if not samples:
+            # Nothing on :5005 (older firmware, or the port was taken).
+            # :5005 に何も来ていない（旧ファーム、またはポートが取られている）。
+            return [] if state is None else [_sample_from_state_dict(state, ts)]
+
+        # Judged on the newest sample alone, because one batch is never a
+        # mix of versions: the firmware does not change packet format
+        # mid-flight. Each sample is still filled in individually below
+        # (`if key not in sample`), so even if that ever stopped holding,
+        # a v2 sample keeps its own battery rather than being overwritten.
+        # 判定には最新の 1 件だけを使う。1 回分のまとまりに版が混在することは
+        # 無いためである（ファームは飛行中にパケット様式を変えない）。それでも
+        # 補完は下で 1 件ずつ行うので（`if key not in sample`）、仮にその前提が
+        # 崩れても、v2 のサンプルは自分の電池の値を上書きされない。
+        has_v1_gap = state is not None and (
+            "battery_pct" not in samples[-1] or "tof_m" not in samples[-1]
+        )
+        if has_v1_gap:
+            supplement = _sample_from_state_dict(state, ts)
+            for sample in samples:
+                for key in ("battery_pct", "tof_m"):
+                    if key not in sample and key in supplement:
+                        sample[key] = supplement[key]
+        return samples
 
     def close(self) -> None:
         self._closed.set()
-        for sock in (self._cmd_sock, self._state_sock):
+        for sock in (self._cmd_sock, self._state_sock, self._telem_sock):
+            if sock is None:
+                continue
             try:
                 sock.close()
             except OSError:
                 pass
+
+
+# FlightState enum order, mirrored from sfcli.commands.telemetry.STATE_NAMES
+# (itself mirrored from the firmware). Imported at call time rather than
+# copied, so this cannot drift from the decoder it belongs to.
+# FlightState の列挙順は sfcli.commands.telemetry.STATE_NAMES（ファーム側の
+# 写し）を使う。複製せず呼び出し時に import し、復号器と食い違わないようにする。
+def _sample_from_packet(packet: dict, ts: float) -> Sample:
+    """One decoded UDP:5005 packet -> Sample in SI units.
+    復号済みの UDP:5005 パケット 1 件を SI 単位の Sample に変換する。
+
+    The packet is already in SI (metres, radians, NED), so unlike the 10Hz
+    state string this is a rename rather than a conversion. The one piece
+    of arithmetic is the battery percentage, which the packet does not
+    carry -- it sends voltage, and every threshold is a percentage.
+    パケットは既に SI 単位（メートル・ラジアン・NED）なので、10Hz 状態文字列と
+    違いここでの作業は変換ではなく名前の付け替えである。唯一の計算は電池残量の
+    百分率で、パケットは電圧しか持たず、しきい値はすべて百分率だからである。
+    """
+    from sfcli.commands.telemetry import STATE_NAMES
+
+    sample = Sample(t=ts)
+    # Position is NED (down-positive); altitude is up-positive.
+    # 位置は NED（下向き正）、高度は上向き正。
+    if packet.get("pos_z") is not None:
+        sample["altitude_m"] = -float(packet["pos_z"])
+    for packet_key, sample_key in (
+        ("pos_x", "pos_n"), ("pos_y", "pos_e"),
+        ("vel_x", "vel_n"), ("vel_y", "vel_e"), ("vel_z", "vel_d"),
+        ("roll", "roll"), ("pitch", "pitch"), ("yaw", "yaw"),
+    ):
+        if packet.get(packet_key) is not None:
+            sample[sample_key] = float(packet[packet_key])
+
+    mode = packet.get("mode")
+    if mode is not None and 0 <= mode < len(STATE_NAMES):
+        sample["flight_state"] = STATE_NAMES[mode]
+
+    # v2 fields. Validity is carried by the flag bits alone -- never inferred
+    # from the value, because a live sensor may report a negative reading on
+    # error (telemetry.py's decode_packet documents this).
+    # v2 の項目。有効性はフラグビットだけが持ち、値からは推測しない。実センサは
+    # 異常時に負値を返しうるためである（telemetry.py の decode_packet に明記）。
+    voltage = packet.get("voltage")
+    if voltage is not None and packet.get("power_valid"):
+        sample["battery_v"] = float(voltage)
+        sample["battery_pct"] = battery_percent(float(voltage))
+    tof = packet.get("tof_bottom")
+    if tof is not None and packet.get("tof_bottom_valid"):
+        sample["tof_m"] = float(tof)
+    return sample
 
 
 def _sample_from_state_dict(state: dict, ts: float) -> Sample:
@@ -450,6 +601,296 @@ class ReplayLink:
         self._samples = []
 
 
+# =============================================================================
+# SilsLink — a real-time SILS run (emu_vehicle), driven over its stdin/stdout.
+# SilsLink — 実時間の SILS 実行（emu_vehicle）を stdin/stdout で駆動する。
+# =============================================================================
+
+# Prefix of the emulator's HUD line (simulator/sils/emu/emu_main.cpp). Chosen
+# there precisely so a reader can pick it out of the mixed firmware log with a
+# startswith() check.
+# エミュレータの HUD 行の接頭辞（emu_main.cpp）。混在するファームログから
+# startswith() だけで拾えるよう、あちらで選ばれたものである。
+STATE_LINE_PREFIX = "STATE "
+
+# `api rc a b c d` is the API's velocity command (-100..100), NOT the
+# transmitter's sticks (`rc`, raw ADC 0..4095). Mixing the two verbs up would
+# silently send stick values into a velocity command, so both spellings are
+# named here rather than formatted inline.
+# `api rc a b c d` は API の速度指令（-100..100）であり、送信機のスティック
+#（`rc`、ADC 生値 0..4095）ではない。取り違えるとスティック値が速度指令として
+# 送られてしまうため、その場で組み立てず両方の綴りをここで名前にしておく。
+API_PREFIX = "api "
+
+
+class SilsLink:
+    """Fly a real-time SILS emulator through its stdin/stdout pipes.
+
+    SILS has no network: there is no UDP:5005 to receive and no UDP:8889 to
+    send to. The emulator instead prints a `STATE k=v ...` line at ~30Hz and
+    accepts line commands on stdin, so this link reads samples from the
+    former and writes `api <line>` to the latter. Everything above the Link
+    interface -- Monitor, Arbiter, Executor -- is unchanged by that.
+
+    実時間の SILS エミュレータを stdin/stdout のパイプ越しに飛ばす。
+
+    SILS にネットワークは無い（受信する UDP:5005 も、送信先の UDP:8889 も無い）。
+    代わりにエミュレータが ~30Hz で `STATE k=v ...` 行を出力し、stdin で行指令を
+    受け付ける。本リンクは前者からサンプルを読み、後者へ `api <行>` を書く。
+    Link インターフェースより上（Monitor・Arbiter・Executor）はこれに影響されない。
+
+    Why the transmitter sticks are re-sent as neutral and not left alone:
+    the emulator's rc_stdin re-injects the last stick values at 50Hz anyway,
+    and a *parked* stick does not cancel API guidance (INV-2 cancels on stick
+    MOVEMENT). Writing neutral explicitly documents the configuration this
+    link flies in -- a safety pilot holding a centred transmitter, the same
+    one scenarios/api_flight.scn uses.
+
+    送信機のスティックを放置せず中立で送り続ける理由: エミュレータの rc_stdin は
+    どのみち最後のスティック値を 50Hz で再注入し、「置いたままの」スティックは
+    API 誘導を解除しない（INV-2 が解除するのはスティックの「動き」）。中立を明示
+    して書くことで、本リンクが飛ばす構成 — 安全要員が中立の送信機を保持している
+    状態、scenarios/api_flight.scn と同じ — を文書として残す。
+    """
+
+    # Neutral transmitter sticks (raw ADC, centre 2048) — scenario_inject.hpp's
+    # kAdcCentre, the same scale *.scn `rc` events use.
+    # 中立の送信機スティック（ADC 生値、中央 2048）— scenario_inject.hpp の
+    # kAdcCentre。*.scn の `rc` 事象と同じスケール。
+    STICK_CENTRE = 2048
+
+    def __init__(self, proc, stick_hz: float = 50.0):
+        self.proc = proc
+        self.sent: list = []            # every command, in order / 送信指令を順に記録
+        self._samples: "queue.Queue[Sample]" = queue.Queue()
+        self._log_tail: list = []
+        self._closed = threading.Event()
+        self._write_lock = threading.Lock()
+        self._stick_period_s = 1.0 / stick_hz
+        self._next_stick = 0.0
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    # -- reading / 読み取り ---------------------------------------------
+
+    def _read_loop(self) -> None:
+        """Split the emulator's stdout into STATE samples and a log tail.
+        エミュレータの stdout を STATE サンプルとログ末尾に振り分ける。"""
+        for raw_line in self.proc.stdout:
+            if self._closed.is_set():
+                return
+            line = raw_line.rstrip("\n")
+            if line.startswith(STATE_LINE_PREFIX):
+                sample = sample_from_state_line(line, time.monotonic())
+                if sample is not None:
+                    self._samples.put(sample)
+                continue
+            # Bounded: a long run must not grow this without limit, and only
+            # the tail is ever shown (after an unexpected exit).
+            # 有界にする。長時間の実行で無制限に増やさない。表示するのは末尾
+            # だけである（想定外の終了時）。
+            self._log_tail.append(line)
+            if len(self._log_tail) > 200:
+                del self._log_tail[0]
+
+    def read_samples(self) -> list:
+        """Every STATE sample since the last call. / 前回以降の STATE サンプル全件。"""
+        out = []
+        while True:
+            try:
+                out.append(self._samples.get_nowait())
+            except queue.Empty:
+                return out
+
+    @property
+    def log_tail(self) -> list:
+        """The emulator's recent non-STATE output, for a post-mortem.
+        エミュレータの直近の非 STATE 出力（事後診断用）。"""
+        return list(self._log_tail)
+
+    # -- writing / 書き込み ----------------------------------------------
+
+    def _write(self, line: str) -> None:
+        """Write one stdin line; a broken pipe ends the flight, not the process.
+        stdin へ 1 行書く。パイプが切れても例外にはせず、飛行の終わりとして扱う。"""
+        with self._write_lock:
+            try:
+                self.proc.stdin.write(line + "\n")
+                self.proc.stdin.flush()
+            except (BrokenPipeError, OSError, ValueError):
+                self._closed.set()
+
+    def send_rc(self, a: int, b: int, c: int, d: int) -> None:
+        """Send one velocity command as `api rc a b c d`.
+        速度指令を `api rc a b c d` として 1 回送る。"""
+        self.send_command(f"rc {a} {b} {c} {d}")
+
+    def send_command(self, line: str) -> None:
+        """Send one API command line (`command`, `takeoff`, `land`, ...).
+        API のコマンド行を 1 行送る（`command`・`takeoff`・`land` 等）。"""
+        self.sent.append(line)
+        self._write(API_PREFIX + line)
+        self.hold_sticks_neutral()
+
+    def priority(self, line: str) -> None:
+        """Same path as send_command: the pipe has no reply to overtake.
+        send_command と同じ経路。パイプには追い越すべき応答待ちが無い。"""
+        self.send_command(line)
+
+    def hold_sticks_neutral(self) -> None:
+        """Re-send neutral transmitter sticks, at most at the stick rate.
+
+        Called from the command path and from the pilot loop so the
+        emulator keeps seeing a parked, centred transmitter for the whole
+        flight (see the class docstring for why that does not cancel API
+        guidance). Rate-limited because this is called at 50Hz but the
+        emulator re-injects on its own anyway.
+
+        中立の送信機スティックを再送する（送信レートを上限とする）。
+
+        指令の経路と操縦ループの両方から呼ぶ。エミュレータが飛行中ずっと
+        「置いたままの中立の送信機」を見続けるようにするためである（それが
+        API 誘導を解除しない理由はクラスの docstring 参照）。50Hz で呼ばれる
+        が、エミュレータ側も自前で再注入するのでレート制限をかけている。
+        """
+        now = time.monotonic()
+        if now < self._next_stick:
+            return
+        self._next_stick = now + self._stick_period_s
+        centre = self.STICK_CENTRE
+        self._write(f"rc {centre} {centre} {centre} {centre}")
+
+    def set_battery_voltage(self, volts: float) -> None:
+        """Override the pack voltage the emulator reports (SILS only).
+
+        Not part of the Link interface: no real vehicle can be told what
+        its own battery reads. It exists for `--scene battery_drop`, which
+        rehearses a low-battery decision without waiting for a real
+        discharge (simulator/sils/devices/virtual_board.hpp).
+
+        エミュレータが報告するパック電圧を上書きする（SILS 専用）。
+
+        Link インターフェースには含めない。実機に「自分の電池はこう読め」とは
+        言えないからである。`--scene battery_drop` のためのもので、実際の放電を
+        待たずに電池低下の判断を予行する（virtual_board.hpp）。
+        """
+        self._write(f"vbatt {volts:.3f}")
+
+    def set_wind(self, north_n: float, east_n: float, down_n: float) -> None:
+        """Apply a sustained external force in NED [N] (SILS only).
+
+        Like set_battery_voltage, this is not part of the Link interface:
+        there is no wind knob on a real flight. It drives `--scene drift`
+        through the Plant's existing wind hook, the same one a *.scn
+        `wind` event uses.
+
+        NED の定常外乱力 [N] をかける（SILS 専用）。
+
+        set_battery_voltage と同じく Link インターフェースには含めない。実際の
+        飛行に風のつまみは無いからである。`--scene drift` を、*.scn の `wind`
+        事象と同じ Plant の既存フック経由で駆動する。
+        """
+        self._write(f"wind {north_n:.4f} {east_n:.4f} {down_n:.4f}")
+
+    def takeoff(self) -> None:
+        """Enter SDK mode, then take off. Two lines, in this order.
+
+        `command` must precede everything: api_task.cpp gates every other
+        verb behind SDK mode, so a `takeoff` sent first is refused.
+        SDK モードへ入ってから離陸する。この順で 2 行。
+
+        `command` が全てに先立つ。api_task.cpp は他の全ての指令を SDK モードの
+        後ろに置いているため、先に `takeoff` を送っても受け付けられない。
+        """
+        self.send_command("command")
+        self.send_command("takeoff")
+
+    def close(self) -> None:
+        """Ask the emulator to shut down, and stop reading. Safe twice.
+        エミュレータに終了を求め、読み取りを止める。2 回呼んでも安全。"""
+        if not self._closed.is_set():
+            self._write("quit")
+        self._closed.set()
+        try:
+            self.proc.stdin.close()
+        except (OSError, ValueError, BrokenPipeError):
+            pass
+
+
+def sample_from_state_line(line: str, ts: float) -> Optional[Sample]:
+    """One emulator `STATE k=v ...` line -> Sample in SI units.
+
+    Parsed as unordered `k=v` tokens and by name only, never by position:
+    emu_main.cpp appends new keys to the tail of this line, and a
+    positional parse would break the next time it does. An unknown key is
+    ignored for the same reason.
+
+    エミュレータの `STATE k=v ...` 行 1 行を SI 単位の Sample にする。
+
+    順序に依らない `k=v` の並びとして、名前だけで解釈する（位置では解釈しない）。
+    emu_main.cpp はこの行の末尾に項目を追記していくため、位置で読むと次の追記で
+    壊れる。未知の項目を無視するのも同じ理由である。
+    """
+    import math
+
+    fields = {}
+    for token in line.split()[1:]:   # skip the "STATE" token / 先頭の "STATE" を飛ばす
+        if "=" not in token:
+            continue
+        key, _, value = token.partition("=")
+        fields[key] = value
+
+    sample = Sample(t=ts)
+    # Attitude is printed in degrees; every threshold in config.py is radians.
+    # 姿勢は度で出力される。config.py のしきい値はすべてラジアン。
+    for key, sample_key in (("roll", "roll"), ("pitch", "pitch"), ("yaw", "yaw")):
+        value = _state_float(fields, key)
+        if value is not None:
+            sample[sample_key] = math.radians(value)
+    for key, sample_key in (
+        ("alt", "altitude_m"), ("x", "pos_n"), ("y", "pos_e"),
+        ("vx", "vel_n"), ("vy", "vel_e"), ("vz", "vel_d"),
+        ("batt", "battery_pct"), ("vbatt", "battery_v"),
+    ):
+        value = _state_float(fields, key)
+        if value is not None:
+            sample[sample_key] = value
+
+    # ToF only when the emulator says it is valid. Validity is a separate
+    # field precisely so the value is never second-guessed (the line prints
+    # -1.0 when invalid, which is a plausible-looking number).
+    # ToF はエミュレータが有効と言ったときだけ採る。値を推測しないよう有効性を
+    # 別項目にしてある（無効時は -1.0 を出力し、これは値として通ってしまう）。
+    is_tof_valid = _state_float(fields, "tof_valid") == 1.0
+    if is_tof_valid:
+        tof = _state_float(fields, "tof")
+        if tof is not None:
+            sample["tof_m"] = tof
+
+    # "FLYING:POS_HOLD*" -> "FLYING". The trailing "*" marks armed and the
+    # part after ":" is the sub-mode; the Monitor classifies on the state.
+    # 「FLYING:POS_HOLD*」→「FLYING」。末尾の「*」は ARM 済み、「:」より後ろは
+    # 副モード。Monitor が区分に使うのは状態のほうである。
+    mode = fields.get("mode")
+    if mode:
+        sample["flight_state"] = mode.split(":")[0].rstrip("*")
+
+    is_empty = len(sample) <= 1   # only `t` / `t` しか無い
+    return None if is_empty else sample
+
+
+def _state_float(fields: dict, key: str):
+    """Field as a float, or None when absent or not a number.
+    項目を float で返す。無い場合・数値でない場合は None。"""
+    raw = fields.get(key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
 def _load_samples(path) -> list:
     """Read a flight-log bundle into time-ordered Samples.
 
@@ -505,27 +946,14 @@ def _load_samples(path) -> list:
     return samples
 
 
-# Battery: the log records pack voltage, but every threshold in config.py
-# is a percentage. A 1S LiPo runs from about 4.2 V charged to 3.3 V empty;
-# the mapping is linear between those, which is crude but monotonic --
-# enough to place a reading in a band, which is all the Monitor needs.
-# 電池: ログはパック電圧を記録するが、config.py のしきい値は百分率。
-# 1S LiPo は満充電約 4.2 V、空で約 3.3 V。その間を線形に対応させる。
-# 粗いが単調であり、区分に入れるには足りる（Monitor が必要とするのはそれだけ）。
-BATTERY_FULL_V = 4.2
-BATTERY_EMPTY_V = 3.3
-
-
 def _add_battery_percent(samples: list) -> None:
     """Derive a battery percentage from the logged pack voltage.
     記録されたパック電圧から電池残量の百分率を導く。"""
-    span = BATTERY_FULL_V - BATTERY_EMPTY_V
     for sample in samples:
         voltage = sample.get("battery_v")
         if voltage is None:
             continue
-        ratio = (voltage - BATTERY_EMPTY_V) / span
-        sample["battery_pct"] = max(0.0, min(100.0, ratio * 100.0))
+        sample["battery_pct"] = battery_percent(voltage)
 
 
 def _merge_attitude(samples: list, frame) -> None:

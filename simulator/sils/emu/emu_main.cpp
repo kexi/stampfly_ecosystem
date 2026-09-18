@@ -73,6 +73,33 @@ constexpr float kGroundZ = 0.013f;   // body rest height on the ground (ENU up)
 // 通常/再確認試験のコンソール出力を本機能追加前と完全に同じに保つ）。
 // 実ファーム自身が発行する推定/モード/電源トピックを読む — `sf sils fly` の HUD や
 // 実テレメトリクライアントが見るのと同じ数値。
+// Pack voltage -> remaining percentage, linear between empty and full.
+//
+// The same crude-but-monotonic mapping lib/sfpilot/link.py applies to a
+// recorded flight (BATTERY_FULL_V / BATTERY_EMPTY_V there). It is shared by
+// value, not by code, because this is C++ inside the emulator and that is
+// Python on the PC; the two constants are kept equal deliberately so a SILS
+// run and a replayed log place the same voltage in the same battery band.
+// Crude is enough: every consumer classifies the result into bands.
+//
+// パック電圧 → 残量の百分率。空〜満充電の間を線形に対応させる。
+//
+// lib/sfpilot/link.py が記録済みの飛行に適用するのと同じ、粗いが単調な対応である
+//（向こうの BATTERY_FULL_V / BATTERY_EMPTY_V）。共有はコードではなく値で行う —
+// こちらはエミュレータ内の C++、あちらは PC 側の Python だからである。2 つの定数は
+// 意図的に等しく保つ。SILS の実行と再生したログが、同じ電圧を同じ電池区分に
+// 置くようにするためである。粗さは問題にならない: どの読み手も結果を区分に落とす。
+constexpr float kBatteryFullV  = 4.2f;   // 1S LiPo, charged / 満充電
+constexpr float kBatteryEmptyV = 3.3f;   // 1S LiPo, empty   / 空
+
+float battery_percent(float voltage)
+{
+    const float ratio = (voltage - kBatteryEmptyV) / (kBatteryFullV - kBatteryEmptyV);
+    if (ratio < 0.0f) return 0.0f;
+    if (ratio > 1.0f) return 100.0f;
+    return ratio * 100.0f;
+}
+
 void print_state_line_if_due(int64_t now_us)
 {
     if (!sils_realtime_enabled()) return;
@@ -85,6 +112,15 @@ void print_state_line_if_due(int64_t now_us)
     const sf::StateEstimate est  = sf::estimate_state.latest();
     const sf::SystemMode    mode = sf::system_mode.latest();
     const sf::PowerData     pwr  = sf::sensor_power.latest();
+    // ToF comes from sensor_snapshot, NOT from the sensor_tof queue: that queue
+    // is single-consumer SPSC and reading it here would steal samples from
+    // ImuTask. sensor_snapshot is ImuTask's own Latest mirror, published for
+    // exactly this kind of observer (data_types.hpp).
+    // ToF は sensor_tof キューではなく sensor_snapshot から読む: 同キューは単一
+    // consumer の SPSC で、ここで読むと ImuTask からサンプルを奪ってしまう。
+    // sensor_snapshot は ImuTask 自身が Latest へミラーしたもので、まさにこの種の
+    // 監視側のために発行されている（data_types.hpp）。
+    const sf::SensorSnapshot snap = sf::sensor_snapshot.latest();
 
     constexpr float kRad2Deg = 57.2957795131f;
     const sf::math::Quat q(est.attitude[0], est.attitude[1], est.attitude[2], est.attitude[3]);
@@ -99,11 +135,32 @@ void print_state_line_if_due(int64_t now_us)
     // "STATE " prefix (never used by any other emu log line) lets a reader
     // (e.g. `sf sils fly`'s HUD) pick this out of the mixed firmware log stream
     // with a trivial startswith() check.
+    //
+    // Keys are APPENDED, never reordered or renamed: every reader parses this
+    // line as unordered `k=v` tokens (`_fly_parse_state` in sfcli/commands/
+    // sils.py, `_parse_state` in simulator/tests/test_realtime_fly.py,
+    // SilsLink in lib/sfpilot/link.py), so adding to the tail cannot break one.
+    // The tail block below is what `sf pilot` needs and the original line
+    // lacked: horizontal position and velocity (drift and envelope checks),
+    // the downward ToF with its validity, and the battery as a percentage.
+    //
     // 「STATE 」接頭辞（他のemuログ行では使わない）により、読み手（`sf sils fly`の
     // HUD等）が混在するファームログの中から単純な startswith() で拾える。
-    std::printf("STATE t=%.3f alt=%.3f roll=%.2f pitch=%.2f yaw=%.2f mode=%s:%s%s vbatt=%.2f\n",
+    //
+    // 項目は「末尾へ追記」する。並べ替えも改名もしない: どの読み手も本行を順序に
+    // 依らない `k=v` の並びとして解釈するため（sfcli/commands/sils.py の
+    // `_fly_parse_state`、simulator/tests/test_realtime_fly.py の `_parse_state`、
+    // lib/sfpilot/link.py の SilsLink）、末尾への追加で壊れることはない。以下の
+    // 追記部は `sf pilot` が必要とし、従来の行に無かったもの: 水平位置と速度
+    //（流れと包絡の判定）、下向き ToF とその有効性、百分率の電池残量。
+    std::printf("STATE t=%.3f alt=%.3f roll=%.2f pitch=%.2f yaw=%.2f mode=%s:%s%s vbatt=%.2f"
+                " x=%.3f y=%.3f vx=%.3f vy=%.3f vz=%.3f tof=%.3f tof_valid=%d batt=%.1f\n",
                 (double)now_us * 1e-6, alt, e.x * kRad2Deg, e.y * kRad2Deg, e.z * kRad2Deg,
-                state_name, mode_name, mode.armed ? "*" : "", pwr.voltage);
+                state_name, mode_name, mode.armed ? "*" : "", pwr.voltage,
+                est.position[0], est.position[1],
+                est.velocity[0], est.velocity[1], est.velocity[2],
+                snap.tof_valid ? snap.tof_distance : -1.0f, snap.tof_valid ? 1 : 0,
+                battery_percent(pwr.voltage));
 }
 
 // Scheduler advance hook: step the physics by the elapsed virtual time, pushing

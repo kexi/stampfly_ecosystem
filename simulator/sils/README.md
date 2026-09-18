@@ -114,7 +114,7 @@ sf sils fly
 ```
 
 **起動:**
-- `sf sils fly` は `emu_vehicle` を `SILS_EMU_REALTIME=1`（決定論スケジューラの仮想時計を壁時計にペーシング — 進みすぎたら待ち、遅れは追いつくのみ）と `SILS_EMU_RC_STDIN=1`（stdin から `rc`/`arm`/`land`/`quit` 行を非ブロッキングで読みRCとして注入）付きで起動する。
+- `sf sils fly` は `emu_vehicle` を `SILS_EMU_REALTIME=1`（決定論スケジューラの仮想時計を壁時計にペーシング — 進みすぎたら待ち、遅れは追いつくのみ）と `SILS_EMU_RC_STDIN=1`（stdin から `rc`/`arm`/`land`/`api`/`wind`/`vbatt`/`quit` 行を非ブロッキングで読み、RC・API コマンド・外乱として注入 — 下の「stdin コマンド一覧」参照）付きで起動する。
 - どちらの環境変数も未設定の通常実行（`sf sils scenario`・`sf sils regression` 等）には一切影響しない — 決定論性（byte-identical）は絶対条件として維持している。
 
 **キー割当:**
@@ -140,6 +140,23 @@ sf sils fly
 **`--scenario <path>`:** ARM 済み（またはさらに先の状態）まで進めてからキーボード操縦を引き継ぎたい場合に使う。シナリオのタイムラインが尽きるとドライバタスクが自動終了し、以降はキーボード入力のみが効く。**既知の制約:** シナリオ再生中にスティックキーを触ると、シナリオ自身の RC 注入とキーボードの RC 注入が独立に（同じ経路で）書き込むため、同一瞬間に競合する可能性がある — シナリオ再生が終わるまでスティックには触れないこと。
 
 **`--param NAME=VALUE`:** `sf sils scenario --param` と同じ機構（一時上書き、SSOT 非変更）。
+
+#### stdin コマンド一覧（`SILS_EMU_RC_STDIN=1`）
+
+`sf sils fly` はキー入力をこの行指向プロトコルに変換して送る。`sf pilot run --sils` は同じ入口を直接使う。定義は `simulator/sils/devices/rc_stdin.cpp`。
+
+| 行 | 意味 |
+|----|------|
+| `rc <roll> <pitch> <yaw> <throttle>` | **送信機**のスティック（ADC 生値 0〜4095、中央 2048）。次の `rc` 行まで保持され、50Hz で再注入される |
+| `arm` / `land` / `disarm` | ARM ビットのモーメンタリ押下（立ち上がり→立ち下がり）。ARM/DISARM のどちらになるかはファームの状態機械が決める |
+| `api <コマンド行>` | Tello 風 **API** コマンド行（`command`・`takeoff`・`rc a b c d`・`land` 等）をファーム自身の ApiTask パーサへ流す。`.scn` の `api` 事象と同じ入口 |
+| `wind <fx> <fy> <fz>` | NED の定常外乱力 [N]。`.scn` の `wind` 事象のライブ版。`wind 0 0 0` で停止 |
+| `vbatt <電圧>` | INA3221 シムが報告する電池端子電圧の上書き。0 以下で Plant の放電モデルに戻る |
+| `quit` | エミュレータを綺麗に終了させる |
+
+**`rc` と `api rc` は別物である。** `rc` は送信機のスティック（ADC 生値）、`api rc a b c d` は API の速度指令（-100〜100）。取り違えるとスティック値が速度指令として解釈される。
+
+**`wind` と `vbatt` は SILS 専用のベンチ用継ぎ目であり、ファームは無改変である。** `vbatt` は INA3221 シムが返す値を差し替えるだけなので、ファームから見れば実際に電圧が下がったのと区別が付かない（`power_task`・フェイルセーフ・thrust→duty 補償がすべて同じ電圧を見る）。`sf pilot run --scene battery_drop` が、実際の放電を待たずに電池低下の判断を予行するために使う。
 
 **第2段の予告:** ブラウザ UI（`sf sils gui` 相当のライブ操縦版）とゲームパッド入力。
 
@@ -250,7 +267,7 @@ sf sils fly
 ```
 
 **How it works:**
-- `sf sils fly` launches `emu_vehicle` with `SILS_EMU_REALTIME=1` (paces the deterministic scheduler's virtual clock to the wall clock — sleeps when ahead, never tries to catch up when behind) and `SILS_EMU_RC_STDIN=1` (reads `rc`/`arm`/`land`/`quit` lines from stdin, non-blocking, and injects them as RC).
+- `sf sils fly` launches `emu_vehicle` with `SILS_EMU_REALTIME=1` (paces the deterministic scheduler's virtual clock to the wall clock — sleeps when ahead, never tries to catch up when behind) and `SILS_EMU_RC_STDIN=1` (reads `rc`/`arm`/`land`/`api`/`wind`/`vbatt`/`quit` lines from stdin, non-blocking, and injects them as RC, API commands or disturbances — see "stdin commands" below).
 - Neither env var touches a normal run (`sf sils scenario`, `sf sils regression`, ...) that leaves both unset — determinism (byte-identical output) is kept as an absolute non-negotiable.
 
 **Key map:**
@@ -276,6 +293,23 @@ Matches `sf rc`'s keyboard-mode conventions (`lib/sfcli/commands/rc.py`) as clos
 **`--scenario <path>`:** use this to advance to ARMED (or further) before keyboard control takes over. The scenario driver task ends itself once its timeline is exhausted; only your keyboard input drives RC after that. **Known limitation:** touching the stick keys while the scenario is still replaying can race — the scenario's own RC injection and your keyboard's write through the same path independently, so whichever writes last within a given instant wins. Leave the sticks alone until the scenario finishes.
 
 **`--param NAME=VALUE`:** same mechanism as `sf sils scenario --param` (temporary override, never touches the SSOT).
+
+#### stdin commands (`SILS_EMU_RC_STDIN=1`)
+
+`sf sils fly` translates keystrokes into this line protocol; `sf pilot run --sils` writes to the same entry point directly. Defined in `simulator/sils/devices/rc_stdin.cpp`.
+
+| Line | Meaning |
+|------|---------|
+| `rc <roll> <pitch> <yaw> <throttle>` | The **transmitter's** sticks (raw ADC 0-4095, centre 2048). Held until the next `rc` line and re-injected at 50Hz |
+| `arm` / `land` / `disarm` | A momentary press of the ARM bit (rising then falling edge). The firmware's state machine decides whether that means ARM or DISARM |
+| `api <command line>` | Feed a Tello-style **API** command (`command`, `takeoff`, `rc a b c d`, `land`, ...) to the firmware's own ApiTask parser — the same entry a `.scn` `api` event uses |
+| `wind <fx> <fy> <fz>` | Sustained external force in NED [N]; the live equivalent of a `.scn` `wind` event. `wind 0 0 0` stops it |
+| `vbatt <volts>` | Override the battery terminal voltage the INA3221 shim reports; a non-positive value returns to the Plant's discharge model |
+| `quit` | Shut the emulator down cleanly |
+
+**`rc` and `api rc` are different commands.** `rc` is the transmitter's sticks in raw ADC; `api rc a b c d` is the API's velocity command in -100..100. Confusing them feeds stick values into a velocity command.
+
+**`wind` and `vbatt` are SILS-only bench seams; the firmware is untouched.** `vbatt` only replaces what the INA3221 shim returns, so from the firmware's side it is indistinguishable from a pack that is actually running down (`power_task`, the failsafe thresholds and the thrust→duty compensation all see one voltage). `sf pilot run --scene battery_drop` uses it to rehearse a low-battery decision without waiting for a real discharge.
 
 **Coming in stage 2:** a browser UI (a live-piloting counterpart to `sf sils gui`) and gamepad input.
 

@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **計画中**。作成 2026-09-19、最終更新 2026-09-19。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -16,7 +16,7 @@ TypeSafe の System One モデル **Jev**（自然言語と状況から、型の
 
 ### 実装状況（2026-09-19 時点）
 
-P0、P1、P2a を実装した。それ以外は未着手である。
+P0、P1、P2a、P2 を実装した。それ以外は未着手である。
 
 | 段階 | 内容 | 状況 |
 |------|------|------|
@@ -24,7 +24,7 @@ P0、P1、P2a を実装した。それ以外は未着手である。
 | P1 | `lib/sfpilot` の中核（Monitor / Summarizer / Judge / Arbiter / Executor）、FakeJudge、ReplayLink | **実装済み** |
 | P2a | テレメトリ拡張（UDP:5005 を 140B の v2 に。電池電圧・下向き ToF・フロー・地磁気・気圧高度を追加。様式は `firmware/vehicle/docs/detailed_design.md` §10） | **実装済み**（実機未確認） |
 | P2b | 前方 ToF の駆動（`sensor_tof_front` 新設、`SensorSnapshot` へのミラー、テレメトリ bit1 の供給）。**実機確認必須。バッテリー電源必須**（USB 給電では前方 ToF が立ち上がらない事例がある） | 未着手 |
-| P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils` | 未着手 |
+| P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**（Jev 実走は未実施） |
 | P3 | `sf pilot say`（自然言語の指示） | 未着手 |
 | P4 | ミッション（経路巡回）と `next_move`。**前方 ToF による探索**（P2b 完了が前提。前方の空きを見て進路を選ぶ） | 未着手 |
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
@@ -126,16 +126,92 @@ Jev が選べるのは**あらかじめ列挙した有限の行動**だけであ
 | 項目 | 状況 |
 |------|------|
 | 1 判断あたりの費用 | 未計測。課金明細を確認して記入する |
-| SILS 経由での往復時間 | 未計測（P2） |
+| SILS 経由での往復時間 | **未計測**（P2 の実装は完了したが、実行環境で 1Password の対話的な解錠ができず Jev 実走を行えていない。下記「P2 の結果」参照） |
 | ミッション質問 3 問同梱時のトークン数 | 未計測（P4） |
 | 実機の PC↔機体往復時間 | 未計測（P5） |
+
+### 期限 500ms の再検討（P2）
+
+**結論: 既定の 500ms を変えない。** 根拠は次のとおりである。
+
+- SILS 経由の Jev 往復時間はまだ実測できていない（上表）。往復するのは PC と
+  TypeSafe の間だけで、SILS は同じ PC の中のパイプであり経路に入らないため、
+  P0 の実測（p50 232ms / p95 442ms / max 502ms）から変わる理由が無い。
+- 期限を変えるべき根拠が無い状態で動かすと、P0 の実測との対応が切れる。
+- 期限を超えた応答は破棄されて待機になるだけで、飛行は続く（待機が 10 秒続けば
+  着陸する）。max 502ms がまれに期限をわずかに超えても、失われるのは 1 回の
+  判断であって飛行ではない。
+- 実測が必要になったときのために、`sf pilot run --deadline-ms` で 1 回の実行
+  だけ期限を変えられるようにしてある（`config.py` の既定値は変えない）。
+
+FakeJudge（応答 10ms 固定）での SILS 実走では、期限超過は 3 場面とも 0 回で
+あった。これは Jev の速さではなく**経路の他の部分が期限を食わないこと**の確認で
+あり、その意味では有効な結果である（50Hz のループ・stdin への書き込み・STATE 行
+の解釈が、判断の予算を削っていない）。
+
+## 4.1 P2 の結果
+
+### 実装したもの
+
+| 対象 | 内容 |
+|------|------|
+| `simulator/sils/devices/rc_stdin.cpp` | stdin に `api <行>`・`wind <fx> <fy> <fz>`・`vbatt <電圧>` を追加 |
+| `simulator/sils/devices/scenario.{hpp,cpp}` | `sils_scenario_api_inject()` を公開。`.scn` の `api` 事象と stdin が同じ継ぎ目を通る |
+| `simulator/sils/emu/emu_main.cpp` | STATE 行の**末尾に** `x y vx vy vz tof tof_valid batt` を追記 |
+| `simulator/sils/devices/virtual_board.{hpp,cpp}` | INA3221 シムの電池電圧を上書きする継ぎ目（SILS 専用、ファーム無改変） |
+| `lib/sfpilot/link.py` | `SilsLink`、`RealLink` の UDP:5005 50Hz 受信、電圧→残量の共有関数 |
+| `lib/sfpilot/scenes.py` | 場面 3 種（`nominal` / `battery_drop` / `drift`） |
+| `lib/sfcli/commands/sils.py` | 実時間起動を `realtime_emu_env()` / `launch_realtime_emu()` に切り出し、`sf sils fly` と共有 |
+| `lib/sfcli/commands/pilot.py` | `sf pilot run --sils` |
+
+### 確認できたこと
+
+- **INV-2（パイロット優先）は成立している。** SILS で stdin の `rc` が 20ms ごとに
+  中立値を送り続けても、API 誘導は解除されない。実時間モードで確認した
+  （`simulator/tests/test_pilot_sils.py` の `test_api_stdin_takes_off_while_the_sticks_stay_parked`）。
+  解除則が見るのはスティックの**動き**であり、置いたままの中立は動きではない。
+- 既存の決定論性は壊れていない。`simulator/tests/test_realtime_fly.py` の
+  SHA256 基準値が一致し、`sf sils regression` も基準どおり 28 PASS / 5 KNOWN-FAIL / 1 SKIP。
+  STATE 行の追記も新しい stdin 語も、既定経路では完全な no-op である。
+- 場面 3 種とも、判断すべき状況を実際に作れている（下表は FakeJudge での実走）。
+
+| 場面 | 実測した挙動 |
+|------|-------------|
+| `nominal` | 60 秒飛んで着陸を選ばない。判断は全て `continue` |
+| `battery_drop` | 電圧低下が危険域に届き、Monitor の即時安全則で着陸（実測: t=26.4s） |
+| `drift` | 35 周期中 16 周期が流れとして区分された（「速く流されている」を含む） |
+
+### 見つけた問題（本計画の範囲外・要報告）
+
+**ファームの位置推定の水平軸が、真値に対して入れ替わっている（`sf pilot` より前から存在）。**
+
+`wind 0.02 0 0`（NED の北向き 0.02N）をかけたとき:
+
+| 量 | 実測 |
+|----|------|
+| 真値 `truth.csv` の `pos_x`（北） | +0.161 m |
+| 真値 `truth.csv` の `pos_y`（東） | -0.000 m |
+| ファーム推定 `posvel.csv` の `pos_x` | **+0.000 m**（終始ゼロ） |
+| ファーム推定 `posvel.csv` の `pos_y` | **-0.138 m** |
+
+北へ押しているのに、推定は東に出る。`sf pilot` の追加とは無関係で、stdin を
+介さない既存の `.scn` の `wind` 事象でも再現する。Plant の `setWind` と
+`frames::ned_to_enu`（`{n.y, n.x, -n.z}`）はどちらも正しく、真値は正しく北へ動く。
+食い違うのは推定側だけである。位置保持自体は自己整合的に閉じている（0.161m →
+0.025m と引き戻している）ため、SILS の飛行は成立してしまい、これまで表面化
+しなかったものと見られる。
+
+`docs/architecture/simulation-policy.md` の改修バックログにも記載が無い。
+本計画の範囲外のため修正していない。**位置に関わる実機との対応付け（POS_HOLD の
+評価、フライトログの解析、ROS2 連携）に影響しうるため、別途の調査を推奨する。**
 
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
 |------|------|------|
 | `lib/sfpilot/config.py` | しきい値・期限・包絡（dataclass） | 実装済み |
-| `lib/sfpilot/link.py` | `Link` インターフェース、`RealLink`、`ReplayLink` | 実装済み |
+| `lib/sfpilot/link.py` | `Link` インターフェース、`RealLink`（UDP:5005 の 50Hz 受信を含む）、`ReplayLink`、`SilsLink` | 実装済み |
+| `lib/sfpilot/scenes.py` | 場面 3 種の宣言（環境変数＋周期ごとのフック） | 実装済み（P2） |
 | `lib/sfpilot/monitor.py` | 区分の判定と即時安全則 | 実装済み |
 | `lib/sfpilot/summarizer.py` | 区分 → JSON state、`signature()` | 実装済み |
 | `lib/sfpilot/judge.py` | 質問定義、`JevJudge`、`FakeJudge` | 実装済み |
@@ -143,15 +219,30 @@ Jev が選べるのは**あらかじめ列挙した有限の行動**だけであ
 | `lib/sfpilot/executor.py` | 行動 → `rc`/`stop`/`land` | 実装済み |
 | `lib/sfpilot/trace.py` | 1 判断 1 行の JSON 記録 | 実装済み |
 | `lib/sfpilot/pilot.py` | ループ本体 | 実装済み |
-| `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `sf pilot replay` | 実装済み |
-| `simulator/sils/devices/rc_stdin.cpp` | stdin に `api <行>` を追加 | 未着手（P2） |
-| `simulator/sils/scenarios/` | 電池低下・横流れ・推力不足の場面 | 未着手（P2） |
+| `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `sf pilot replay` / `sf pilot run` | 実装済み |
+| `simulator/sils/devices/rc_stdin.cpp` | stdin に `api <行>`・`wind`・`vbatt` を追加 | 実装済み（P2） |
+| `lib/sfpilot/scenes.py` | 電池低下・横流れの場面（`.scn` ファイルではなく宣言の表として持つ） | 実装済み（P2） |
+
+場面を `simulator/sils/scenarios/` の `.scn` ファイルにしなかった理由: `.scn` は
+起動前に全体を凍結する決定論的なタイムラインであり、実行中に判断結果へ反応できない。
+場面は「飛行中に何をするか」を含む（電池を徐々に下げる等）ため、`sf pilot run` の
+周期から呼ぶフックとして持つほうが素直である。故障注入の機構そのものは `.scn` と
+共有している（同じ Plant のフック）。
 
 `RealLink` は `lib/sfcli/commands/blocks.py` から `lib/sfpilot/link.py` へ移設した（2026-09-19）。`sf blocks` と `sf pilot` が 2 つの写しに分岐せず、1 つのクライアントで機体を操作するためである。`blocks.py` は移設先を import して使う。
 
-### SilsLink を作らなかった理由
+### SilsLink の置き方（P2 で実装）
 
-SILS 連携にはファームウェア側の変更（stdin の `api <行>`）が必要で、これは P2 の作業である。例外を出すだけの代替実装も置いていない。import できてしまうと `--sils` を打てて遅れて失敗することになり、選択肢が存在しないほうが分かりやすいためである。
+`SilsLink` は `RealLink` と同じ `Link` インターフェースを満たすので、その上の層
+（Monitor・Arbiter・Executor）は SILS と実機の違いを知らない。ただし
+`set_battery_voltage()` と `set_wind()` の 2 つだけはインターフェースに含めていない
+— 実機に「自分の電池はこう読め」「風はこう吹け」とは言えないからである。この 2 つは
+場面の駆動専用であり、`Link` として使う限り呼べない。
+
+実時間エミュレータの起動処理は `lib/sfcli/commands/sils.py` の
+`realtime_emu_env()` / `launch_realtime_emu()` に切り出し、`sf sils fly`（キーボード）と
+`sf pilot run --sils`（Jev）で共有している。別々に組み立てると、一方で試した判断が
+他方で再現しなくなるためである。
 
 ### 通信方式（typesafe-sdk を使わない理由）
 
@@ -200,7 +291,7 @@ Anyone implementing or changing `sf pilot`, and anyone reviewing the safety desi
 
 ### Implementation Status (as of 2026-09-19)
 
-P0, P1 and P2a are implemented. The rest is not started.
+P0, P1, P2a and P2 are implemented. The rest is not started.
 
 | Stage | Content | Status |
 |-------|---------|--------|
@@ -208,7 +299,7 @@ P0, P1 and P2a are implemented. The rest is not started.
 | P1 | `lib/sfpilot` core (Monitor / Summarizer / Judge / Arbiter / Executor), FakeJudge, ReplayLink | **Done** |
 | P2a | Telemetry extension (UDP:5005 becomes the 140B v2 packet, adding battery voltage, downward ToF, optical flow, magnetometer and pressure altitude; format in `firmware/vehicle/docs/detailed_design.md` §10) | **Done** (not verified on hardware) |
 | P2b | Drive the forward ToF (add `sensor_tof_front`, mirror into `SensorSnapshot`, supply telemetry bit1). **Requires hardware verification and battery power** (the forward ToF has been seen not to come up on USB power) | Not started |
-| P2 | SILS integration (`api` stdin verb, SilsLink, three scenarios), `sf pilot run --sils` | Not started |
+| P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done** (not yet exercised against the live Jev API) |
 | P3 | `sf pilot say` (natural-language instruction) | Not started |
 | P4 | Mission (route patrol) and `next_move`. **Forward-ToF exploration** (depends on P2b: choose a heading from the clear space ahead) | Not started |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
@@ -274,13 +365,31 @@ Measured with `sf pilot bench -n 20` (2026-09-19, macOS, from this repository's 
 
 **Reading**: warm p95 (442ms) fits inside the 500ms deadline, but the maximum (501.6ms) slightly exceeded it. The first call pays for the TLS handshake, which the pilot loop pays once at startup. JevJudge therefore keeps **one connection alive** and warms it once at startup. P2 will add measurements taken through SILS and revisit whether 500ms remains the right deadline.
 
-**Not yet measured** (to be filled in from P2 onward): cost per judgement, round-trip time through SILS, token count with the third mission question included, and the PC-to-vehicle round-trip on real hardware.
+**Not yet measured**: cost per judgement, round-trip time through SILS (P2's implementation is complete, but the live Jev runs could not be performed -- the 1Password unlock needs an interactive prompt that was unavailable), token count with the third mission question included (P4), and the PC-to-vehicle round-trip on real hardware (P5).
+
+### Revisiting the 500 ms deadline (P2)
+
+**Conclusion: the 500 ms default stays.** The round trip is between the PC and TypeSafe; SILS is a pipe inside the same PC and is not on that path, so there is no reason for P0's measurement (p50 232 ms / p95 442 ms / max 502 ms) to change. Changing the deadline without evidence would break the correspondence with that measurement. An answer past the deadline is discarded into a hold, not a failure -- the flight continues, and a hold that will not end becomes a landing. `sf pilot run --deadline-ms` overrides it for one run when a measurement needs it, without touching the default in `config.py`.
+
+Under FakeJudge (a fixed 10 ms answer), the SILS flights recorded zero deadline overruns in all three scenes. That measures the rest of the path rather than Jev: the 50 Hz loop, the stdin writes and the STATE parsing are not eating into the judgement's budget.
+
+## 4.1 P2 Results
+
+Implemented: the `api` / `wind` / `vbatt` stdin verbs (`rc_stdin.cpp`), a published `sils_scenario_api_inject()` so a `.scn` `api` event and a typed line share one seam, the STATE line's appended `x y vx vy vz tof tof_valid batt` fields, a SILS-only battery-voltage override on the INA3221 shim (the firmware is untouched), `SilsLink`, RealLink's 50 Hz UDP:5005 reader, the three scenes, and `sf pilot run --sils`. The real-time launch was extracted into `realtime_emu_env()` / `launch_realtime_emu()` and is now shared with `sf sils fly`.
+
+**INV-2 (pilot authority) holds.** The 20 ms neutral-stick stream that SILS injects does not cancel API guidance, confirmed in real-time mode: the cancel rule watches stick MOVEMENT, and a parked centred stick is not movement. Existing determinism is intact -- the SHA256 baseline in `test_realtime_fly.py` still matches and `sf sils regression` is unchanged at 28 PASS / 5 KNOWN-FAIL / 1 SKIP.
+
+Under FakeJudge: `nominal` flies 60 s without choosing to land; `battery_drop` lands at t=26.4 s through the Monitor's immediate safety rule; `drift` is classified as drifting in 16 of 35 cycles.
+
+**Problem found (out of scope here, reported rather than worked around):** the firmware's horizontal position estimate has its axes swapped relative to ground truth. Pushing north with `wind 0.02 0 0` moves `truth.csv`'s `pos_x` to +0.161 m while the firmware's `posvel.csv` keeps `pos_x` at exactly 0 and moves `pos_y` to -0.138 m. This predates `sf pilot` -- it reproduces through the existing `.scn` `wind` event with no stdin involved -- and the Plant's `setWind` and `frames::ned_to_enu` are both correct, as is the truth. Position hold is self-consistent (it pulls 0.161 m back to 0.025 m), which is probably why this has not surfaced. It is not in `docs/architecture/simulation-policy.md`'s backlog. It could affect anything that maps position between SILS and the real vehicle, so a separate investigation is recommended.
 
 ## 5. Placement
 
 `RealLink` moved from `lib/sfcli/commands/blocks.py` to `lib/sfpilot/link.py` on 2026-09-19, so that `sf blocks` and `sf pilot` drive the vehicle through one client instead of two copies that could drift apart. `blocks.py` imports it.
 
-No `SilsLink` exists, not even as a stub that raises: SILS needs a firmware-side change first (P2), and an importable stub would let `--sils` be typed and fail late, which is worse than the option simply not existing.
+`SilsLink` satisfies the same `Link` interface as `RealLink`, so the layers above it do not know whether they are flying SILS or hardware. Its `set_battery_voltage()` and `set_wind()` are deliberately NOT part of that interface: a real vehicle cannot be told what its own battery reads or which way the wind blows. Those two drive the scenes only.
+
+The scenes live in `lib/sfpilot/scenes.py` rather than as `.scn` files because a `.scn` timeline is frozen before the run starts and cannot react to a decision, whereas a scene includes what to do DURING the flight (walking the battery down). The fault-injection mechanisms themselves are shared with `.scn` -- the same Plant hooks.
 
 The HTTP API (`POST https://api.typesafe.ai/v1/systemone`, Bearer auth) is called directly with httpx rather than through `typesafe-sdk`. The pilot loop needs one kept-alive connection, a hard per-request deadline and retries disabled; all three are plain httpx settings. The optional dependency is declared as `pilot = ["httpx>=0.27"]`.
 
