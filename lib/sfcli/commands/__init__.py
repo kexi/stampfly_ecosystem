@@ -38,6 +38,7 @@ _COMMAND_MODULE_NAMES: Tuple[str, ...] = (
     "monitor",
     "telemetry",
     "blocks",
+    "pilot",
     "log",
     "sim",
     "sils",
