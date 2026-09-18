@@ -77,7 +77,7 @@ sf flash vehicle -m    # 書き込み後にモニタを開く
 | `sf cal gyro/accel/mag` | 各種キャリブレーション |
 | `sf sim list/run` | シミュレータ操作 |
 | `sf blocks` | ブロックプログラミングWeb UI（Blockly、--demo でデモモード）|
-| `sf pilot bench/replay/run` | Jev による自動操縦の判断層（`docs/plans/jev-autopilot.md`）。bench=往復時間の実測、replay=飛行ログの再生判断、run=SILS を実際に飛ばして監視（`--sils` 必須。`--scene nominal/battery_drop/drift`、キー不要の `--fake` あり）。say は P3 |
+| `sf pilot bench/replay/run/say` | Jev による自動操縦の判断層（`docs/plans/jev-autopilot.md`）。bench=往復時間の実測、replay=飛行ログの再生判断、run=SILS を実際に飛ばして監視（`--sils` 必須。`--scene nominal/battery_drop/drift`）、say=自然言語の指示を手順に変えて飛ぶ（`--sils` 必須。`--dry-run` は変換だけ、`--eval` は期待表との照合）。いずれもキー不要の `--fake` あり |
 
 ### Genesis Simulator
 Genesis物理シミュレータはオプション。`sf setup genesis` で sf CLI の Python に導入し、`sf sim run genesis` で起動する（`simulator/genesis/venv` を手動で作った場合はそちらが優先される）:

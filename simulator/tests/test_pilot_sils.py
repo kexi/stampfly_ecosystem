@@ -89,6 +89,37 @@ class _Emu:
             self.link.read_samples()
             time.sleep(0.02)
 
+    def collect(self, at_least: int = 1, timeout_s: float = 5.0) -> list:
+        """Keep flying until `at_least` STATE samples have been collected.
+
+        Why not a bare `read_samples()`: the reader thread queues samples as
+        the emulator emits them (every 33 ms) while this loop reads every
+        20 ms, so a single read lands in an empty queue more often than not.
+        Waiting for a sample rather than for a wall-clock interval makes the
+        caller's assertions depend on what arrived, not on which of the two
+        periods happened to win the race.
+
+        STATE サンプルが `at_least` 件集まるまで飛ばし続ける。
+
+        素の `read_samples()` にしない理由: 読み取りスレッドはエミュレータが
+        出すたび（33ms ごと）にサンプルを積むのに対し、この繰り返しは 20ms
+        ごとに読む。そのため 1 回の読み取りはむしろ空振りのほうが多い。実時間で
+        待つのではなくサンプルの到着を待つことで、呼び出し側の表明は「何が
+        届いたか」だけに依存し、2 つの周期のどちらが先だったかには依存しなくなる。
+        """
+        collected: list = []
+        deadline = time.monotonic() + timeout_s
+        while len(collected) < at_least:
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"only {len(collected)} STATE samples arrived in {timeout_s:g}s "
+                    f"(wanted {at_least}) — the emulator stopped emitting them"
+                )
+            self.link.hold_sticks_neutral()
+            collected += self.link.read_samples()
+            time.sleep(0.02)
+        return collected
+
     def close(self) -> None:
         self.link.close()
         try:
@@ -130,9 +161,11 @@ def test_api_stdin_takes_off_while_the_sticks_stay_parked():
     """
     emu = _fly_to_hover(duration_s=30.0)
     try:
-        samples = emu.link.read_samples()
-        emu.hold(1.0)
-        samples += emu.link.read_samples()
+        # A second of hovering at the 33 ms STATE period, waited for by
+        # sample count rather than by the clock -- see `_Emu.collect`.
+        # 33ms 周期の STATE でおよそ 1 秒ぶん。時計ではなくサンプル数で待つ
+        # （`_Emu.collect` の説明を参照）。
+        samples = emu.collect(at_least=25)
     finally:
         log = "\n".join(emu.link.log_tail)
         emu.close()
@@ -157,12 +190,10 @@ def test_the_state_line_carries_the_fields_the_pilot_needs():
     """
     emu = _fly_to_hover(duration_s=25.0)
     try:
-        emu.hold(1.0)
-        samples = emu.link.read_samples()
+        samples = emu.collect(at_least=1)
     finally:
         emu.close()
 
-    assert samples, "no STATE samples arrived"
     newest = samples[-1]
     for key in ("altitude_m", "pos_n", "pos_e", "vel_n", "vel_e", "vel_d",
                 "battery_pct", "tof_m", "roll", "pitch", "yaw"):

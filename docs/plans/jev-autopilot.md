@@ -16,7 +16,7 @@ TypeSafe の System One モデル **Jev**（自然言語と状況から、型の
 
 ### 実装状況（2026-09-19 時点）
 
-P0、P1、P2a、P2 を実装した。それ以外は未着手である。
+P0、P1、P2a、P2、P3 を実装した。それ以外は未着手である。
 
 | 段階 | 内容 | 状況 |
 |------|------|------|
@@ -25,7 +25,7 @@ P0、P1、P2a、P2 を実装した。それ以外は未着手である。
 | P2a | テレメトリ拡張（UDP:5005 を 140B の v2 に。電池電圧・下向き ToF・フロー・地磁気・気圧高度を追加。様式は `firmware/vehicle/docs/detailed_design.md` §10） | **実装済み**（実機未確認） |
 | P2b | 前方 ToF の駆動（`sensor_tof_front` 新設、`SensorSnapshot` へのミラー、テレメトリ bit1 の供給）。**実機確認必須。バッテリー電源必須**（USB 給電では前方 ToF が立ち上がらない事例がある） | 未着手 |
 | P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**（Jev 実走は未実施） |
-| P3 | `sf pilot say`（自然言語の指示） | 未着手 |
+| P3 | `sf pilot say`（自然言語の指示） | **実装済み**（Jev 実走は未実施。下記「P3 の結果」参照） |
 | P4 | ミッション（経路巡回）と `next_move`。**前方 ToF による探索**（P2b 完了が前提。前方の空きを見て進路を選ぶ） | 未着手 |
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
@@ -181,6 +181,33 @@ FakeJudge（応答 10ms 固定）での SILS 実走では、期限超過は 3 �
 | `battery_drop` | 電圧低下が危険域に届き、Monitor の即時安全則で着陸（実測: t=26.4s） |
 | `drift` | 35 周期中 16 周期が流れとして区分された（「速く流されている」を含む） |
 
+### `drift` 場面の訂正（2026-09-19）
+
+**P2 のコミットメッセージと当初の文書は、`drift` 場面を「風とフローの読み違いの
+組み合わせ」と説明していた。これは不正確だった。** 場面は**風だけ**である。
+
+`--flow-scale`（`SILS_EMU_FLOW_SCALE`）は閉ループの飛行経路に届かない。
+`Config::flow_vel_scale` を読むのは `Plant::flow()` だけで、それを呼ぶのは
+`simulator/sils/smoke/plant_smoke.cpp`（smoke 試験）のみである。飛行中に
+ファームへ渡るフローは `virtual_board.cpp` → `sils_pmw3901::set_motion_from_velocity()`
+で合成されており、この乗数を参照しない。
+
+風だけで十分であることを実測で確認した（0.060N・35 秒・実時間エミュレータ、
+Monitor の区分を数えたもの）:
+
+| 条件 | 「流されている」周期 | うち「速く」 | 最大速度 | 最大変位 |
+|------|------------------|-----------|---------|---------|
+| 風 0.060N のみ | 1388 中 **359** | 58 | 0.635 m/s | 1.038 m |
+| 風 0.060N ＋ `--flow-scale 0.35` | 1389 中 361 | 58 | 0.638 m/s | 1.041 m |
+| 対照（風なし） | 1385 中 **0** | 0 | 0.000 m/s | 0.000 m |
+
+上 2 行の差は実時間エミュレータの実行ごとのばらつきであって、ノブの効果では
+ない。風の値 0.060N は据え置いた（`config.py` にある選定根拠の実測 — 0.02N では
+区分に届かず、0.06N では約 0.9m まで振れる — は、効かないノブの有無に影響されない）。
+
+`--flow-scale` 自体は修理していない（本計画の範囲外）。
+`docs/architecture/simulation-policy.md` の改修バックログ #14 に記載した。
+
 ### 見つけた問題（本計画の範囲外・要報告）
 
 **ファームの位置推定の水平軸が、真値に対して入れ替わっている（`sf pilot` より前から存在）。**
@@ -205,6 +232,85 @@ FakeJudge（応答 10ms 固定）での SILS 実走では、期限超過は 3 �
 本計画の範囲外のため修正していない。**位置に関わる実機との対応付け（POS_HOLD の
 評価、フライトログの解析、ROS2 連携）に影響しうるため、別途の調査を推奨する。**
 
+## 4.2 P3 の結果（`sf pilot say`）
+
+### 実装したもの
+
+| 対象 | 内容 |
+|------|------|
+| `lib/sfpilot/instruction.py` | 数値の抽出（半角・全角・漢数字、m→cm）、組み立て規則、包絡の事前検査、`return_home` の計算 |
+| `lib/sfpilot/say.py` | 手順の実行（作業スレッド）と、その間も動き続ける用途①の監視層 |
+| `lib/sfpilot/judge.py` | 手順の質問（`step_N_move` / `step_N_amount`）、`ask_questions()`（ID ではなく本体で問う） |
+| `lib/sfpilot/config.py` | `InstructionConfig`（量の区分・手順数の上限・確信度の関門） |
+| `lib/sfpilot/trace.py` | `write_plan()` — 変換結果を 1 行の JSON で記録 |
+| `lib/sfcli/commands/pilot.py` | `sf pilot say`（`--dry-run` / `--yes` / `--no-auto-land` / `--eval`） |
+| `lib/sfpilot/tests/say_eval_cases.yaml` | 指示 10 例と、想定する手順の表 |
+
+### 役割分担（設計のとおり）
+
+Jev が答えるのは「k 番目の動作は何か」（Choice、k=1..6）と「k 番目の量はどれだけか」
+（Choice: small / medium / large / unspecified）だけで、12 問を 1 リクエストにまとめて
+問う。質問は互いの答えを見られない前提（fan-out）なので、各質問に「指示の k 番目の
+動作」と完結して書いてある。**数値はモデルに一切渡さず、扱わせない** — 指示中の
+「70cm」「1m」「九十度」はコードが抜き出し、m→cm の換算もコードが行い、量の区分から
+cm・度への対応は `config.py` の表が持つ。
+
+### 実測（SILS、`--fake`）
+
+「上がって前に進んで戻ってきて着陸して」に相当する手順を完走させ、真値
+（`truth.csv`）で軌跡を確認した。
+
+| 確認項目 | 実測 |
+|---------|------|
+| 手順 | `takeoff` → `up 50` → `forward 50` → `go -50 0 0 50` → `land` の 5 手順を完走 |
+| 北へ進んだか | 最大 **N=+0.658m**（東西は |E|=0.000m。北向き開始が効いている） |
+| 高度 | 最大 **1.094m**（離陸 0.5m ＋ `up 50`） |
+| 離陸点へ戻ったか | `go` 完了時点で **N=+0.00m**（t=26s） |
+| 接地位置 | N=−0.382m |
+| 監視層 | 飛行中 69 判断。手順の中断は 0 回 |
+
+接地位置が離陸点から 0.38m ずれるのは**降下中の横流れ**であり、`sf pilot say` の
+層ではない。静止したホバリングからの `land` は横流れ 0.000m であることを別途確認して
+いる（下記「見つけた問題」）。
+
+### 実装中に見つけて直したもの（設計に無く、実測で判明した）
+
+1. **待機の `rc` が移動を打ち消していた。** 安全層が毎周期送る `rc 0 0 0 0` は
+   **速度**誘導目標を publish し（`api_task.cpp` の `cmdRc`、mode 2）、`forward` が
+   設定した**位置**目標を置き換えてしまう。手順の実行中は待機の `rc` を送らない
+   ようにした（`Executor.hold_commands_silently`）。`land`・`stop` は送り続ける —
+   安全層が動いている理由そのものだからである。
+2. **待機を一律に中断の理由にすると、指示が最初の手順で必ず打ち切られた。** 待機の
+   多くは「まだ使える意見が無い」（未着・期限超過・鮮度切れ）で、どの離陸でも起きる。
+   中断するのは `land`・`stop` と、**Jev が選んだ**待機だけにした。終わらない待機は
+   Arbiter 自身の計時が着陸に変え、着陸はここで中断になる。
+3. **`ok` は「到達」であって「停止」ではない。** 機体は許容球 0.15m
+   （`kReachRadiusM`）に入った時点で応答するが、進入速度はまだ残っている。その瞬間に
+   `land` を送ると降下中も進み続け、離陸点を 0.7〜0.9m 行き過ぎて接地した。手順の間に
+   **実測した速度**が 0.05m/s を 1 秒間下回るまで待つようにした（固定の待ち時間では
+   なく実測にした理由: 長い移動ほど速度を持ち、単一の固定値は両方には正しくない）。
+
+### 見つけた問題（本計画の範囲外・要報告）
+
+**降下中に横へ流れる。** 静止したホバリングからの `land` は横流れ 0.000m である一方、
+移動の直後に着陸すると降下中に 0.3〜0.9m 流れる。位置保持が降下中に効いていない
+（または効きが弱い）ように見える。`sf pilot say` の追加とは無関係で、`land` を直接
+送るだけで再現する。実機の着陸精度に影響しうるため、別途の調査を推奨する。
+
+### Jev での評価（キーが要る。未実施）
+
+指示 10 例（単純・複数手順・数値つき・曖昧・範囲外・飛行と無関係を含む）と、想定する
+手順を `lib/sfpilot/tests/say_eval_cases.yaml` に置いた。実行:
+
+```bash
+TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml
+```
+
+組み立て規則・数値の抽出・包絡の検査はコードなので `pytest lib/sfpilot` が
+キー無しで固定する。この表が測るのは**それ以外**、すなわち「Jev が日本語の指示から
+正しい動作と量を選ぶか」だけである。不一致が出た場合、期待のほうが不当に狭い可能性
+（「ちょっと移動して」に向きの指定は無い）も併記してある。
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -219,7 +325,10 @@ FakeJudge（応答 10ms 固定）での SILS 実走では、期限超過は 3 �
 | `lib/sfpilot/executor.py` | 行動 → `rc`/`stop`/`land` | 実装済み |
 | `lib/sfpilot/trace.py` | 1 判断 1 行の JSON 記録 | 実装済み |
 | `lib/sfpilot/pilot.py` | ループ本体 | 実装済み |
-| `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `sf pilot replay` / `sf pilot run` | 実装済み |
+| `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `replay` / `run` / `say` | 実装済み |
+| `lib/sfpilot/instruction.py` | 指示 → 手順の列（数値の抽出・組み立て規則・包絡の事前検査・`return_home`） | 実装済み（P3） |
+| `lib/sfpilot/say.py` | 手順の実行と、その間も動き続ける監視層 | 実装済み（P3） |
+| `lib/sfpilot/tests/say_eval_cases.yaml` | `sf pilot say --eval` の指示 10 例と期待 | 実装済み（P3） |
 | `simulator/sils/devices/rc_stdin.cpp` | stdin に `api <行>`・`wind`・`vbatt` を追加 | 実装済み（P2） |
 | `lib/sfpilot/scenes.py` | 電池低下・横流れの場面（`.scn` ファイルではなく宣言の表として持つ） | 実装済み（P2） |
 
@@ -256,7 +365,7 @@ API キーは環境変数 `TYPESAFE_API_KEY` のみで渡す。リポジトリ�
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 50 件。キー不要・通信不要で通る。
+`lib/sfpilot/tests/` に 150 件。キー不要・通信不要で通る。
 
 | 観点 | 確認内容 |
 |------|---------|
@@ -266,6 +375,9 @@ API キーは環境変数 `TYPESAFE_API_KEY` のみで渡す。リポジトリ�
 | Judge | `emergency` がどの質問の選択肢にも無く、判断経路から出てこないこと |
 | ループ | 例外を投げる Judge でも止まらないこと。記録が 1 行 1 JSON で出ること |
 | ReplayLink | 実際の飛行ログを時刻順に再生し、判断の記録が出ること |
+| 指示の変換（P3） | 数値の抽出（半角・全角・漢数字、m/cm/度）。組み立て規則の各項目（`none` 以降を捨てる・離陸と着陸の補い・既定の量・数値が区分に優先）。包絡の事前検査が超過を手順名指しで拒否すること。低確信で実行しないこと。旋回を含む `return_home` の計算 |
+| 手順の実行（P3） | 手順の実行中に待機の `rc` を送らないこと（移動を打ち消すため）。着陸・停止は送ること。答え待ちの待機で中断しないこと。次の手順は機体の応答と静定を待つこと |
+| CLI（P3） | 非対話で `--yes` が無ければ実行しないこと。`--dry-run` が何も飛ばさないこと |
 
 ## 8. 別計画として提案（本計画の範囲外）
 
@@ -291,7 +403,7 @@ Anyone implementing or changing `sf pilot`, and anyone reviewing the safety desi
 
 ### Implementation Status (as of 2026-09-19)
 
-P0, P1, P2a and P2 are implemented. The rest is not started.
+P0, P1, P2a, P2 and P3 are implemented. The rest is not started.
 
 | Stage | Content | Status |
 |-------|---------|--------|
@@ -300,7 +412,7 @@ P0, P1, P2a and P2 are implemented. The rest is not started.
 | P2a | Telemetry extension (UDP:5005 becomes the 140B v2 packet, adding battery voltage, downward ToF, optical flow, magnetometer and pressure altitude; format in `firmware/vehicle/docs/detailed_design.md` §10) | **Done** (not verified on hardware) |
 | P2b | Drive the forward ToF (add `sensor_tof_front`, mirror into `SensorSnapshot`, supply telemetry bit1). **Requires hardware verification and battery power** (the forward ToF has been seen not to come up on USB power) | Not started |
 | P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done** (not yet exercised against the live Jev API) |
-| P3 | `sf pilot say` (natural-language instruction) | Not started |
+| P3 | `sf pilot say` (natural-language instruction) | **Done** (not yet exercised against the live Jev API; see "P3 Results") |
 | P4 | Mission (route patrol) and `next_move`. **Forward-ToF exploration** (depends on P2b: choose a heading from the clear space ahead) | Not started |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
@@ -381,7 +493,43 @@ Implemented: the `api` / `wind` / `vbatt` stdin verbs (`rc_stdin.cpp`), a publis
 
 Under FakeJudge: `nominal` flies 60 s without choosing to land; `battery_drop` lands at t=26.4 s through the Monitor's immediate safety rule; `drift` is classified as drifting in 16 of 35 cycles.
 
+### Correction to the `drift` scene (2026-09-19)
+
+**P2's commit message and the original text described `drift` as a combination of wind and a misread optical flow. That was inaccurate.** The scene is **wind alone.**
+
+`--flow-scale` (`SILS_EMU_FLOW_SCALE`) does not reach the closed-loop flying path. `Config::flow_vel_scale` is read only by `Plant::flow()`, whose only caller is the smoke test `simulator/sils/smoke/plant_smoke.cpp`. In flight, the flow the firmware receives is synthesized through `virtual_board.cpp` → `sils_pmw3901::set_motion_from_velocity()`, which never consults the multiplier.
+
+Wind alone was measured to be sufficient (0.060 N, 35 s, real-time emulator, counting the Monitor's classifications):
+
+| Condition | Cycles classified as drifting | of which "fast" | Peak speed | Peak excursion |
+|-----------|------------------------------|-----------------|------------|----------------|
+| Wind 0.060 N only | **359** of 1388 | 58 | 0.635 m/s | 1.038 m |
+| Wind 0.060 N + `--flow-scale 0.35` | 361 of 1389 | 58 | 0.638 m/s | 1.041 m |
+| Control (no wind) | **0** of 1385 | 0 | 0.000 m/s | 0.000 m |
+
+The difference between the first two rows is the run-to-run jitter of a real-time emulator, not an effect of the knob. The wind value of 0.060 N is unchanged: the measurement in `config.py` that chose it — 0.02 N never reaches the classification band, 0.06 N swings out to about 0.9 m — is unaffected by the presence of a knob that does nothing.
+
+`--flow-scale` itself is not repaired here (out of scope); it is recorded as entry #14 in `docs/architecture/simulation-policy.md`'s improvement backlog.
+
 **Problem found (out of scope here, reported rather than worked around):** the firmware's horizontal position estimate has its axes swapped relative to ground truth. Pushing north with `wind 0.02 0 0` moves `truth.csv`'s `pos_x` to +0.161 m while the firmware's `posvel.csv` keeps `pos_x` at exactly 0 and moves `pos_y` to -0.138 m. This predates `sf pilot` -- it reproduces through the existing `.scn` `wind` event with no stdin involved -- and the Plant's `setWind` and `frames::ned_to_enu` are both correct, as is the truth. Position hold is self-consistent (it pulls 0.161 m back to 0.025 m), which is probably why this has not surfaced. It is not in `docs/architecture/simulation-policy.md`'s backlog. It could affect anything that maps position between SILS and the real vehicle, so a separate investigation is recommended.
+
+## 4.2 P3 Results (`sf pilot say`)
+
+Implemented: `lib/sfpilot/instruction.py` (figure extraction across half-width, full-width and kanji numerals, m→cm conversion, the assembly rules, the envelope pre-check and the `return_home` computation), `lib/sfpilot/say.py` (walking the steps on a worker thread while the use-(1) safety layer keeps running), the step questions and `ask_questions()` in `judge.py`, `InstructionConfig` in `config.py`, `Trace.write_plan()`, the `sf pilot say` subcommand (`--dry-run` / `--yes` / `--no-auto-land` / `--eval`), and the 10-case expectation table in `lib/sfpilot/tests/say_eval_cases.yaml`.
+
+**The division of labour is the design's.** Jev answers only "what is action number k?" (Choice, k=1..6) and "how big is action number k?" (Choice: small / medium / large / unspecified), all 12 questions in one request. Because the questions cannot see each other's answers (the fan-out pattern), each one states in full which position of the instruction it asks about. **No figure ever reaches the model**: "70cm", "1m" and "九十度" are extracted by code, m→cm is converted by code, and the map from a named band to centimetres or degrees lives in `config.py`.
+
+**Measured in SILS under FakeJudge.** The sequence equivalent to "climb, go forward, come back, land" ran to completion and the ground truth (`truth.csv`) confirms it: the five steps `takeoff` → `up 50` → `forward 50` → `go -50 0 0 50` → `land` all flew; the craft travelled **north** to a peak of **N=+0.658 m** with |E|=0.000 m (the north-facing start is working); altitude peaked at **1.094 m** (0.5 m takeoff plus `up 50`); and at the end of the `go` it was back at **N=+0.00 m**, i.e. on the takeoff point. It touched down at N=−0.382 m, and that residual is drift DURING the descent, not the instruction layer — a `land` from a genuinely stationary hover drifts 0.000 m (see "Problem found" below). The safety layer made 69 decisions during the flight and interrupted the sequence zero times.
+
+**Three things the design did not anticipate, found by measurement and fixed:**
+
+1. **The safety layer's hovering `rc` was cancelling each move.** `rc` publishes a VELOCITY guidance target (`api_task.cpp` `cmdRc`, mode 2) which REPLACES the POSITION target a `forward` just set. The routine hover is now withheld while a plan drives the vehicle (`Executor.hold_commands_silently`); `land` and `stop` still go out, since stopping the flight is the whole reason the safety layer runs.
+2. **Treating every hover as an interrupt cut every instruction off at its first step.** Most hovers mean "no usable opinion yet" (unanswered, late, stale) and several occur during any takeoff. Only `land`, `stop` and a hold Jev deliberately chose now interrupt; a hold that will not end still becomes a landing through the Arbiter's own timer, and that landing interrupts.
+3. **`ok` means "reached", not "stopped".** The vehicle answers when the estimate enters the 0.15 m tolerance sphere (`kReachRadiusM`) while still carrying its approach speed; a `land` sent at that moment kept travelling through the descent and touched down 0.7–0.9 m past the takeoff point. Steps now wait until the MEASURED speed stays below 0.05 m/s for a second — measured rather than a fixed pause, because a longer move carries more speed and no single figure is right for both.
+
+**Problem found (out of scope here, reported rather than worked around): the craft drifts sideways during a descent.** A `land` from a stationary hover drifts 0.000 m, but a `land` issued shortly after a move drifts 0.3–0.9 m while descending, as though position hold is not holding (or holds weakly) during the descent. This predates `sf pilot say` and reproduces by sending `land` directly. It could affect real-world landing accuracy, so a separate investigation is recommended.
+
+**Evaluation against the live Jev (needs a key; not yet run):** ten instructions — simple, multi-step, with figures, vague, out of range, and not about flying at all — with their expected steps are in `lib/sfpilot/tests/say_eval_cases.yaml`, run with `TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml`. The assembly rules, the figure extraction and the envelope check are code and are pinned without a key by `pytest lib/sfpilot`; what this table measures is only the remainder — whether Jev picks the right move and size from a Japanese sentence. Where an expectation may itself be too narrow (a vague instruction names no direction), the case says so.
 
 ## 5. Placement
 
@@ -401,7 +549,9 @@ The API key is passed only through the environment variable `TYPESAFE_API_KEY`, 
 
 ## 7. Tests
 
-50 tests in `lib/sfpilot/tests/`, all passing without a key or a network: that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+150 tests in `lib/sfpilot/tests/`, all passing without a key or a network: that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+
+P3 adds: figure extraction across half-width, full-width and kanji numerals in m, cm and degrees; every assembly rule (everything after the first `none` is dropped, a takeoff and a landing are supplied, an unspecified amount takes the default band, a spoken figure outranks the band); that the envelope pre-check refuses an over-reaching plan and names the offending step; that a low-confidence step is not flown; the `return_home` computation including a turn along the way; that the hovering `rc` is withheld while a plan drives the vehicle but `land` is not; that waiting for an answer does not interrupt the sequence while a hold Jev chose does; that a step waits for the vehicle's reply and for the craft to settle; and that a non-interactive session will not fly without `--yes`.
 
 ## 8. Proposed as a Separate Plan (out of scope here)
 

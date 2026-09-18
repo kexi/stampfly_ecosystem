@@ -5,9 +5,9 @@ sf pilot - Jev-assisted autopilot (judging layer)
   bench     Jev の往復時間と入力トークン数を実測する（TYPESAFE_API_KEY 必要）
   replay    記録済みの飛行ログを判断層に通し、判断の記録を出す（キー不要: --fake）
   run       SILS を実際に飛ばし、Jev の判断で監視する（--sils 必須）
+  say       自然言語の指示を手順に変えて飛ぶ（--sils 必須。--dry-run で変換だけ）
 
-設計は docs/plans/jev-autopilot.md。`say`（自然言語の指示）は P3 のため、
-まだ登録していない。
+設計は docs/plans/jev-autopilot.md。
 """
 
 import argparse
@@ -116,6 +116,47 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Override the Jev response deadline in milliseconds",
     )
     run_parser.set_defaults(func=run_run)
+
+    say_parser = subs.add_parser(
+        "say",
+        help="Fly a natural-language instruction (--sils required; real hardware is P5)",
+    )
+    say_parser.add_argument(
+        "instruction", nargs="?", default=None,
+        help="What the aircraft should do, in plain words （例: 「1m 上がって前に "
+             "50cm 進んで戻ってきて」）",
+    )
+    say_parser.add_argument(
+        "--sils", action="store_true",
+        help="Fly the SILS emulator. Required to fly: real hardware is not "
+             "supported yet （実機は未対応）",
+    )
+    say_parser.add_argument(
+        "--fake", action="store_true",
+        help="Use the deterministic FakeJudge (no API key, no network)",
+    )
+    say_parser.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Translate and check the instruction; fly nothing",
+    )
+    say_parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Do not ask for confirmation before flying the steps",
+    )
+    say_parser.add_argument(
+        "--no-auto-land", dest="auto_land", action="store_false",
+        help="Do not append a landing when the instruction does not end in one",
+    )
+    say_parser.add_argument(
+        "--eval", dest="eval_file", default=None, metavar="FILE",
+        help="Translate every instruction in a YAML/JSON case file and compare "
+             "the steps against the expected ones （期待表との照合）",
+    )
+    say_parser.add_argument(
+        "--duration", type=float, default=RUN_DEFAULT_DURATION_S,
+        help=f"Ceiling on the flight in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
+    )
+    say_parser.set_defaults(func=run_say)
 
 
 # =============================================================================
@@ -549,7 +590,358 @@ def _print_run_summary(outcome: dict, trace) -> None:
     print()
 
 
+# =============================================================================
+# sf pilot say
+# =============================================================================
+def run_say(args: argparse.Namespace) -> int:
+    """Translate an instruction into steps, then fly them if asked.
+    指示を手順に変換し、求められれば飛ばす。"""
+    if args.eval_file:
+        return _run_eval(args)
+    if not args.instruction:
+        console.error("say what? （指示の文を引数に与えてください）")
+        console.info('例: sf pilot say --sils --dry-run "1m 上がって前に進んで戻ってきて"')
+        return 1
+
+    judge, error = _open_judge(args)
+    if judge is None:
+        return error
+
+    from sfpilot.config import DEFAULT_CONFIG
+    from sfpilot.instruction import translate
+    from sfpilot.judge import step_questions
+    from sfpilot.trace import Trace
+
+    config = DEFAULT_CONFIG
+    trace = Trace()
+    try:
+        console.info(f"Translating: {args.instruction}")
+        plan = translate(args.instruction, judge, on_ground=True,
+                         auto_land=args.auto_land, config=config)
+        trace.write_plan(plan, step_questions(config.instruction.max_steps))
+        _print_plan(plan)
+        if not plan.ok:
+            return 1
+        if args.dry_run:
+            console.info(f"Dry run — nothing was flown. trace: {trace.path}")
+            return 0
+        return _fly_said_plan(args, config, plan, judge, trace)
+    finally:
+        trace.close()
+        judge.close()
+
+
+def _open_judge(args):
+    """The Judge this run uses, or (None, exit code) with the reason printed.
+    この実行が使う Judge。開けなければ (None, 終了コード) を返し理由を表示する。"""
+    from sfpilot.judge import FakeJudge, JevJudge, MissingApiKey
+
+    if args.fake:
+        return FakeJudge(answers=_fake_say_answers()), 0
+    try:
+        return JevJudge(), 0
+    except MissingApiKey as exc:
+        console.error(str(exc))
+        console.info("Use --fake to translate without an API key（キー無しなら --fake）")
+        return None, 1
+
+
+def _fake_say_answers() -> dict:
+    """A fixed translation for `--fake`, plus the safety answers.
+
+    `--fake` exists to exercise the path from a plan to a flight without a
+    key, so it answers one representative instruction (up, forward, return,
+    land) rather than trying to understand the words it was given. The
+    instruction's own numbers still apply, because those are read by code.
+
+    The safety answers have to be here too: the SAME judge serves the
+    instruction translation and then the 50Hz safety layer that watches the
+    flight. A judge that knew only about steps would leave every safety
+    question unanswered, the Arbiter would hover on "no answer", and the
+    hover-to-land timer would land the aircraft mid-instruction.
+
+    `--fake` 用の固定の変換に、安全判断の答えを加えたもの。
+
+    `--fake` はキー無しで「計画から飛行まで」の経路を動かすためのものなので、
+    与えられた語を理解しようとはせず、代表的な 1 つの指示（上昇・前進・帰還・
+    着陸）に答える。指示中の数値はそれでも効く — 読むのはコードだからである。
+
+    安全判断の答えもここに要る。指示の変換と、その後に飛行を見張る 50Hz の
+    安全層は**同じ** judge を使うためである。手順のことしか知らない judge では
+    安全の質問が全て未回答になり、Arbiter は「答え無し」で待機し、待機継続の
+    計時が指示の途中で機体を着陸させてしまう。
+    """
+    from sfpilot.judge import (
+        AMOUNT_MEDIUM, Answer, Q_STEP_AMOUNT, Q_STEP_MOVE,
+        STEP_FORWARD, STEP_LAND, STEP_NONE, STEP_RETURN_HOME, STEP_UP,
+        default_fake_answers,
+    )
+
+    script = [STEP_UP, STEP_FORWARD, STEP_RETURN_HOME, STEP_LAND, STEP_NONE, STEP_NONE]
+    answers = default_fake_answers()
+    for index, verb in enumerate(script, start=1):
+        answers[Q_STEP_MOVE.format(index)] = Answer(
+            kind="choice", choice=verb, confidence=0.95,
+            probabilities={verb: 0.95},
+        )
+        answers[Q_STEP_AMOUNT.format(index)] = Answer(
+            kind="choice", choice=AMOUNT_MEDIUM, confidence=0.9,
+            probabilities={AMOUNT_MEDIUM: 0.9},
+        )
+    return answers
+
+
+def _print_plan(plan) -> None:
+    """Show the steps, or the reason there are none.
+    手順を表示する。手順が無ければその理由を表示する。"""
+    print()
+    if plan.spoken_numbers:
+        said = ", ".join(f"{n.text.strip()} → {n.value:g}{n.unit}"
+                         for n in plan.spoken_numbers)
+        print(f"  numbers read from the instruction / 指示から読んだ数値: {said}")
+    if not plan.ok:
+        console.error(f"refused / 実行しない: {plan.refusal}")
+        print()
+        return
+    print("  steps / 手順:")
+    for position, step in enumerate(plan.steps, start=1):
+        source = f"  [{step.amount_source}]" if step.amount_source else ""
+        print(f"    {position}. {step.describe():<24} -> {step.command()}{source}")
+    print()
+
+
+def _fly_said_plan(args, config, plan, judge, trace) -> int:
+    """Confirm, then fly the plan against SILS. / 確認してから SILS で飛ばす。"""
+    if not args.sils:
+        console.error(
+            "`sf pilot say` currently supports --sils only — flying real hardware "
+            "is P5 in docs/plans/jev-autopilot.md and is deliberately not wired up "
+            "（実機は未対応です）。変換だけなら --dry-run"
+        )
+        return 1
+    if not _confirmed(args):
+        return 1
+
+    try:
+        outcome = _fly_instruction(args, config, plan, judge, trace)
+    except _SilsUnavailable as exc:
+        console.error(str(exc))
+        return 1
+    _print_say_summary(outcome, trace)
+    return 0 if outcome.finished else 1
+
+
+def _confirmed(args) -> bool:
+    """Whether the operator agreed to fly these steps.
+
+    A non-interactive session cannot agree to anything, so it is refused
+    rather than treated as agreement -- the steps are about to move a real
+    aircraft, and silence is not consent.
+
+    操作者がこの手順を飛ばすことに同意したか。
+
+    非対話のセッションは何にも同意できないので、同意とみなさず拒否する。
+    手順はこれから実機を動かすものであり、無言は同意ではない。
+    """
+    if args.yes:
+        return True
+    if not sys.stdin.isatty():
+        console.error(
+            "not an interactive terminal, so there is nobody to confirm these "
+            "steps — re-run with --yes to fly them, or --dry-run to only "
+            "translate （非対話では確認が取れないため実行しません）"
+        )
+        return False
+    answer = input("  Fly these steps? / この手順で飛ばしますか [y/N]: ").strip().lower()
+    if answer in ("y", "yes"):
+        return True
+    console.info("cancelled / 中止しました")
+    return False
+
+
+def _fly_instruction(args, config, plan, judge, trace):
+    """Launch SILS, settle, then fly the plan under the safety layer.
+    SILS を起動・静定させ、安全層の下で計画を飛ばす。"""
+    from sfcli.commands.sils import (
+        RealtimeEmuUnavailable, launch_realtime_emu, realtime_emu_env,
+    )
+    from sfcli.utils.paths import paths
+    from sfpilot.link import SilsLink
+    from sfpilot.say import fly_plan
+
+    bundle = paths.root() / "simulator" / "sils" / "viz" / "out_say"
+    bundle.mkdir(parents=True, exist_ok=True)
+    total_s = (config.sils.boot_settle_s + args.duration
+               + config.sils.land_grace_s + 10.0)
+    # Record the flight-log bundle: `truth.csv` is how an operator checks
+    # that the aircraft actually went where the steps said, independently
+    # of what the firmware's own estimate believed.
+    # フライトログ一式を記録する。手順どおりに機体が実際に動いたかを、ファーム
+    # 自身の推定とは独立に操作者が確かめる手段が `truth.csv` だからである。
+    env = realtime_emu_env(bundle, flightlog_dir=bundle, extra_env={})
+    try:
+        proc = launch_realtime_emu(total_s + 10.0, env, scenario_path=None)
+    except RealtimeEmuUnavailable as exc:
+        raise _SilsUnavailable(str(exc)) from exc
+
+    link = SilsLink(proc)
+    try:
+        console.info(f"Waiting {config.sils.boot_settle_s:g}s for boot calibration ...")
+        _hold_neutral(link, config.sils.boot_settle_s)
+        # `command` puts the firmware in SDK mode; the plan's own first step
+        # is the takeoff, so it is not sent here.
+        # `command` はファームを SDK モードにする。離陸は計画自身の最初の手順
+        # なので、ここでは送らない。
+        link.send_command("command")
+        console.info("Flying the steps （手順を実行します）...")
+        return fly_plan(link, judge, plan, config, trace=trace,
+                        on_step=_announce_step)
+    finally:
+        link.close()
+        _shutdown(proc)
+
+
+def _announce_step(position: int, step) -> None:
+    console.info(f"  step {position}: {step.describe()}  -> {step.command()}")
+
+
+def _print_say_summary(outcome, trace) -> None:
+    """Report which steps flew and why the rest did not.
+    どの手順が飛び、残りがなぜ飛ばなかったかを報告する。"""
+    print()
+    print(f"  steps flown : {len(outcome.completed)}")
+    for position, step in enumerate(outcome.completed, start=1):
+        print(f"    {position}. {step.describe()}")
+    if outcome.interrupt_reason:
+        console.warning(
+            f"interrupted after step {outcome.interrupted_at} "
+            f"（手順 {outcome.interrupted_at} の後で中断）: {outcome.interrupt_reason}"
+        )
+    print(f"  decisions   : {outcome.decisions}")
+    print(f"  landed      : {'yes' if outcome.landed else 'no'}")
+    print(f"  flown       : {outcome.flown_s:.1f} s")
+    print(f"  trace       : {trace.path}")
+    print()
+
+
+# -- sf pilot say --eval / 期待表との照合 ---------------------------------
+
+def _run_eval(args: argparse.Namespace) -> int:
+    """Translate every case in a file and compare against its expectation.
+
+    This is how the instruction layer is judged against the LIVE model:
+    the unit tests pin the assembly rules with a FakeJudge, but whether
+    Jev reads "戻ってきて" as `return_home` can only be answered by asking
+    it. Keeping it a subcommand rather than a script is the repository's
+    tooling rule (CLAUDE.md): what users run is an `sf` command.
+
+    ファイル中の全事例を変換し、期待と照合する。
+
+    指示層を**実際のモデル**に対して評価する手段である。組み立て規則は
+    FakeJudge を使った単体試験で固定できるが、Jev が「戻ってきて」を
+    `return_home` と読むかどうかは、問うてみるほかない。スクリプトではなく
+    サブコマンドにするのは、このリポジトリの方針である（CLAUDE.md）—
+    利用者が実行するものは `sf` コマンドとする。
+    """
+    cases, error = _load_cases(args.eval_file)
+    if cases is None:
+        console.error(error)
+        return 1
+
+    judge, code = _open_judge(args)
+    if judge is None:
+        return code
+
+    from sfpilot.config import DEFAULT_CONFIG
+    from sfpilot.instruction import translate
+
+    console.info(f"Translating {len(cases)} instructions from {args.eval_file} ...")
+    results = []
+    try:
+        for case in cases:
+            plan = translate(case["instruction"], judge, on_ground=True,
+                             auto_land=case.get("auto_land", True),
+                             config=DEFAULT_CONFIG)
+            results.append(_compare_case(case, plan))
+    finally:
+        judge.close()
+
+    return _print_eval_report(results)
+
+
+def _load_cases(path: str):
+    """Read the case file, as YAML if available and JSON otherwise.
+    事例ファイルを読む。YAML が使えれば YAML、無ければ JSON として読む。"""
+    from pathlib import Path
+
+    file_path = Path(path)
+    if not file_path.exists():
+        return None, f"{path}: no such file（ファイルがありません）"
+    text = file_path.read_text(encoding="utf-8")
+    try:
+        import yaml
+        data = yaml.safe_load(text)
+    except ImportError:
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError as exc:
+            return None, (f"{path}: PyYAML is not installed and this is not JSON "
+                          f"（PyYAML が無く、JSON としても読めません）: {exc}")
+    cases = data.get("cases") if isinstance(data, dict) else data
+    if not isinstance(cases, list) or not cases:
+        return None, f"{path}: no cases found（事例がありません）"
+    return cases, ""
+
+
+def _compare_case(case: dict, plan) -> dict:
+    """One case's expected steps against what came back.
+
+    Comparing the command LINES rather than the step objects is deliberate:
+    the line is what reaches the vehicle, so an expectation written in the
+    case file is checkable by anyone reading `tello-api-reference.md`
+    without knowing this module's internals.
+
+    1 事例の期待手順と実際の結果を比べる。
+
+    手順オブジェクトではなく**コマンド行**を比べるのは意図的である。行は機体に
+    届くものそのものなので、事例ファイルに書いた期待は、本モジュールの内部を
+    知らなくても `tello-api-reference.md` を読める人なら検証できる。
+    """
+    expected = case.get("expect_steps")
+    expects_refusal = case.get("expect_refusal", False)
+    actual = plan.command_lines()
+    if expects_refusal:
+        passed = not plan.ok
+        return {"instruction": case["instruction"], "passed": passed,
+                "expected": "(refusal)", "actual": actual or plan.refusal,
+                "note": case.get("note", "")}
+    passed = plan.ok and actual == expected
+    return {"instruction": case["instruction"], "passed": passed,
+            "expected": expected, "actual": actual if plan.ok else plan.refusal,
+            "note": case.get("note", "")}
+
+
+def _print_eval_report(results: list) -> int:
+    """Print each case's outcome and return non-zero if any failed.
+    各事例の結果を表示し、1 件でも不一致なら非ゼロを返す。"""
+    passed = [r for r in results if r["passed"]]
+    print()
+    for result in results:
+        mark = "PASS" if result["passed"] else "FAIL"
+        print(f"  [{mark}] {result['instruction']}")
+        if result["passed"]:
+            continue
+        print(f"         expected: {result['expected']}")
+        print(f"         actual  : {result['actual']}")
+        if result["note"]:
+            print(f"         note    : {result['note']}")
+    print()
+    print(f"  {len(passed)} / {len(results)} matched the expectation")
+    print()
+    return 0 if len(passed) == len(results) else 1
+
+
 def run(args: argparse.Namespace) -> int:
     """Fallback when no subcommand ran / サブコマンドが無い場合"""
-    console.error("usage: sf pilot {bench|replay|run}")
+    console.error("usage: sf pilot {bench|replay|run|say}")
     return 1

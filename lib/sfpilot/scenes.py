@@ -12,15 +12,15 @@ a scene does.
 1 項目を読めばその場面がすることは全て分かる。
 
 Existing SILS fault-injection is reused wherever it covers the situation:
-`drift` is the established SILS_EMU_FLOW_SCALE knob (`sf sils scenario
---flow-scale`), not a new mechanism. Only `battery_drop` needed something
-new, because the Plant's 300mAh pack barely sags over a one-minute run --
-and even that is the smallest possible seam (one stdin verb setting the
-voltage the INA3221 shim reports; the firmware is untouched).
+`drift` is the Plant's established wind hook (the *.scn `wind` event), not
+a new mechanism. Only `battery_drop` needed something new, because the
+Plant's 300mAh pack barely sags over a one-minute run -- and even that is
+the smallest possible seam (one stdin verb setting the voltage the INA3221
+shim reports; the firmware is untouched).
 
 状況を賄えるものは既存の SILS 故障注入をそのまま使う: `drift` は確立済みの
-SILS_EMU_FLOW_SCALE（`sf sils scenario --flow-scale`）であって新しい機構では
-ない。新設が要ったのは `battery_drop` だけである。Plant の 300mAh パックは
+Plant の wind フック（*.scn の `wind` 事象）であって新しい機構ではない。
+新設が要ったのは `battery_drop` だけである。Plant の 300mAh パックは
 1 分程度の実行ではほとんど低下しないためで、それも可能な限り小さい継ぎ目に
 留めた（INA3221 シムが報告する電圧を設定する stdin の 1 語。ファームは無改変）。
 """
@@ -126,10 +126,8 @@ def scene_table(config=DEFAULT_CONFIG) -> dict:
         ),
         DRIFT: Scene(
             name=DRIFT,
-            description="A steady sideways force pushes the aircraft while its "
-                        "optical flow under-reads the motion, so position hold "
-                        "does not fully correct it. （水平に流される）",
-            env={"SILS_EMU_FLOW_SCALE": str(config.sils.drift_flow_scale)},
+            description="A steady sideways force pushes the aircraft faster than "
+                        "position hold pulls it back. （水平に流される）",
             drive=_drift_drive(config),
         ),
     }

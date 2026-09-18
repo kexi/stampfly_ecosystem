@@ -70,6 +70,47 @@ class Trace:
         self._file.flush()
         return row
 
+    def write_plan(self, plan, questions: dict) -> dict:
+        """Record one instruction's translation, as one line.
+
+        Everything needed to argue about a mistranslation afterwards is on
+        this line: what was said, what was asked, what came back with what
+        confidence, what the steps became, and -- if it was refused -- why.
+        Without the questions, a trace showing a wrong step could not
+        distinguish a bad answer from a badly worded question.
+
+        指示 1 つの変換結果を 1 行で記録する。
+
+        後から誤変換を検討するのに要るものをすべてこの行に載せる: 何を言われ、
+        何を問い、どんな確信度で何が返り、手順がどうなり、拒否したならなぜか。
+        質問が無ければ、誤った手順を示す記録から「答えが悪かった」のか
+        「問い方が悪かった」のかを区別できない。
+        """
+        self._counter += 1
+        row = {
+            "trace_id": f"{self._counter:06d}",
+            "t_mono": round(time.monotonic() - self._started, 4),
+            "kind": "instruction",
+            "operator_instruction": plan.instruction,
+            "questions": {qid: body.get("instructions", "")
+                          for qid, body in questions.items()},
+            "answers": plan.answers,
+            "spoken_numbers": [
+                {"text": n.text, "value": n.value, "unit": n.unit}
+                for n in plan.spoken_numbers
+            ],
+            "steps": [
+                {"verb": s.verb, "amount": s.amount, "source": s.amount_source,
+                 "confidence": round(s.confidence, 4), "command": s.command()}
+                for s in plan.steps
+            ],
+            "refusal": plan.refusal,
+            "latency_ms": round(plan.latency_ms, 1),
+        }
+        self._file.write(json.dumps(row, ensure_ascii=False) + "\n")
+        self._file.flush()
+        return row
+
     def close(self) -> None:
         if not self._file.closed:
             self._file.close()

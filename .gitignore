@@ -163,5 +163,10 @@ simulator/sils/viz/out_scn_*/
 # regenerated every session — see simulator/sils/README.md's `sf sils fly` section)
 simulator/sils/viz/out_fly/
 
+# `sf pilot run --sils` / `sf pilot say --sils` flight bundles, regenerated
+# every run (docs/plans/jev-autopilot.md)
+simulator/sils/viz/out_pilot/
+simulator/sils/viz/out_say/
+
 # Claude Code worktrees (作業用チェックアウト実体 / working checkouts)
 .claude/worktrees/

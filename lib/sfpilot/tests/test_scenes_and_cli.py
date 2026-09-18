@@ -138,10 +138,25 @@ def test_the_drift_scene_pushes_along_one_horizontal_axis():
     assert (north_n == 0.0) != (east_n == 0.0), "exactly one horizontal axis"
 
 
-def test_the_drift_scene_reuses_the_existing_flow_scale_knob():
-    """Drift is built from SILS mechanisms that already existed.
-    流れは既存の SILS の機構から組み立てること。"""
-    assert "SILS_EMU_FLOW_SCALE" in get_scene(DRIFT).env
+def test_the_drift_scene_is_wind_and_nothing_else():
+    """Drift is the Plant's wind hook alone, with no environment override.
+
+    An earlier version also set SILS_EMU_FLOW_SCALE, which does not reach
+    the flying path at all (only `Plant::flow()` reads it, and only the
+    plant smoke test calls that). Pinning the scene to an empty environment
+    keeps a knob that does nothing from being reintroduced as though it did.
+
+    流れが Plant の wind フックだけで構成され、環境変数の上書きを持たないこと。
+
+    以前の版は SILS_EMU_FLOW_SCALE も設定していたが、これは飛行経路に一切
+    届かない（読むのは `Plant::flow()` だけで、それを呼ぶのは plant の smoke
+    試験だけ）。環境変数が空であることを固定して、効かないノブが効くものとして
+    再び持ち込まれるのを防ぐ。
+    """
+    scene = get_scene(DRIFT)
+
+    assert scene.env == {}
+    assert scene.drive is not None, "the wind hook is what makes this scene"
 
 
 # =============================================================================
@@ -194,3 +209,97 @@ def test_the_deadline_defaults_to_the_configured_one():
     """With no override the run uses config.py's deadline, not a literal here.
     上書きが無ければ config.py の期限を使い、ここの直書き値は使わないこと。"""
     assert _parse(["pilot", "run", "--sils"]).deadline_ms is None
+
+
+# =============================================================================
+# `sf pilot say` argument handling / `sf pilot say` の引数処理
+# =============================================================================
+
+def test_say_without_sils_is_refused_before_anything_is_launched():
+    """Real hardware is P5: `say` without --sils fails, it does not fly.
+    実機は P5。--sils 無しの `say` は飛ばずに失敗すること。"""
+    args = _parse(["pilot", "say", "--fake", "前に進んで"])
+
+    assert pilot_cmd.run_say(args) == 1
+
+
+def test_say_with_no_instruction_asks_for_one():
+    """An empty `say` is refused rather than flying a default.
+    指示の無い `say` は、既定の飛行をせずに拒否されること。"""
+    args = _parse(["pilot", "say", "--sils", "--fake"])
+
+    assert pilot_cmd.run_say(args) == 1
+
+
+def test_a_dry_run_translates_without_flying(capsys):
+    """--dry-run prints the steps and launches no emulator.
+
+    This is the safe way to see what an instruction became, and it must
+    work without --yes: nothing moves, so there is nothing to confirm.
+
+    --dry-run は手順を表示し、エミュレータを起動しないこと。
+
+    指示が何になったかを安全に確かめる手段であり、--yes 無しで動く必要が
+    ある。何も動かない以上、確認すべきものが無いからである。
+    """
+    args = _parse(["pilot", "say", "--sils", "--fake", "--dry-run",
+                   "上がって前に進んで戻ってきて"])
+
+    assert pilot_cmd.run_say(args) == 0
+    printed = capsys.readouterr().out
+    assert "forward" in printed and "land" in printed
+
+
+def test_a_non_interactive_session_does_not_fly_without_yes(monkeypatch):
+    """Silence is not consent: with no terminal to confirm at, nothing flies.
+
+    pytest runs without a tty, which is exactly the situation this guards:
+    a script or a CI job must not be able to launch a flight by omitting
+    an answer.
+
+    無言は同意ではない。確認する端末が無ければ何も飛ばさないこと。
+
+    pytest は tty 無しで動くので、まさにこの状況である。スクリプトや CI が
+    「答えないこと」で飛行を始められてはならない。
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args = _parse(["pilot", "say", "--sils", "--fake", "前に進んで"])
+
+    assert pilot_cmd.run_say(args) == 1
+
+
+def test_say_defaults_to_appending_a_landing():
+    """Without --no-auto-land the sequence is closed with a landing.
+    --no-auto-land が無ければ、列は着陸で閉じられること。"""
+    assert _parse(["pilot", "say", "--sils", "x"]).auto_land is True
+
+
+def test_no_auto_land_is_switchable_off():
+    """--no-auto-land is how an operator keeps the aircraft hovering.
+    --no-auto-land は、機体を浮かせたままにするための指定であること。"""
+    assert _parse(["pilot", "say", "--sils", "--no-auto-land", "x"]).auto_land is False
+
+
+def test_the_shipped_eval_cases_parse_and_carry_expectations():
+    """The case file `--eval` documents is loadable and complete.
+
+    A case file that had drifted out of shape would only be discovered
+    when someone spent API credit running it, so its structure is checked
+    here without a key.
+
+    `--eval` が案内する事例ファイルが読み込め、期待を備えていること。
+
+    形が崩れた事例ファイルは、誰かが API の費用をかけて実行したときにしか
+    見つからない。そこで構造だけをキー無しでここで確かめる。
+    """
+    from pathlib import Path
+
+    case_file = Path(__file__).with_name("say_eval_cases.yaml")
+    cases, error = pilot_cmd._load_cases(str(case_file))
+
+    assert cases is not None, error
+    assert len(cases) >= 10, f"only {len(cases)} cases"
+    for case in cases:
+        assert case.get("instruction"), case
+        has_expectation = case.get("expect_steps") or case.get("expect_refusal")
+        assert has_expectation, f"no expectation for {case['instruction']}"

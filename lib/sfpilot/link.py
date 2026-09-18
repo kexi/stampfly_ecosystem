@@ -622,6 +622,12 @@ STATE_LINE_PREFIX = "STATE "
 # 送られてしまうため、その場で組み立てず両方の綴りをここで名前にしておく。
 API_PREFIX = "api "
 
+# How the firmware logs an answer to a command (`reply()` in api_task.cpp).
+# Counting these is how a caller knows a blocking move has been reached.
+# ファームが指令への応答を記録する形（api_task.cpp の `reply()`）。これを数える
+# ことで、ブロックする移動の到達を呼び出し側が知る。
+REPLY_MARKER = "reply: "
+
 
 class SilsLink:
     """Fly a real-time SILS emulator through its stdin/stdout pipes.
@@ -668,6 +674,15 @@ class SilsLink:
         self._write_lock = threading.Lock()
         self._stick_period_s = 1.0 / stick_hz
         self._next_stick = 0.0
+        # Counts the vehicle's `reply:` lines. A blocking verb (`forward`,
+        # `up`, `go`) answers only once the move is REACHED (api_task.cpp
+        # cmdMove), so a caller that waits for this count to advance waits
+        # exactly as long as the move takes, instead of guessing a duration.
+        # 機体の `reply:` 行を数える。ブロックする verb（`forward`・`up`・`go`）は
+        # 移動の**到達後**にはじめて応答する（api_task.cpp の cmdMove）ため、この
+        # 値の増加を待つ側は、移動に要する時間だけをちょうど待てる。所要時間を
+        # 推測する必要がない。
+        self._replies = 0
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
 
@@ -685,6 +700,8 @@ class SilsLink:
                 if sample is not None:
                     self._samples.put(sample)
                 continue
+            if REPLY_MARKER in line:
+                self._replies += 1
             # Bounded: a long run must not grow this without limit, and only
             # the tail is ever shown (after an unexpected exit).
             # 有界にする。長時間の実行で無制限に増やさない。表示するのは末尾
@@ -692,6 +709,23 @@ class SilsLink:
             self._log_tail.append(line)
             if len(self._log_tail) > 200:
                 del self._log_tail[0]
+
+    @property
+    def reply_count(self) -> int:
+        """How many commands the vehicle has answered so far.
+
+        Counted rather than matched to a specific command: the caller sends
+        one blocking verb at a time and waits for the count to move, which
+        needs no parsing of the reply text and cannot be confused by a
+        reply whose wording changes.
+
+        機体がこれまでに応答した指令の数。
+
+        特定の指令に対応付けず数えるだけにする。呼び出し側はブロックする verb を
+        1 つずつ送り、この値が動くのを待つので、応答文の解釈は要らず、文言が
+        変わっても壊れない。
+        """
+        return self._replies
 
     def read_samples(self) -> list:
         """Every STATE sample since the last call. / 前回以降の STATE サンプル全件。"""

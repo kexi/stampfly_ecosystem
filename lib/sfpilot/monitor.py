@@ -79,6 +79,24 @@ class Monitor:
         self._events: list = []
         self._last_sample: Optional[dict] = None
 
+    @property
+    def latest_sample(self) -> Optional[dict]:
+        """The newest sample folded in, or None before the first one.
+
+        Exposed because a caller sometimes needs the FIGURE rather than the
+        classification: `sf pilot say` waits for the aircraft to come to
+        rest between steps, and "drifting slowly" spans a range too wide to
+        settle on. Everything sent to Jev still goes through the words.
+
+        取り込んだ最新のサンプル。最初の 1 件より前は None。
+
+        呼び出し側が区分ではなく**数値**を必要とする場合があるため公開する:
+        `sf pilot say` は手順の間に機体が静止するのを待つが、「ゆっくり流されて
+        いる」が表す幅は静定の判定には広すぎる。Jev へ送るものは従来どおり
+        すべて言葉を通す。
+        """
+        return self._last_sample
+
     def update(self, samples: list) -> Assessment:
         """Fold new samples in and return the current assessment.
         新しいサンプルを取り込み、現在の評価を返す。"""

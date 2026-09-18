@@ -36,7 +36,7 @@ sf <command> [subcommand] [options]
 | `sf monitor` | シリアルモニタを開く | [sf-monitor.md](sf-monitor.md) |
 | `sf telemetry` | 50Hz テレメトリのライブ表示（既定=ターミナル、`--web` でブラウザ） | `sf telemetry --help` |
 | `sf blocks` | Blockly ブロックプログラミング連携（ブラウザ UI ↔ 機体 UDP API） | `sf blocks --help` |
-| `sf pilot` | Jev による自動操縦の判断層（`bench`=往復時間の実測、`replay`=飛行ログの再生判断、`run --sils`=SILS を実際に飛ばして監視） | `sf pilot --help` |
+| `sf pilot` | Jev による自動操縦の判断層（`bench`=往復時間の実測、`replay`=飛行ログの再生判断、`run --sils`=SILS を実際に飛ばして監視、`say --sils`=自然言語の指示を手順に変えて飛ぶ） | `sf pilot --help` |
 | `sf log` | ログ取得・解析 | [sf-log.md](sf-log.md) |
 | `sf sim` | フライトシミュレータ実行 | [sf-sim.md](sf-sim.md) |
 | `sf sils`（`sf sil`） | SILS 試験環境（閉ループホバー・レビュー動画・合否判定） | `sf sils --help` |
@@ -177,7 +177,7 @@ command with no dedicated page, run `sf <command> --help` for details.
 | `sf monitor` | Open serial monitor | [sf-monitor.md](sf-monitor.md) |
 | `sf telemetry` | Live 50Hz telemetry — terminal dashboard, or browser with `--web` | `sf telemetry --help` |
 | `sf blocks` | Blockly block-programming bridge (browser UI <-> drone UDP API) | `sf blocks --help` |
-| `sf pilot` | Jev-assisted autopilot judging layer (`bench` measures round-trip time, `replay` judges a flight log, `run --sils` flies SILS under its judgement) | `sf pilot --help` |
+| `sf pilot` | Jev-assisted autopilot judging layer (`bench` measures round-trip time, `replay` judges a flight log, `run --sils` flies SILS under its judgement, `say --sils` turns a natural-language instruction into steps and flies them) | `sf pilot --help` |
 | `sf log` | Log capture and analysis | [sf-log.md](sf-log.md) |
 | `sf sim` | Run flight simulator | [sf-sim.md](sf-sim.md) |
 | `sf sils` (`sf sil`) | Software-in-the-Loop bench (closed-loop hover, review video, gate) | `sf sils --help` |

@@ -141,6 +141,73 @@ class ArbiterConfig:
 
 
 @dataclass(frozen=True)
+class InstructionConfig:
+    """How a spoken instruction becomes a sequence of moves (`sf pilot say`).
+
+    Jev names the moves; every number here is applied by code. The model is
+    documented not to be a calculator, so the amounts it may choose are
+    named bands (small/medium/large) that this table maps to centimetres,
+    and any figure the operator actually said is extracted by code instead.
+
+    話した指示を動作の列に変える際の設定（`sf pilot say`）。
+
+    動作に名前を付けるのは Jev だが、ここにある数値を当てるのはすべてコード
+    である。モデルは計算機ではないと文書化されているため、モデルが選べる量は
+    名前の付いた区分（small/medium/large）だけにし、その区分から cm への対応は
+    この表が持つ。操作者が実際に言った数値は、代わりにコードが抜き出す。
+    """
+
+    # How many moves one instruction may contain. Six covers "go up, forward,
+    # turn, forward, come back, land" -- a longer instruction is better split
+    # by the operator than guessed at by the model, and every extra step is a
+    # question in the request.
+    # 1 つの指示に含められる動作の数。6 あれば「上がって・進んで・回って・
+    # 進んで・戻って・降りる」を賄える。それより長い指示は、モデルに推測させる
+    # より操作者に分けてもらうほうがよい。1 段増えるごとに質問が 1 問増える。
+    max_steps: int = 6
+
+    # Named distance bands [cm]. These are what `small` / `medium` / `large`
+    # mean; they sit inside the vehicle's own 10-300 cm move range
+    # (api_task.cpp kMoveMinCm / kMoveMaxCm).
+    # 名前の付いた距離の区分 [cm]。`small`/`medium`/`large` の意味である。
+    # 機体自身が受け付ける移動範囲 10〜300cm（api_task.cpp の kMoveMinCm /
+    # kMoveMaxCm）の内側に収めてある。
+    distance_small_cm: float = 20.0
+    distance_medium_cm: float = 50.0
+    distance_large_cm: float = 100.0
+
+    # Named turn bands [deg]. / 名前の付いた旋回角の区分 [度]。
+    turn_small_deg: float = 45.0
+    turn_medium_deg: float = 90.0
+    turn_large_deg: float = 180.0
+
+    # The vehicle's own limits on a single move, so a step that the firmware
+    # would refuse (`error out of range`) or silently clamp is caught here
+    # instead, where the operator can be told which step was the problem.
+    # 1 回の移動に対する機体自身の制限。ファームが拒否する（`error out of
+    # range`）か黙ってクランプする手順を、どの手順が問題かを操作者に伝えられる
+    # こちら側で捕まえる。
+    move_min_cm: float = 10.0
+    move_max_cm: float = 300.0
+
+    # A step whose move is named with confidence below this is not flown.
+    # Distinct from JudgeConfig.min_confidence: that gate governs a safety
+    # action on a flight already under way, while this one governs whether
+    # an instruction was understood at all, before anything moves.
+    # この確信度に満たない動作の手順は飛ばさない。JudgeConfig.min_confidence
+    # とは別物である: あちらは既に飛んでいる機体の安全行動の関門で、こちらは
+    # 何かが動く前の「指示を理解できたか」の関門である。
+    min_step_confidence: float = 0.6
+
+    # The altitude an instruction starts from when the aircraft is on the
+    # ground: what `takeoff` reaches before the first commanded move. The
+    # envelope pre-check walks from here.
+    # 地上から始まる指示の起点高度。最初の移動の前に `takeoff` が到達する高度で
+    # ある。包絡の事前検査はここから積算する。
+    takeoff_altitude_m: float = 0.5
+
+
+@dataclass(frozen=True)
 class SilsConfig:
     """How a `sf pilot run --sils` flight is staged and how scenes drive it.
 
@@ -186,28 +253,41 @@ class SilsConfig:
     battery_scene_start_v: float = 4.05
     battery_scene_end_v: float = 3.35
 
-    # `drift`: a steady sideways force [N] pushing the aircraft east, plus an
-    # under-reading optical flow so position hold does not fully correct for
-    # it. Both are existing SILS mechanisms -- the Plant's wind hook (the
-    # *.scn `wind` event) and SILS_EMU_FLOW_SCALE (`sf sils scenario
-    # --flow-scale`) -- so this scene adds no new fault model.
+    # `drift`: a steady sideways force [N] pushing the aircraft, and nothing
+    # else. It is the Plant's existing wind hook (the *.scn `wind` event), so
+    # this scene adds no new fault model.
     #
-    # Why both: wind alone is corrected away by a healthy position hold
-    # (that is what position hold is FOR), and an under-reading flow alone
-    # produces no motion because nothing is pushing. Together they are the
-    # situation worth judging: the aircraft is being moved and its own
-    # controller does not fully see it.
+    # Why not also an under-reading optical flow: an earlier version of this
+    # scene set SILS_EMU_FLOW_SCALE as well, on the reasoning that the wind
+    # would otherwise be corrected away. That reasoning was never tested, and
+    # the knob turns out not to reach the flight at all. `Config::flow_vel_scale`
+    # is read only by `Plant::flow()`, which only the plant smoke test calls;
+    # the flying path runs virtual_board.cpp -> sils_pmw3901's
+    # `set_motion_from_velocity()`, which never sees the multiplier. Measured
+    # 2026-09-19 over a 35 s flight at 0.060 N: 359/1388 cycles classified as
+    # drifting without the knob versus 361/1389 with it at 0.35 -- the
+    # difference is the run-to-run jitter of a real-time emulator, not an
+    # effect. Wind alone is therefore the whole scene, and it is enough: the
+    # same measurement recorded a peak excursion of 1.04 m at up to 0.635 m/s,
+    # with 58 cycles reaching the "drifting fast" band, against 0/1385 cycles
+    # for a no-wind control.
     #
-    # `drift`: 機体を東へ押す定常の横力 [N] と、位置保持がそれを完全には補正
-    # しないようフローを過小に読ませる設定の組み合わせ。どちらも既存の SILS の
-    # 機構である（Plant の wind フック＝*.scn の `wind` 事象、および
-    # SILS_EMU_FLOW_SCALE＝`sf sils scenario --flow-scale`）。この場面のために
-    # 新しい故障モデルは足していない。
+    # `drift`: 機体を押す定常の横力 [N]、それだけである。Plant の既存の wind
+    # フック（*.scn の `wind` 事象）であり、この場面のために新しい故障モデルは
+    # 足していない。
     #
-    # 両方を使う理由: 風だけなら健全な位置保持が打ち消してしまう（位置保持とは
-    # そのためのものである）。フローの過小読みだけでは押す力が無く動かない。
-    # 2 つが揃ってはじめて、判断する価値のある状況になる — 機体が動かされて
-    # いるのに、機体自身の制御がそれを十分に見えていない、という状況である。
+    # フローの過小読みを併用しない理由: 以前の版は「風だけでは位置保持が打ち
+    # 消してしまう」という理屈で SILS_EMU_FLOW_SCALE も設定していた。その理屈は
+    # 検証されておらず、しかもこのノブは飛行経路に届かない。
+    # `Config::flow_vel_scale` を読むのは `Plant::flow()` だけで、それを呼ぶのは
+    # plant の smoke 試験だけである。飛行時の経路は virtual_board.cpp →
+    # sils_pmw3901 の `set_motion_from_velocity()` であり、この乗数を一切見ない。
+    # 2026-09-19 に 0.060N・35 秒の飛行で実測: ノブ無しで 1388 周期中 359 周期が
+    # 「流されている」と区分され、0.35 を付けると 1389 周期中 361 周期 — 差は
+    # 実時間エミュレータの実行ごとのばらつきであって効果ではない。したがって
+    # 風だけがこの場面の全てであり、それで足りる。同じ実測で最大変位 1.04m・
+    # 最大速度 0.635m/s に達し、58 周期が「速く流されている」区分に入った
+    # （風なしの対照は 1385 周期中 0 周期）。
     # RESOLVED (2026-09-19): an earlier note here recorded that the force,
     # declared in the Plant's NED frame, pushed the craft north in GROUND
     # TRUTH while the firmware's own estimate reported that motion on its
@@ -237,7 +317,6 @@ class SilsConfig:
     # 届かず、流れとして区分されない）、0.06N では制御が引き戻すまでに
     # 0.2〜0.5m/s で約 0.9m まで振れる — 制御が目に見えて抗っている外乱であり、
     # 判断する価値のある状況である。
-    drift_flow_scale: float = 0.35
     drift_wind_n: float = 0.060
 
 
@@ -250,6 +329,7 @@ class PilotConfig:
     envelope: EnvelopeConfig = field(default_factory=EnvelopeConfig)
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     arbiter: ArbiterConfig = field(default_factory=ArbiterConfig)
+    instruction: InstructionConfig = field(default_factory=InstructionConfig)
     sils: SilsConfig = field(default_factory=SilsConfig)
 
     monitor_hz: float = MONITOR_HZ

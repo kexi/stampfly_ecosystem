@@ -45,6 +45,20 @@ class Executor:
         self.last_rc = RC_HOVER
         self.landing = False          # a land was issued / 着陸指令を出した
         self.commands: list = []      # what was sent, for the trace / 記録用
+        # When another layer is driving the vehicle (`sf pilot say` walking
+        # an instruction's steps), the routine hovering `rc` must not go
+        # out: `rc` publishes a VELOCITY guidance target (api_task.cpp
+        # cmdRc, mode 2) which REPLACES the position target a `forward` or
+        # `up` just set, so a hover sent alongside a move would cancel that
+        # move. The stopping commands still go out -- `land` and `stop` are
+        # the whole reason the safety layer is running at all.
+        # 別の層が機体を駆動している間（`sf pilot say` が指示の手順を進めて
+        # いる間）、待機の `rc` を出してはならない。`rc` は**速度**誘導目標を
+        # publish し（api_task.cpp の cmdRc、mode 2）、`forward` や `up` が
+        # 設定した位置目標を**置き換える**ためである。移動と並行して待機を
+        # 送れば、その移動を打ち消してしまう。止める指令は出し続ける —
+        # `land` と `stop` こそ、安全層が動いている理由そのものだからである。
+        self.hold_commands_silently = False
 
     def apply(self, verdict, velocity=None) -> str:
         """Carry out one verdict; returns the command line that was sent.
@@ -77,8 +91,15 @@ class Executor:
 
     def _rc(self, rc) -> str:
         self.last_rc = tuple(rc)
-        self.link.send_rc(*self.last_rc)
         line = "rc {} {} {} {}".format(*self.last_rc)
+        if self.hold_commands_silently:
+            # Recorded but not sent, so the trace still shows what the
+            # safety layer would have commanded while another layer drove.
+            # 記録はするが送らない。別の層が駆動している間に安全層が何を
+            # 指令したはずかは、記録に残しておく。
+            self.commands.append(f"(withheld) {line}")
+            return line
+        self.link.send_rc(*self.last_rc)
         self.commands.append(line)
         return line
 

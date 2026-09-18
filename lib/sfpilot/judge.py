@@ -66,6 +66,37 @@ Q_SAFETY = "safety_action"
 Q_ABNORMAL = "abnormal"
 Q_NEXT_MOVE = "next_move"
 
+# `sf pilot say`: the moves an instruction may be made of, and the named
+# sizes a move may have. Code maps a size to centimetres or degrees
+# (config.InstructionConfig) -- the model never handles a figure.
+# `sf pilot say`: 指示を構成しうる動作と、動作が取りうる名前付きの量。
+# 量から cm・度への対応はコードが持つ（config.InstructionConfig）。
+# モデルは数値を一切扱わない。
+STEP_TAKEOFF = "takeoff"
+STEP_UP = "up"
+STEP_DOWN = "down"
+STEP_FORWARD = "forward"
+STEP_BACK = "back"
+STEP_LEFT = "left"
+STEP_RIGHT = "right"
+STEP_TURN_RIGHT = "turn_right"
+STEP_TURN_LEFT = "turn_left"
+STEP_RETURN_HOME = "return_home"
+STEP_LAND = "land"
+STEP_NONE = "none"
+
+AMOUNT_SMALL = "small"
+AMOUNT_MEDIUM = "medium"
+AMOUNT_LARGE = "large"
+AMOUNT_UNSPECIFIED = "unspecified"
+
+# Question id shapes. The index is 1-based so `step_1_move` reads as "the
+# first move" in a trace without mental arithmetic.
+# 質問 ID の形。番号は 1 始まりにして、記録中の `step_1_move` が暗算なしに
+# 「1 番目の動作」と読めるようにする。
+Q_STEP_MOVE = "step_{}_move"
+Q_STEP_AMOUNT = "step_{}_amount"
+
 # The question set, exactly as the design's table defines it. `type` and
 # `criteria` match the HTTP API's schema so this table is the request body.
 # 設計の表どおりの質問一式。`type`・`criteria` は HTTP API のスキーマに
@@ -117,6 +148,121 @@ QUESTIONS = {
 # 存在しない区間について答えさせることになる — 無関係な state は精度を下げる。
 SAFETY_ONLY = (Q_SAFETY, Q_ABNORMAL)
 WITH_MISSION = (Q_SAFETY, Q_ABNORMAL, Q_NEXT_MOVE)
+
+
+# =============================================================================
+# `sf pilot say`: one instruction -> a sequence of typed moves
+# `sf pilot say`: 1 つの指示 → 型のついた動作の列
+# =============================================================================
+#
+# Every question below is asked in ONE request and none of them can see the
+# others' answers (docs.typesafe.ai/patterns/fan-out). So each one restates
+# which position in the instruction it is asking about, in full: "the Nth
+# action". Writing "the next action" would be a reference to an answer this
+# question cannot read.
+#
+# 以下の質問はすべて 1 リクエストで問われ、互いの答えは見られない
+# （docs.typesafe.ai/patterns/fan-out）。そのため各質問は、自分が指示の
+# 何番目について問うているかを毎回完結して書く（「N 番目の動作」）。
+# 「次の動作」と書けば、この質問が読めない答えへの参照になってしまう。
+#
+# The criteria describe what each option MEANS rather than restating its
+# name, as the Choice guidance asks (docs.typesafe.ai/primitives/choice):
+# the match is on meaning, so "forward" is described as the direction the
+# nose points, not as the word "forward".
+#
+# 選択肢の説明は、名前の言い換えではなく「その選択肢が何を意味するか」を
+# 書く（docs.typesafe.ai/primitives/choice の指針）。一致するのは意味で
+# あるため、`forward` は「forward という語」ではなく「機首が向いている方向」
+# として説明する。
+
+_MOVE_CRITERIA = {
+    STEP_TAKEOFF: "Leave the ground and climb to a low hover. Only ever the "
+                  "first action of an instruction.",
+    STEP_UP: "Climb straight up, staying over the same spot on the floor.",
+    STEP_DOWN: "Descend straight down, staying over the same spot on the "
+               "floor, without touching down.",
+    STEP_FORWARD: "Travel horizontally in the direction the nose is pointing.",
+    STEP_BACK: "Travel horizontally away from the direction the nose is "
+               "pointing, without turning around first.",
+    STEP_LEFT: "Travel horizontally sideways to the left, still facing the "
+               "same way.",
+    STEP_RIGHT: "Travel horizontally sideways to the right, still facing the "
+                "same way.",
+    STEP_TURN_RIGHT: "Rotate clockwise on the spot to face a new direction, "
+                     "without travelling anywhere.",
+    STEP_TURN_LEFT: "Rotate anticlockwise on the spot to face a new "
+                    "direction, without travelling anywhere.",
+    STEP_RETURN_HOME: "Fly back to the point it took off from, whatever route "
+                      "it has taken since.",
+    STEP_LAND: "Descend and touch down, ending the flight.",
+    STEP_NONE: "There is no such action: the instruction has fewer actions "
+               "than this, or it does not ask the aircraft to fly at all.",
+}
+
+_AMOUNT_CRITERIA = {
+    AMOUNT_SMALL: "A little: a short hop of roughly an arm's length, or a "
+                  "slight turn well short of a quarter circle.",
+    AMOUNT_MEDIUM: "A moderate, ordinary amount: about half a room's width, "
+                   "or a quarter-circle turn.",
+    AMOUNT_LARGE: "A lot: several paces across the room, or a turn of a half "
+                  "circle to face the opposite way.",
+    AMOUNT_UNSPECIFIED: "The instruction does not say how far or how much for "
+                        "this action, or there is no such action at all.",
+}
+
+
+def step_move_question(index: int, total: int) -> dict:
+    """The Choice asking what the `index`-th action of the instruction is.
+    指示の `index` 番目の動作は何かを問う Choice。"""
+    return {
+        "type": "choice",
+        "instructions": (
+            f"An operator gave a small indoor drone a spoken instruction, which "
+            f"is in the state as `operator_instruction`. Read it as a list of "
+            f"actions to perform in order, and consider action number {index} of "
+            f"that list, counting from 1. (The instruction may contain fewer "
+            f"than {total} actions.) What is action number {index}?"
+        ),
+        "criteria": dict(_MOVE_CRITERIA),
+    }
+
+
+def step_amount_question(index: int, total: int) -> dict:
+    """The Choice asking how far the `index`-th action goes.
+    `index` 番目の動作がどれだけ動くかを問う Choice。"""
+    return {
+        "type": "choice",
+        "instructions": (
+            f"An operator gave a small indoor drone a spoken instruction, which "
+            f"is in the state as `operator_instruction`. Read it as a list of "
+            f"actions to perform in order, and consider action number {index} of "
+            f"that list, counting from 1. (The instruction may contain fewer "
+            f"than {total} actions.) How big is action number {index} — how far "
+            f"does it travel, or how far around does it turn?"
+        ),
+        "criteria": dict(_AMOUNT_CRITERIA),
+    }
+
+
+def step_questions(total: int) -> dict:
+    """The whole fan-out for one instruction: 2 questions per step.
+
+    All of them go in one request. Response time barely changes with the
+    number of questions (docs.typesafe.ai/primitives/choice), whereas
+    asking step by step would multiply the round trips by `total`.
+
+    1 つの指示に対する fan-out 一式: 1 手順につき 2 問。
+
+    すべて 1 リクエストに載せる。質問数が増えても応答時間はほとんど変わらない
+    （docs.typesafe.ai/primitives/choice）一方、手順ごとに問えば往復が
+    `total` 倍になる。
+    """
+    questions = {}
+    for index in range(1, total + 1):
+        questions[Q_STEP_MOVE.format(index)] = step_move_question(index, total)
+        questions[Q_STEP_AMOUNT.format(index)] = step_amount_question(index, total)
+    return questions
 
 
 @dataclass
@@ -194,11 +340,29 @@ class JevJudge:
     def ask(self, state: dict, question_ids=SAFETY_ONLY) -> Judgement:
         """Ask `question_ids` about `state`; never raises.
         `state` について `question_ids` を問う。例外は投げない。"""
+        return self.ask_questions(
+            state, {qid: QUESTIONS[qid] for qid in question_ids}
+        )
+
+    def ask_questions(self, state: dict, questions: dict) -> Judgement:
+        """Ask a question set given by body rather than by id; never raises.
+
+        `sf pilot say` builds its questions per instruction (one pair per
+        step), so they cannot come from the fixed `QUESTIONS` table. The
+        transport, the deadline and the failure handling are identical --
+        only where the question text comes from differs.
+
+        ID ではなく本体で与えられた質問一式を問う。例外は投げない。
+
+        `sf pilot say` は指示ごとに質問を組み立てる（手順 1 つにつき 1 組）ため、
+        固定表 `QUESTIONS` からは取れない。通信・期限・失敗の扱いは同一で、
+        違うのは質問文の出どころだけである。
+        """
         assert_no_numbers(state)
         body = {
             "state": state,
             "model": self.cfg.model,
-            "questions": {qid: QUESTIONS[qid] for qid in question_ids},
+            "questions": questions,
         }
         started = time.monotonic()
         try:
@@ -361,6 +525,20 @@ class FakeJudge:
         # 最後の項目を繰り返す。
         self.script = list(script) if script else None
         self.calls: list = []
+
+    def ask_questions(self, state: dict, questions: dict) -> Judgement:
+        """Answer a question set given by body, as JevJudge.ask_questions does.
+
+        The ids are what the answers are keyed by, so a fake set up with
+        `step_1_move` answers serves an instruction translation without
+        knowing anything about instructions.
+
+        JevJudge.ask_questions と同じく、本体で与えられた質問一式に答える。
+
+        答えの対応付けに使うのは ID なので、`step_1_move` の答えを持たせた
+        FakeJudge は、指示について何も知らないまま指示の変換に使える。
+        """
+        return self.ask(state, tuple(questions))
 
     def ask(self, state: dict, question_ids=SAFETY_ONLY) -> Judgement:
         assert_no_numbers(state)
