@@ -412,15 +412,40 @@ Jev が答えるのは `next_move` の 1 問（`next_step` / `hold` / `redo_step
 | `up 50` → `forward 50` → `go -50 0 0 50`（P3 の列）| 問題なし |
 
 同じ軸の移動の繰り返しと、水平移動の後の垂直移動は影響を受けない。間に 16 秒の
-ホバリングを挟んでも再現するので、静定不足ではない。0.6m の緩やかな並進で 5〜6G が
-出ること自体が物理的にありえず、**SILS の IMU または座標系の扱いに原因がある**と
-見られる。4.1 節に記した「位置推定の水平軸の入れ替わり」（2026-09-19 に初期姿勢の
-修正で解決済み）と同じ東西軸に関わる点も示唆的である。
+ホバリングを挟んでも再現するので、静定不足ではない。
 
-**影響**: 四角形をはじめ、水平 2 軸を使うあらゆる経路が現状は飛べない。P3 が
+**原因（2026-09-19 の調査で確定。当初の「SILS の IMU または座標系」という見立ては誤り）**:
+5〜6G は空中の異常ではなく**接地の衝撃**である（ピーク時の真値高度 0.007〜0.008m）。
+機体は 2 つ目の移動の最中に 0.47m から 1.3 秒で落ちていた。
+
+| 順 | 起きたこと | 根拠 |
+|----|-----------|------|
+| 1 | ジャイロ z の量子化 1 LSB（0.001064 rad/s）の交番が種になる | `virtual_board.cpp` の 16bit 量子化（実機と同じ） |
+| 2 | ヨーレートの D 項が毎ステップ符号反転で増幅（`rate.yaw.td=0.01` が必須。0 にすると起きない） | 実測 |
+| 3 | ヨートルクが上限 `rate.yaw.max_torque=1.226e-3` に飽和 | 398 サンプル |
+| 4 | ミキサーが 1/κ≈244 倍に拡大し、モータごとの推力がホバリング分担の 82% 振れて duty が 0.31/1.00 に張り付く | `actuator.cpp:271-274` |
+| 5 | モータが 200Hz の矩形波に追従できず平均揚力が落ち、落下 | 姿勢は終始穏やか（roll < 1.1°） |
+
+- 初期姿勢の修正（`1d99538c`）は**無関係**（当該差分だけを逆適用したビルドでも同じ 5.2G で再現）
+- 既知の課題と同じ機構: `pos_flight.expect:19`・`pos_yaw.expect:18` の既知失敗の注記と
+  `simulation-policy.md` 改修バックログ #12（ヨートルク権限の飽和、`rate.yaw.max_torque` の
+  余裕の見直し）。`api_flight.scn` は同じ現象を「旋回の前に 0.7m まで上がる」ことで避けている
+- 量子化もミキサーもファーム側で実機と同じなので、**SILS 固有とは言えない**（実機ログでは未確認）
+- 回帰で見つからなかった理由: 水平の軸をまたぐ移動を含むシナリオが無い
+
+**試した変更（別の作業ツリーで、本線には入れていない）**: `rate.yaw.td` を 0 にすると軸またぎは
+通るが回帰が壊れる（`stab_flight` が FAIL）。`rate.yaw.max_torque` を 6e-4 に下げると軸またぎも
+`cw 90` も通る（回帰全体は未実測）。上限の引き下げは制御系パラメータの変更であり、実機の
+ヨー外乱の記録（`analysis/scripts/yaw_nt_kanazawa/`）での再検証が必須なので、**本計画では
+変更せず、ファームの判断事項として引き渡す**。回帰に足す案: `api_cross_axis.scn`
+（`takeoff`→`forward 60`→`right 60`→`land`、`duty_max < 0.92`、移動中の `alt_min > 0.3`、
+`Impact detected` が出ないこと）。
+
+**影響**: 四角形をはじめ、水平 2 軸を使う経路と離陸直後の旋回は現状飛べない。P3 が
 これに当たらなかったのは、その手順が北軸だけで完結していたためである。`square.yaml`
 は「P4 が何のためのものか」を示す経路として残し、実際に飛ばす経路は `line.yaml`
-（1 軸）とした。試験もそちらを使う。**別途の調査を推奨する。**
+（1 軸）とした。試験もそちらを使う。高度を上げて地面に届かなくする回避は、落下そのものを
+隠すだけなので自動操縦側には入れない。
 
 **2. 降下中の横流れ**（4.2 節で報告済み）。本節の着陸前手順で軽減したが、根治は
 ファーム側の判断事項である。
@@ -716,9 +741,26 @@ So `sfpilot` does the following, **leaving the firmware untouched**:
 | `right 60` alone | Fine |
 | `up 50` → `forward 50` → `go -50 0 0 50` (P3's sequence) | Fine |
 
-Repeating a move on the same axis is unaffected, as is a vertical move after a horizontal one. It reproduces with 16 s of hovering in between, so it is not a settling problem. Five to six G from a gentle 0.6 m translation is not physically possible, which points at the SILS IMU or frame handling rather than at the flight itself; the east/west axis being involved is suggestive, given §4.1's axis-swap finding on the same axis (resolved on 2026-09-19 by fixing the start attitude).
+Repeating a move on the same axis is unaffected, as is a vertical move after a horizontal one. It reproduces with 16 s of hovering in between, so it is not a settling problem.
 
-**Effect**: every route that uses both horizontal axes -- the square among them -- cannot be flown today. P3 escaped it because its sequence stayed on the north axis. `square.yaml` is kept as the route P4 is FOR, and the route actually flown, including by the tests, is the single-axis `line.yaml`. **A separate investigation is recommended.**
+**Cause (established on 2026-09-19; the first reading, "the SILS IMU or frame handling", was wrong).** The 5-6 G is not an in-flight anomaly but the **impact of touching the ground**: the true altitude at the peak is 0.007-0.008 m. The craft fell from 0.47 m in 1.3 s during the second move.
+
+| Step | What happens | Evidence |
+|------|--------------|----------|
+| 1 | A 1-LSB alternation of gyro z (0.001064 rad/s) is the seed | 16-bit quantisation in `virtual_board.cpp`, same as the real part |
+| 2 | The yaw-rate D term amplifies it with a sign flip every step (`rate.yaw.td=0.01` is required; with 0 it does not happen) | measured |
+| 3 | Yaw torque saturates at `rate.yaw.max_torque=1.226e-3` | 398 samples |
+| 4 | The mixer scales it by 1/kappa (about 244), per-motor thrust swings by 82% of the hover share, and duty sticks at 0.31/1.00 | `actuator.cpp:271-274` |
+| 5 | The motors cannot follow a 200 Hz square wave, mean lift drops, the craft falls | attitude stays calm throughout (roll < 1.1 deg) |
+
+- The start-attitude fix (`1d99538c`) is **unrelated**: a build with only that diff reverted reproduces the same 5.2 G.
+- It is the mechanism already known from the known-fail notes in `pos_flight.expect:19` and `pos_yaw.expect:18` and from backlog #12 in `simulation-policy.md` (yaw torque authority saturation, headroom of `rate.yaw.max_torque`). `api_flight.scn` avoids the same thing by climbing to 0.7 m before it turns.
+- Quantisation and the mixer are firmware-side and identical on the real vehicle, so this **cannot be called SILS-only** (not checked against real flight logs).
+- The regression suite missed it because no scenario crosses horizontal axes.
+
+**Changes tried (in a separate worktree, not merged).** `rate.yaw.td` = 0 lets the cross-axis move pass but breaks the regression (`stab_flight` fails). `rate.yaw.max_torque` = 6e-4 lets the cross-axis move and `cw 90` pass (full regression not measured). Lowering the cap is a control-parameter change and must be re-verified against the recorded real-hardware yaw disturbance (`analysis/scripts/yaw_nt_kanazawa/`), so **this plan does not change it and hands it to the firmware owner**. Proposed regression scenario: `api_cross_axis.scn` (`takeoff` -> `forward 60` -> `right 60` -> `land`; `duty_max < 0.92`, `alt_min > 0.3` during the moves, no `Impact detected`).
+
+**Effect**: every route that uses both horizontal axes -- the square among them -- and a turn right after take-off cannot be flown today. P3 escaped it because its sequence stayed on the north axis. `square.yaml` is kept as the route P4 is FOR, and the route actually flown, including by the tests, is the single-axis `line.yaml`. Climbing higher so the fall does not reach the ground would only hide the fall, so the pilot does not do that.
 
 The sideways drift during a descent reported in §4.2 is reduced by the approach above, but fixing it at the root remains a vehicle-side judgement.
 
