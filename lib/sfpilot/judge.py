@@ -570,6 +570,74 @@ class FakeJudge:
         pass
 
 
+class MissionFakeJudge(FakeJudge):
+    """A rule-based stand-in for Jev's mission judgement, keyless.
+
+    The rules are the obvious reading of the state, written out so that a
+    SILS rehearsal exercises the whole mission path -- the leg boundaries,
+    the code's limits, the summary -- without a key or a network. They are
+    not a model of Jev and are not claimed to be: what a rehearsal under
+    this judge shows is that the PLUMBING is right, never that Jev would
+    have chosen the same.
+
+    Jev のミッション判断の代役。規則で書いてあり、キーは要らない。
+
+    規則は state の素直な読み方を書き下したもので、SILS の予行がミッションの
+    経路全体（区間の境目・コードの上限・集計）をキーも通信も無しで動かせるように
+    するためのものである。Jev のモデルではないし、そう主張もしない。この judge で
+    の予行が示すのは**配線**が正しいことであって、Jev が同じものを選ぶことでは
+    決してない。
+    """
+
+    def ask(self, state: dict, question_ids=SAFETY_ONLY) -> Judgement:
+        judgement = super().ask(state, question_ids)
+        wants_next_move = Q_NEXT_MOVE in question_ids and judgement.error is None
+        if wants_next_move:
+            judgement.answers[Q_NEXT_MOVE] = _rule_based_next_move(state)
+        return judgement
+
+
+def _rule_based_next_move(state: dict) -> Answer:
+    """Pick a move from the state's words, in the order that matters.
+
+    Ordered by how much each condition overrides the others: a battery that
+    is running low ends the route wherever it is, a leg that did not arrive
+    is worth another attempt, and anything else carries on. The code's own
+    limits still apply afterwards -- this answer is a proposal like any
+    other, and `_MissionFlight._allow` may replace it.
+
+    state の語から次の一手を選ぶ。順序には意味がある。
+
+    どれがどれを上書きするかの順に並べてある: 電池が残り少なければ、どこにいても
+    経路を終える。到達しなかった区間はもう一度試す価値がある。それ以外は進む。
+    この後もコード自身の上限は効く — この答えも他と同じ提案であり、
+    `_MissionFlight._allow` が置き換えうる。
+    """
+    battery = (state.get("battery") or {}).get("level", "")
+    is_battery_low = battery in ("running low", "dangerously low")
+    if is_battery_low:
+        return _confident_move(MOVE_RETURN)
+
+    arrival = (state.get("mission") or {}).get("leg_arrival", "")
+    did_not_arrive = arrival in ("stopped short", "overshot")
+    if did_not_arrive:
+        return _confident_move(MOVE_REDO)
+
+    drift = (state.get("flight") or {}).get("horizontal_drift", "")
+    is_drifting_fast = drift.startswith("drifting fast")
+    if is_drifting_fast:
+        return _confident_move(MOVE_HOLD)
+
+    return _confident_move(MOVE_NEXT)
+
+
+def _confident_move(choice: str) -> Answer:
+    """A `next_move` answer the Arbiter's confidence gate will accept.
+    Arbiter の確信度の関門を通る `next_move` の答え。"""
+    return Answer(kind="choice", choice=choice, confidence=0.9,
+                  probabilities={choice: 0.9})
+
+
 def default_fake_answers() -> dict:
     """A confident "carry on" for every question. / 全問「継続」で高確信。"""
     return {

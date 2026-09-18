@@ -68,7 +68,16 @@ def test_a_judge_that_raises_does_not_stop_the_loop():
 def test_dangerous_battery_lands_without_consulting_the_judge():
     """The immediate safety rule commands a landing and the Judge is
     never asked to approve it.
-    即時安全則が着陸を指示し、その可否を Judge に問わないこと。"""
+
+    The landing begins with `stop`, on a short ceiling: a dangerous battery
+    is the definition of "cannot wait", so the settling before the descent
+    is shortened rather than skipped (landing.py).
+
+    即時安全則が着陸を指示し、その可否を Judge に問わないこと。
+
+    着陸は `stop` から始まり、上限は短い。電池の危険域は「待てない」の定義その
+    ものなので、降下前の静定は省略ではなく短縮する（landing.py）。
+    """
     danger = DEFAULT_CONFIG.monitor.battery_danger_pct - 1.0
     link = StubLink(_healthy(5, battery_pct=danger))
     fake = FakeJudge()
@@ -76,7 +85,8 @@ def test_dangerous_battery_lands_without_consulting_the_judge():
     row = pilot.step(now=0.0)
     assert row["verdict"].action == VERDICT_LAND
     assert row["verdict"].source == "monitor"
-    assert "land" in link.sent
+    assert "stop" in link.sent, "the landing starts by stopping the craft"
+    assert pilot.executor.approach.urgent, "a dangerous battery cannot wait"
 
 
 def test_emergency_never_reaches_the_link():

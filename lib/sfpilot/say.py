@@ -33,7 +33,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .arbiter import VERDICT_HOVER, VERDICT_LAND, VERDICT_STOP
+from .arbiter import VERDICT_HOVER, VERDICT_LAND, VERDICT_STOP, Verdict
 from .config import DEFAULT_CONFIG
 from .pilot import Pilot
 
@@ -288,7 +288,7 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
     # Executor.hold_commands_silently を参照。
     pilot.executor.hold_commands_silently = True
     runner = StepRunner(link, plan.steps, config,
-                        speed_probe=lambda: _horizontal_speed(pilot))
+                        speed_probe=pilot.horizontal_speed)
     outcome = SayOutcome()
     started = time.monotonic()
     period = 1.0 / config.monitor_hz
@@ -315,28 +315,6 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
     outcome.flown_s = time.monotonic() - started
     _finish(link, pilot, outcome, config)
     return outcome
-
-
-def _horizontal_speed(pilot):
-    """The aircraft's horizontal speed [m/s] from the latest sample, or None.
-
-    Read from the Monitor's numerics, which is where the loop already keeps
-    the figures it classified from. The runner needs the NUMBER, not the
-    classification ("drifting slowly" spans a range too wide to settle on).
-
-    最新サンプルから見た機体の水平速度 [m/s]。分からなければ None。
-
-    Monitor の numeric から読む。ループが区分の元にした数値を既にそこへ置いて
-    いるためである。runner に必要なのは区分ではなく**数値**である（「ゆっくり
-    流されている」が表す幅は、静定の判定には広すぎる）。
-    """
-    sample = pilot.monitor.latest_sample
-    if not sample:
-        return None
-    north, east = sample.get("vel_n"), sample.get("vel_e")
-    if north is None or east is None:
-        return None
-    return (north * north + east * east) ** 0.5
 
 
 def _report_progress(runner, outcome: SayOutcome, on_step) -> None:
@@ -393,22 +371,77 @@ def _finish(link, pilot, outcome: SayOutcome, config) -> None:
     """Leave the aircraft somewhere safe, whatever happened.
 
     An interrupted sequence has stopped mid-move with the vehicle still
-    holding the target it was given, so the aircraft is told to hold where
-    it is and then land. Landing rather than hovering is the design's rule
-    for a situation that is not resolving itself (arbiter.py), and an
-    instruction that was cut short is exactly that.
+    holding the target it was given, so the aircraft is brought to rest and
+    then landed. Landing rather than hovering is the design's rule for a
+    situation that is not resolving itself (arbiter.py), and an instruction
+    that was cut short is exactly that.
+
+    The landing goes through the Executor, like every other landing in this
+    package, so the craft settles before the descent begins -- the firmware
+    stops holding horizontal position for the whole descent, so a `land`
+    sent with speed still on slides across the floor (landing.py).
 
     何が起きたかに関わらず、機体を安全な状態にして終える。
 
     中断した手順は移動の途中で止まっており、機体は与えられた目標を保持した
-    ままである。そこで、その場で保持させたうえで着陸させる。解消しない状況で
-    待機ではなく着陸を選ぶのは設計の規則であり（arbiter.py）、打ち切られた
-    指示はまさにその状況である。
+    ままである。そこで機体を静定させてから着陸させる。解消しない状況で待機では
+    なく着陸を選ぶのは設計の規則であり（arbiter.py）、打ち切られた指示はまさに
+    その状況である。
+
+    着陸は本パッケージの他の全ての着陸と同じく Executor を通す。降下が始まる前に
+    機体を静定させるためである — ファームは降下のあいだ水平の位置保持をやめる
+    ので、速度を残したまま送った `land` は床の上を滑る（landing.py）。
     """
     if outcome.landed:
+        _settle_landing(link, pilot, outcome, config)
         return
-    if outcome.interrupt_reason:
-        link.priority("stop")
-    link.send_command("land")
     outcome.landed = True
+    land_land = _land_verdict(outcome.interrupt_reason)
+    pilot.executor.apply(land_land)
+    _settle_landing(link, pilot, outcome, config)
+
+
+def _land_verdict(interrupt_reason: str):
+    """A verdict asking for an ordinary, unhurried landing.
+
+    `source` is what tells the Executor how long it may settle, and this
+    landing is never the urgent kind: the sequence ended or was cut short
+    by a rule that had already decided the flight should stop, not by a
+    battery about to give out. The immediate safety rules reach the
+    Executor on their own path, already marked urgent.
+
+    通常の、急がない着陸を求める判定。
+
+    Executor が静定に許す時間を決めるのは `source` である。この着陸は緊急の類では
+    ない。手順が終わったか、「飛行を止めるべき」と既に判断した規則が打ち切ったの
+    であって、尽きかけた電池が理由ではない。即時安全則は自身の経路で、緊急の印を
+    付けて Executor に届く。
+    """
+    return Verdict(
+        action=VERDICT_LAND,
+        reason=interrupt_reason or "手順を完了したため着陸",
+        source="say",
+    )
+
+
+def _settle_landing(link, pilot, outcome: SayOutcome, config) -> None:
+    """Keep the loop turning until the landing is sent, then let it descend.
+
+    The approach is a state machine advanced one cycle at a time, so it
+    needs cycles: returning as soon as it was asked for would leave the
+    craft hovering with a landing half-issued. The ceiling is the
+    approach's own, plus the grace the descent itself needs.
+
+    着陸が送られるまでループを回し続け、その後に降下を待つ。
+
+    着陸前手順は 1 周期ずつ進める状態機械なので、周期が要る。求めた直後に戻れば、
+    着陸を出しかけたまま機体を浮かせたままにしてしまう。上限は手順自身の上限に、
+    降下そのものに要る猶予を足したものである。
+    """
+    period = 1.0 / config.monitor_hz
+    deadline = time.monotonic() + config.landing.settle_max_s + config.landing.move_reply_wait_s
+    while pilot.executor.approach is not None and time.monotonic() < deadline:
+        pilot.step()
+        link.hold_sticks_neutral()
+        time.sleep(period)
     time.sleep(config.sils.land_grace_s)

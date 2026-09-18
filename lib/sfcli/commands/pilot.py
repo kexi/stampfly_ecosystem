@@ -6,6 +6,7 @@ sf pilot - Jev-assisted autopilot (judging layer)
   replay    記録済みの飛行ログを判断層に通し、判断の記録を出す（キー不要: --fake）
   run       SILS を実際に飛ばし、Jev の判断で監視する（--sils 必須）
   say       自然言語の指示を手順に変えて飛ぶ（--sils 必須。--dry-run で変換だけ）
+  mission   経路（区間の列）を飛び、区間の境目ごとに次の一手を Jev に問う（--sils 必須）
 
 設計は docs/plans/jev-autopilot.md。
 """
@@ -157,6 +158,42 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help=f"Ceiling on the flight in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
     )
     say_parser.set_defaults(func=run_say)
+
+    mission_parser = subs.add_parser(
+        "mission",
+        help="Fly a route, asking Jev what to do at each leg boundary "
+             "(--sils required; real hardware is P5)",
+    )
+    mission_parser.add_argument(
+        "mission", help="Mission file, or the name of a shipped one "
+                        "（例: square、または自分の .yaml へのパス）",
+    )
+    mission_parser.add_argument(
+        "--sils", action="store_true",
+        help="Fly the SILS emulator. Required to fly: real hardware is not "
+             "supported yet （実機は未対応）",
+    )
+    mission_parser.add_argument(
+        "--scene", default="nominal", choices=list(scene_names()),
+        help="Which situation to fly the route in (default: nominal)",
+    )
+    mission_parser.add_argument(
+        "--fake", action="store_true",
+        help="Use the rule-based FakeJudge (no API key, no network)",
+    )
+    mission_parser.add_argument(
+        "--dry-run", dest="dry_run", action="store_true",
+        help="Load and check the route; fly nothing",
+    )
+    mission_parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Do not ask for confirmation before flying the route",
+    )
+    mission_parser.add_argument(
+        "--duration", type=float, default=None,
+        help="Override the mission time limit in seconds",
+    )
+    mission_parser.set_defaults(func=run_mission)
 
 
 # =============================================================================
@@ -941,7 +978,98 @@ def _print_eval_report(results: list) -> int:
     return 0 if len(passed) == len(results) else 1
 
 
+# =============================================================================
+# sf pilot mission
+# =============================================================================
+def run_mission(args: argparse.Namespace) -> int:
+    """Load a route, show it, and fly it against SILS if asked.
+
+    The flight itself is `sfpilot.mission_run`'s; this function reads the
+    arguments and prints. That division is the repository's rule for
+    `lib/sfcli/commands/` and it is why the same route can be flown from a
+    test without going through argparse.
+
+    経路を読み、表示し、求められれば SILS で飛ばす。
+
+    飛行そのものは `sfpilot.mission_run` のもので、この関数は引数を読んで表示
+    する。この分け方は `lib/sfcli/commands/` に対するリポジトリの方針であり、
+    同じ経路を argparse を通さず試験から飛ばせる理由でもある。
+    """
+    from dataclasses import replace
+
+    from sfpilot.config import DEFAULT_CONFIG
+    from sfpilot.mission import MissionError
+    from sfpilot.mission_run import MissionRequest, describe_mission, prepare
+
+    config = DEFAULT_CONFIG
+    if args.duration is not None:
+        config = replace(config, mission=replace(config.mission,
+                                                 time_limit_s=args.duration))
+
+    try:
+        mission = prepare(args.mission, config)
+    except MissionError as exc:
+        console.error(str(exc))
+        return 1
+
+    print()
+    for line in describe_mission(mission):
+        print(line)
+    print()
+
+    if args.dry_run:
+        console.info("Dry run — nothing was flown（予行のみ。何も飛ばしていません）")
+        return 0
+    if not args.sils:
+        console.error(
+            "`sf pilot mission` currently supports --sils only — flying real "
+            "hardware is P5 in docs/plans/jev-autopilot.md and is deliberately "
+            "not wired up （実機は未対応です）。確認だけなら --dry-run"
+        )
+        return 1
+    if not _confirmed(args):
+        return 1
+
+    request = MissionRequest(mission_path=args.mission, scene=args.scene,
+                             duration_s=config.mission.time_limit_s,
+                             fake=args.fake)
+    return _fly_mission(request, mission, args, config)
+
+
+def _fly_mission(request, mission, args, config) -> int:
+    """Open the judge, fly, and report. / Judge を開き、飛ばし、報告する。"""
+    from sfpilot.judge import JevJudge, MissingApiKey, MissionFakeJudge
+    from sfpilot.mission_run import SilsUnavailable, fly_in_sils, summarize_outcome
+    from sfpilot.trace import Trace
+
+    if args.fake:
+        judge = MissionFakeJudge()
+    else:
+        try:
+            judge = JevJudge(config)
+        except MissingApiKey as exc:
+            console.error(str(exc))
+            console.info("Use --fake to fly without an API key（キー無しなら --fake）")
+            return 1
+
+    console.info(f"Scene: {request.scene}")
+    trace = Trace()
+    try:
+        outcome = fly_in_sils(request, mission, judge, config, trace=trace,
+                              on_event=console.info)
+    except SilsUnavailable as exc:
+        console.error(str(exc))
+        return 1
+    finally:
+        trace.close()
+        judge.close()
+
+    for line in summarize_outcome(outcome, trace.path):
+        print(line)
+    return 0 if outcome.completed else 1
+
+
 def run(args: argparse.Namespace) -> int:
     """Fallback when no subcommand ran / サブコマンドが無い場合"""
-    console.error("usage: sf pilot {bench|replay|run|say}")
+    console.error("usage: sf pilot {bench|replay|run|say|mission}")
     return 1

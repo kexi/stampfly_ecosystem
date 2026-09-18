@@ -16,7 +16,7 @@ TypeSafe の System One モデル **Jev**（自然言語と状況から、型の
 
 ### 実装状況（2026-09-19 時点）
 
-P0、P1、P2a、P2、P3 を実装した。それ以外は未着手である。
+P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である。
 
 | 段階 | 内容 | 状況 |
 |------|------|------|
@@ -26,7 +26,8 @@ P0、P1、P2a、P2、P3 を実装した。それ以外は未着手である。
 | P2b | 前方 ToF の駆動（`sensor_tof_front` 新設、`SensorSnapshot` へのミラー、テレメトリ bit1 の供給）。**実機確認必須。バッテリー電源必須**（USB 給電では前方 ToF が立ち上がらない事例がある） | 未着手 |
 | P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**（Jev 実走は未実施） |
 | P3 | `sf pilot say`（自然言語の指示） | **実装済み**（Jev 実走は未実施。下記「P3 の結果」参照） |
-| P4 | ミッション（経路巡回）と `next_move`。**前方 ToF による探索**（P2b 完了が前提。前方の空きを見て進路を選ぶ） | 未着手 |
+| P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**（Jev 実走は未実施。下記「P4 の結果」参照）|
+| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。**P2b の後**に着手する — 前方 ToF が駆動していない現行ファームでは前提が成立しない | 未着手（P2b 待ち）|
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
 **前方 ToF の現状（重要）**: 前方 ToF はハードウェアとしては実装されているが、**現行ファームでは駆動していない**。`TofTask` が XSHUT を low に固定してリセット保持している（VL53L3CX 2 個が同じ I2C アドレス 0x29 で起動し、底面のアドレス変更が両方に届いて測距データが混線するため）。テレメトリ v2 には枠（`tof_front`、有効ビット bit1）を確保してあるが、現行ファームでは bit1 は常に 0、値は常に -1.0 である。**障害物回避・探索を Jev に判断させる計画は、P2b の完了まで前提が成立しない。**
@@ -311,6 +312,137 @@ TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml
 正しい動作と量を選ぶか」だけである。不一致が出た場合、期待のほうが不当に狭い可能性
 （「ちょっと移動して」に向きの指定は無い）も併記してある。
 
+## 4.3 P4 の結果（`sf pilot mission`）
+
+### 実装したもの
+
+| 対象 | 内容 |
+|------|------|
+| `lib/sfpilot/mission.py` | ミッションの読み込み・包絡の事前検査・区間の到達の区分・飛行ループ・コード側の上限 |
+| `lib/sfpilot/mission_run.py` | SILS の起動・段取りと、結果の集計表示 |
+| `lib/sfpilot/missions/line.yaml` | **現状 SILS で飛べる**経路（1 軸の往復＋上昇＋帰還＋着陸） |
+| `lib/sfpilot/missions/square.yaml` | 一辺 0.6m の四角形。**現状は飛べない**（下記「見つけた問題」） |
+| `lib/sfpilot/landing.py` | 着陸前手順（実行中の移動を終える → `stop` → 静定待ち → `land`） |
+| `lib/sfpilot/config.py` | `MissionConfig`（やり直し上限・時間上限・到達許容）、`LandingConfig`（静定の閾値・上限） |
+| `lib/sfpilot/judge.py` | `MissionFakeJudge`（規則ベースの代役。キー不要） |
+| `lib/sfcli/commands/pilot.py` | `sf pilot mission`（引数と表示のみ。処理本体は `sfpilot` 側）|
+
+### 役割分担（設計のとおり）
+
+Jev が答えるのは `next_move` の 1 問（`next_step` / `hold` / `redo_step` /
+`skip_step` / `return_home` / `land`）だけで、用途①の `safety_action`・`abnormal`
+と**同じ 1 リクエスト**に同梱する（`judge.WITH_MISSION`）。数値比較は一切させない —
+区間の到達は「目標どおり / 手前で止まった / 行き過ぎた」をコードが距離から区分し、
+やり直し回数は「まだ / 1 回 / 上限に達した」という語にし、経過時間は「まだ余裕がある /
+半分ほど / 上限が近い」にする。`assert_no_numbers()` が送信前に数値の混入を拒否する。
+
+**コード側の上限（Jev の答えに関わらず強制）**: 区間あたりのやり直し 2 回まで、
+ミッション全体の時間上限 180 秒、電池が「残り少ない」になったら進む系の答え
+（`next_step`・`redo_step`・`skip_step`）を `return_home` に置き換える、そして
+読み込み時の包絡検査。いずれも `_MissionFlight._allow` に集め、却下の理由を
+集計と記録に残す。
+
+### 実測（SILS、`--fake`、`line` 経路）
+
+| 場面 | 実測した結末 |
+|------|------------|
+| `nominal` | 6 区間すべて「目標どおり」で完走。真値で最大 N=+1.376m、\|E\|=0.000m、最大高度 0.808m、接地 N=+0.119m |
+| `battery_drop` | 電池が区分をまたいだ時点で `return_home` を選び、帰還して着陸（実測 t=54.5s）|
+| `drift` | 区間が「手前で止まった」と区分され、やり直し 2 回で上限に達して「飛ばす」に変わる。理由は記録に残る |
+
+### 着陸前手順（ファームの設計への対応）
+
+**ファームは `land` の受理と同時に水平の位置保持を切る。** これは設計どおりで
+あり、欠陥ではない。`firmware/vehicle/components/sf_controller_pid/pid_controller.cpp`
+が `computePositionHold()` から `VerticalPhase::Landing` を除外しており、降下の
+操縦則を全ての飛行モードで同一にするためである（POS_HOLD の着陸も STABILIZE と
+同じ操縦感になる）。
+
+その帰結として、降下に**持ち込んだ**水平速度は、妨げられることなく降下中も
+**持ち越される**。SILS での実測（`truth.csv`、`land` 送信から接地までの水平移動）:
+
+| 条件 | 降下中の水平移動 |
+|------|---------------|
+| 移動の直後に `land`（手順なし） | 0.271 m |
+| 着陸前手順を通した `land`（4 回の飛行） | 0.043 / 0.132 / 0.163 / 0.226 m |
+| 静止したホバリングからの `land` | 0.000 m |
+
+そこで `sfpilot` 側で次の対応をした（**ファームは無改変**）:
+
+- **`land` を送る経路を Executor 1 か所にまとめた。** 自前で
+  `link.send_command("land")` を呼ぶ 2 人目の呼び出し側は、静かに静定しない
+  着陸になる。1 か所にすることが、その前の静定を省略不可能にする。
+- **着陸前手順**: 実行中の移動があれば応答を待つ（上限 2 秒、超えたら `stop` で
+  上書き）→ `stop`（その場の位置保持に戻す）→ 実測した水平速度が 0.05m/s を
+  1 秒間下回るまで待つ（上限 6 秒）→ `land`。`ok` の前に `land` が割り込むと
+  誘導目標だけが残って降下中も加速するため、移動は放置せず意図して終わらせる。
+- **待てない理由のときは同じ手順を短い上限で走らせる**（電池の危険域・推定の発散
+  など即時安全則による着陸は、静定の上限 0.5 秒）。省略はしない — 0.5 秒の `stop`
+  でも進入速度の大部分は落ちる。`emergency`（モータ停止）は従来どおり本パッケージ
+  からは到達できない。
+- どの経路でどれだけ待ったか（`urgent` / `settled` / `timed_out` / `waited_s` /
+  `ceiling_s`）を記録に残す。
+
+**実機でも起きる見込み（未照合）**: 上記はすべて SILS での実測であり、実機とは
+照合していない。ただし根拠はファーム自身の制御則であって SILS 固有の仕組みでは
+ないため、実機でも同様に起きると見込まれる。**根治（降下中も位置保持を効かせるか
+どうか）は機体側の設計判断であり、本計画の範囲外である。** 本計画は、ファームの
+設計を変えずに接地精度を改善する範囲に留めた。
+
+### 見つけた問題（本計画の範囲外・要報告）
+
+**1. 水平軸をまたぐ移動が、衝撃検出により機体を解除する（最重要）。**
+
+南北軸の移動に続けて東西軸へ移動すると、1 秒ほどで
+`[WARN] failsafe: Impact detected: 5.5G (x2 @400Hz)` が出て
+`Impact/anomaly → emergency DISARM` に至り、飛行が終わる。`sf pilot` は一切
+関与しない — 素のエミュレータに `api` の行を打つだけで再現する。
+
+| 送った列 | 結果 |
+|---------|------|
+| `forward 60` → `right 60` | **解除**（5.5G）|
+| `right 60` → `forward 60` | **解除** |
+| `left 60` → `forward 60` | **解除** |
+| `forward 60` → `go 0 -60 0 50`（斜め）| **解除** |
+| `cw 90`（離陸直後の旋回）| **解除**（6.2G）|
+| `forward 60` → `forward 60` | 問題なし |
+| `right 60` → `right 60` | 問題なし |
+| `forward 60` → `up 30` | 問題なし |
+| `right 60` 単独 | 問題なし |
+| `up 50` → `forward 50` → `go -50 0 0 50`（P3 の列）| 問題なし |
+
+同じ軸の移動の繰り返しと、水平移動の後の垂直移動は影響を受けない。間に 16 秒の
+ホバリングを挟んでも再現するので、静定不足ではない。0.6m の緩やかな並進で 5〜6G が
+出ること自体が物理的にありえず、**SILS の IMU または座標系の扱いに原因がある**と
+見られる。4.1 節に記した「位置推定の水平軸の入れ替わり」（2026-09-19 に初期姿勢の
+修正で解決済み）と同じ東西軸に関わる点も示唆的である。
+
+**影響**: 四角形をはじめ、水平 2 軸を使うあらゆる経路が現状は飛べない。P3 が
+これに当たらなかったのは、その手順が北軸だけで完結していたためである。`square.yaml`
+は「P4 が何のためのものか」を示す経路として残し、実際に飛ばす経路は `line.yaml`
+（1 軸）とした。試験もそちらを使う。**別途の調査を推奨する。**
+
+**2. 降下中の横流れ**（4.2 節で報告済み）。本節の着陸前手順で軽減したが、根治は
+ファーム側の判断事項である。
+
+### Jev での評価（キーが要る。未実施）
+
+ユーザーが後で実行するコマンド（3 場面）:
+
+```bash
+TYPESAFE_API_KEY=... sf pilot mission line --sils --yes                       # 正常
+TYPESAFE_API_KEY=... sf pilot mission line --sils --yes --scene battery_drop  # 電池低下
+TYPESAFE_API_KEY=... sf pilot mission line --sils --yes --scene drift         # 横流れ
+```
+
+キー不要の確認は `--fake` を付ける（規則ベースの代役に差し替わる）。経路の確認だけ
+なら `sf pilot mission line --dry-run`。
+
+読み取るべき点: Jev が区間の境目で `next_step` を選ぶか、到達しなかった区間に
+`redo_step` を選ぶか、電池が「残り少ない」ときに何を選ぶか（コードは進む系を
+`return_home` に置き換えるので、Jev の生の選択との差が集計に出る）。ミッション
+質問 3 問同梱時のトークン数も、このとき初めて実測できる。
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -329,6 +461,10 @@ TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml
 | `lib/sfpilot/instruction.py` | 指示 → 手順の列（数値の抽出・組み立て規則・包絡の事前検査・`return_home`） | 実装済み（P3） |
 | `lib/sfpilot/say.py` | 手順の実行と、その間も動き続ける監視層 | 実装済み（P3） |
 | `lib/sfpilot/tests/say_eval_cases.yaml` | `sf pilot say --eval` の指示 10 例と期待 | 実装済み（P3） |
+| `lib/sfpilot/mission.py` | 経路の読み込み・到達の区分・飛行ループ・コード側の上限 | 実装済み（P4） |
+| `lib/sfpilot/mission_run.py` | SILS の段取りと結果の集計表示（CLI から処理本体を移した先）| 実装済み（P4） |
+| `lib/sfpilot/missions/*.yaml` | 同梱の経路（`line`＝現状飛べる、`square`＝P4 の対象だが現状飛べない）| 実装済み（P4） |
+| `lib/sfpilot/landing.py` | 着陸前手順（移動を終える → `stop` → 静定待ち → `land`）| 実装済み（P4） |
 | `simulator/sils/devices/rc_stdin.cpp` | stdin に `api <行>`・`wind`・`vbatt` を追加 | 実装済み（P2） |
 | `lib/sfpilot/scenes.py` | 電池低下・横流れの場面（`.scn` ファイルではなく宣言の表として持つ） | 実装済み（P2） |
 
@@ -365,7 +501,9 @@ API キーは環境変数 `TYPESAFE_API_KEY` のみで渡す。リポジトリ�
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 150 件。キー不要・通信不要で通る。
+`lib/sfpilot/tests/` に 208 件。キー不要・通信不要で通る。加えて
+`simulator/tests/test_mission_sils.py` に SILS の実飛行 6 件（`--fake`。エミュレータの
+ビルドが無ければ自動で飛ばす）。
 
 | 観点 | 確認内容 |
 |------|---------|
@@ -378,6 +516,12 @@ API キーは環境変数 `TYPESAFE_API_KEY` のみで渡す。リポジトリ�
 | 指示の変換（P3） | 数値の抽出（半角・全角・漢数字、m/cm/度）。組み立て規則の各項目（`none` 以降を捨てる・離陸と着陸の補い・既定の量・数値が区分に優先）。包絡の事前検査が超過を手順名指しで拒否すること。低確信で実行しないこと。旋回を含む `return_home` の計算 |
 | 手順の実行（P3） | 手順の実行中に待機の `rc` を送らないこと（移動を打ち消すため）。着陸・停止は送ること。答え待ちの待機で中断しないこと。次の手順は機体の応答と静定を待つこと |
 | CLI（P3） | 非対話で `--yes` が無ければ実行しないこと。`--dry-run` が何も飛ばさないこと |
+| 経路の読み込み（P4） | 包絡外の経路を、操作者が書いた区間名で拒否すること。`verb` の欠落・不正・量の欠落・空の経路・存在しないファイルを拒否すること。裸の名前が同梱の経路に解決され、手元の同名ファイルがそれに優先すること |
+| 到達の区分（P4） | 許容内が「目標どおり」。区間の進行方向への射影で「手前」と「行き過ぎ」を分けること。終点の横で終わった区間を「行き過ぎ」と呼ばないこと。許容が config 由来であること |
+| ミッションの state（P4） | 数値が 1 つも無いこと。「3/10」が位置として渡ること。やり直し回数と経過時間が語になること。到達が未確定なら項目ごと省くこと |
+| コード側の上限（P4） | やり直しが上限で「飛ばす」に変わること。待機がやり直しに解決された場合も計数に含まれること。電池が少ないとき進む系の答えが `return_home` に置き換わり、`land` は置き換わらないこと。時間上限が次の区間の前に効くこと |
+| 着陸前手順（P4） | `land` より先に `stop` が届くこと。実測速度が高い間は `land` を送らないこと。低速が継続して初めて送ること。一瞬の低速では静定としないこと。上限に達したら送ること。緊急時は短い上限を使い、実行中の移動を待たないこと。着陸中は他の指令を出さないこと。記録に経路と待ち時間が残ること |
+| SILS 実飛行（P4） | `nominal` が完走し真値が経路と一致すること。帰還が離陸点へ戻すこと。降下中の横移動が手順なしの基準を超えないこと。`battery_drop` が経路を途中で終えて着陸すること。`drift` が区間を無限にやり直さず、飛ばした理由を記録すること |
 
 ## 8. 別計画として提案（本計画の範囲外）
 
@@ -403,7 +547,7 @@ Anyone implementing or changing `sf pilot`, and anyone reviewing the safety desi
 
 ### Implementation Status (as of 2026-09-19)
 
-P0, P1, P2a, P2 and P3 are implemented. The rest is not started.
+P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 
 | Stage | Content | Status |
 |-------|---------|--------|
@@ -413,7 +557,8 @@ P0, P1, P2a, P2 and P3 are implemented. The rest is not started.
 | P2b | Drive the forward ToF (add `sensor_tof_front`, mirror into `SensorSnapshot`, supply telemetry bit1). **Requires hardware verification and battery power** (the forward ToF has been seen not to come up on USB power) | Not started |
 | P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done** (not yet exercised against the live Jev API) |
 | P3 | `sf pilot say` (natural-language instruction) | **Done** (not yet exercised against the live Jev API; see "P3 Results") |
-| P4 | Mission (route patrol) and `next_move`. **Forward-ToF exploration** (depends on P2b: choose a heading from the clear space ahead) | Not started |
+| P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done** (not yet exercised against the live Jev API; see "P4 Results") |
+| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). Starts **after P2b**: the premise does not hold while the current firmware leaves the forward ToF undriven | Not started (waiting on P2b) |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
 **Forward ToF status (important):** the forward ToF exists in hardware but is **not driven by the current firmware**. `TofTask` holds its XSHUT low, keeping it in reset (both VL53L3CX parts boot at I2C address 0x29, so re-addressing the bottom sensor would reach both and interleave their ranging data). Telemetry v2 reserves the slot (`tof_front`, validity bit1), but on current firmware bit1 is always clear and the value is always -1.0. **Any plan to have Jev judge obstacle avoidance or exploration rests on a premise that does not hold until P2b is done.**
@@ -531,6 +676,62 @@ Implemented: `lib/sfpilot/instruction.py` (figure extraction across half-width, 
 
 **Evaluation against the live Jev (needs a key; not yet run):** ten instructions — simple, multi-step, with figures, vague, out of range, and not about flying at all — with their expected steps are in `lib/sfpilot/tests/say_eval_cases.yaml`, run with `TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml`. The assembly rules, the figure extraction and the envelope check are code and are pinned without a key by `pytest lib/sfpilot`; what this table measures is only the remainder — whether Jev picks the right move and size from a Japanese sentence. Where an expectation may itself be too narrow (a vague instruction names no direction), the case says so.
 
+## 4.3 P4 Results (`sf pilot mission`)
+
+Implemented: `lib/sfpilot/mission.py` (loading a route, the envelope pre-check, classifying a leg's arrival, the flight loop and the code's own limits), `lib/sfpilot/mission_run.py` (staging the SILS flight and printing the summary), the shipped routes in `lib/sfpilot/missions/`, `lib/sfpilot/landing.py` (the pre-landing approach), `MissionConfig` and `LandingConfig` in `config.py`, the keyless rule-based `MissionFakeJudge`, and the `sf pilot mission` subcommand (argument handling and printing only; the flight logic lives in `sfpilot`).
+
+**The division of labour is the design's.** Jev answers one question at each leg boundary -- `next_move`, choosing between `next_step` / `hold` / `redo_step` / `skip_step` / `return_home` / `land` -- carried in the SAME request as use (1)'s `safety_action` and `abnormal` (`judge.WITH_MISSION`). No numeric comparison is asked of it: whether a leg arrived is classified by code from the distance to its intended end point ("as planned" / "stopped short" / "overshot"), the retry count becomes a word ("not yet" / "once already" / "already at the limit"), and elapsed time becomes "plenty of time left" / "about halfway" / "close to the time limit". `assert_no_numbers()` refuses a state carrying a figure before it is sent.
+
+**Four limits belong to the code and no answer overrides them**: two retries per leg, a 180 s ceiling on the whole mission, a refusal to go ON once the battery reads "running low" (any of `next_step` / `redo_step` / `skip_step` is replaced with `return_home`), and the envelope, checked when the route is loaded. All four live in `_MissionFlight._allow`, and every refusal is recorded in the summary and the trace.
+
+**Measured in SILS under FakeJudge, on the `line` route.** `nominal` flew all six legs "as planned" and completed; the ground truth reached N=+1.376 m with |E|=0.000 m, peaked at 0.808 m altitude and touched down at N=+0.119 m. `battery_drop` chose `return_home` as the battery crossed the band, flew home and landed (t=54.5 s). `drift` had legs classified as "stopped short", retried each twice, and converted the third attempt into skipping with the reason recorded.
+
+### The pre-landing approach (working with the firmware's design)
+
+**The firmware stops holding horizontal position the moment a landing is accepted.** This is by design, not a defect: `sf_controller_pid/pid_controller.cpp` excludes `VerticalPhase::Landing` from `computePositionHold()` so that a descent steers identically in every flight mode (a POS_HOLD landing handles like a STABILIZE one). The consequence is that whatever horizontal velocity the craft carries INTO the descent is carried THROUGH it, unopposed. Measured in SILS (`truth.csv`, horizontal travel from the `land` to touchdown): **0.271 m** for a `land` sent straight after a move, **0.043 / 0.132 / 0.163 / 0.226 m** over four flights through the approach, and **0.000 m** from a genuinely stationary hover.
+
+So `sfpilot` does the following, **leaving the firmware untouched**:
+
+- **Every `land` in the package goes out from the Executor.** A second caller with its own `link.send_command("land")` would be a landing that silently does not settle; having one place send it is what makes the settling unskippable.
+- **The approach**: wait for an outstanding blocking move to answer (2 s ceiling, then override it with `stop`), command `stop` to re-capture the present position, wait until the MEASURED horizontal speed stays below 0.05 m/s for a second (6 s ceiling), and only then send `land`. A `land` that interrupts a move leaves the guidance target standing and the craft accelerates towards it once the descent begins, so the move is ended deliberately rather than left hanging.
+- **A landing that cannot wait runs the same approach on a much shorter ceiling** (0.5 s for the Monitor's immediate safety rules -- a battery in the danger band, a diverged estimate). It is not skipped even then, because half a second of `stop` already removes most of the approach speed. `emergency` remains unreachable from this package.
+- The trace records which path was taken and how long it waited (`urgent` / `settled` / `timed_out` / `waited_s` / `ceiling_s`).
+
+**Expected on real hardware, not yet confirmed there.** All of the above is measured in SILS. The cause is the firmware's own control law rather than anything specific to SILS, so the same behaviour is expected on the vehicle. **Whether to fix it at the root -- by keeping position hold active during a descent -- is a vehicle-side design judgement and out of scope here.** This plan stays within what can be improved without changing the firmware's design.
+
+### Problem found (out of scope here, reported rather than worked around)
+
+**A move that crosses horizontal axes disarms the craft through the impact detector.** Following a north/south move with an east/west one produces `[WARN] failsafe: Impact detected: 5.5G (x2 @400Hz)` about a second in, then `Impact/anomaly → emergency DISARM`, and the flight ends. None of `sf pilot` is involved: it reproduces by typing `api` lines into a bare emulator.
+
+| Sequence sent | Result |
+|---------------|--------|
+| `forward 60` → `right 60` | **Disarms** (5.5 G) |
+| `right 60` → `forward 60` | **Disarms** |
+| `left 60` → `forward 60` | **Disarms** |
+| `forward 60` → `go 0 -60 0 50` (diagonal) | **Disarms** |
+| `cw 90` (a turn just after takeoff) | **Disarms** (6.2 G) |
+| `forward 60` → `forward 60` | Fine |
+| `right 60` → `right 60` | Fine |
+| `forward 60` → `up 30` | Fine |
+| `right 60` alone | Fine |
+| `up 50` → `forward 50` → `go -50 0 0 50` (P3's sequence) | Fine |
+
+Repeating a move on the same axis is unaffected, as is a vertical move after a horizontal one. It reproduces with 16 s of hovering in between, so it is not a settling problem. Five to six G from a gentle 0.6 m translation is not physically possible, which points at the SILS IMU or frame handling rather than at the flight itself; the east/west axis being involved is suggestive, given §4.1's axis-swap finding on the same axis (resolved on 2026-09-19 by fixing the start attitude).
+
+**Effect**: every route that uses both horizontal axes -- the square among them -- cannot be flown today. P3 escaped it because its sequence stayed on the north axis. `square.yaml` is kept as the route P4 is FOR, and the route actually flown, including by the tests, is the single-axis `line.yaml`. **A separate investigation is recommended.**
+
+The sideways drift during a descent reported in §4.2 is reduced by the approach above, but fixing it at the root remains a vehicle-side judgement.
+
+### Evaluation against the live Jev (needs a key; not yet run)
+
+```bash
+TYPESAFE_API_KEY=... sf pilot mission line --sils --yes                       # nominal
+TYPESAFE_API_KEY=... sf pilot mission line --sils --yes --scene battery_drop  # falling battery
+TYPESAFE_API_KEY=... sf pilot mission line --sils --yes --scene drift         # pushed sideways
+```
+
+Add `--fake` for a keyless run (the rule-based stand-in takes over), or `--dry-run` to check a route without flying. What to read: whether Jev picks `next_step` at a boundary, `redo_step` after a leg that did not arrive, and what it picks once the battery reads "running low" -- the code replaces any going-on answer with `return_home` there, so the summary shows the difference between its choice and what flew. The token count with the third mission question included is measurable for the first time here.
+
 ## 5. Placement
 
 `RealLink` moved from `lib/sfcli/commands/blocks.py` to `lib/sfpilot/link.py` on 2026-09-19, so that `sf blocks` and `sf pilot` drive the vehicle through one client instead of two copies that could drift apart. `blocks.py` imports it.
@@ -549,9 +750,11 @@ The API key is passed only through the environment variable `TYPESAFE_API_KEY`, 
 
 ## 7. Tests
 
-150 tests in `lib/sfpilot/tests/`, all passing without a key or a network: that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+208 tests in `lib/sfpilot/tests/`, all passing without a key or a network, plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
 
 P3 adds: figure extraction across half-width, full-width and kanji numerals in m, cm and degrees; every assembly rule (everything after the first `none` is dropped, a takeoff and a landing are supplied, an unspecified amount takes the default band, a spoken figure outranks the band); that the envelope pre-check refuses an over-reaching plan and names the offending step; that a low-confidence step is not flown; the `return_home` computation including a turn along the way; that the hovering `rc` is withheld while a plan drives the vehicle but `land` is not; that waiting for an answer does not interrupt the sequence while a hold Jev chose does; that a step waits for the vehicle's reply and for the craft to settle; and that a non-interactive session will not fly without `--yes`.
+
+P4 adds: that a route leaving the envelope is refused by the leg name the operator wrote, and that a missing verb, an unknown verb, a missing amount, an empty route and a missing file are each refused; that a bare name resolves to a shipped route while a local file of the same spelling always wins; that arrival is classified by projecting the error onto the leg's own direction, so a leg that ended sideways of its target is not called an overshoot, and that the tolerance comes from the config; that the mission state carries no numbers, that "3/10" reaches the model as a position while the retry count and the elapsed time reach it as words, and that an unknown arrival is omitted entirely; that the retry limit converts a redo into a skip, that a hold resolved into a retry still counts against that limit, that a low battery replaces every going-on answer with `return_home` while never replacing a `land`, and that the time limit is checked before a leg rather than after; that a landing sends `stop` before `land`, waits on the measured speed, does not accept a single slow reading as rest, lands anyway at its ceiling, uses the shorter ceiling when the reason cannot wait, and commands nothing else while it is under way; and, in SILS, that `nominal` completes with the ground truth matching the route, that `return_home` brings the craft back before it lands, that the descent does not slide as far as an unsettled one, that `battery_drop` ends the route early and lands, and that `drift` never exceeds the retry ceiling and records why anything was skipped.
 
 ## 8. Proposed as a Separate Plan (out of scope here)
 

@@ -208,6 +208,156 @@ class InstructionConfig:
 
 
 @dataclass(frozen=True)
+class LandingConfig:
+    """How long to settle the aircraft before sending `land`.
+
+    Why this exists at all: the firmware **stops holding horizontal
+    position the moment a landing begins**, by design.
+    `sf_controller_pid/pid_controller.cpp` excludes `VerticalPhase::Landing`
+    from `computePositionHold()` so that the descent steers the same way in
+    every mode (a POS_HOLD landing handles like STABILIZE). The consequence
+    is that whatever horizontal velocity the craft carries INTO the descent
+    is carried THROUGH it, unopposed: measured in SILS, a `land` sent
+    straight after a move slides 0.45 m before touchdown, the same `land`
+    after a 3 s pause slides 0.10 m, and a `land` from a genuinely
+    stationary hover slides 0.000 m.
+
+    So the aircraft is brought to rest before the landing is asked for.
+    That is this package's work, not the firmware's: the firmware's
+    behaviour follows from a design decision about how a descent should
+    steer, and changing it is a vehicle-side judgement (see
+    docs/plans/jev-autopilot.md §4.3).
+
+    `land` を送る前に機体を静定させる時間の設定。
+
+    これが存在する理由: ファームウェアは**着陸を始めた瞬間に水平の位置保持を
+    やめる**。これは設計どおりである。`sf_controller_pid/pid_controller.cpp` は
+    `computePositionHold()` から `VerticalPhase::Landing` を除外しており、降下の
+    操縦則をモード間で統一するためである（POS_HOLD の着陸も STABILIZE と同じ
+    操縦感になる）。その帰結として、降下に**持ち込んだ**水平速度は、妨げられる
+    ことなく降下中も**持ち越される**。SILS での実測: 移動の直後に送った `land` は
+    接地までに 0.45m 滑り、3 秒おいてからの同じ `land` は 0.10m、本当に静止した
+    ホバリングからの `land` は 0.000m である。
+
+    そこで、着陸を求める前に機体を止める。これは本パッケージの仕事であって
+    ファームの仕事ではない。ファームの挙動は「降下をどう操縦させるか」という
+    設計判断から従うものであり、それを変えるかどうかは機体側の判断事項である
+    （docs/plans/jev-autopilot.md §4.3 参照）。
+    """
+
+    # The craft counts as at rest below this horizontal speed [m/s]. Same
+    # figure P3 settled on for waiting between an instruction's steps, and
+    # for the same reason -- it is the speed at which the remaining slide is
+    # small compared with the landing accuracy anyone expects.
+    # この水平速度 [m/s] を下回れば静止とみなす。P3 が手順の間の待ちに定めたのと
+    # 同じ値で、理由も同じ — 残りの滑りが、誰もが期待する着陸精度に比べて
+    # 小さくなる速度である。
+    settle_speed_mps: float = 0.05
+
+    # The speed must STAY below the threshold for this long. A single slow
+    # reading is not rest: an approach crosses zero velocity as it overshoots
+    # and turns back, so a one-shot check passes at exactly the moment the
+    # craft is about to accelerate the other way (measured in P3).
+    # 速度がこの時間だけ下回り続ける必要がある。1 回遅く読めただけでは静止では
+    # ない。進入は行き過ぎて戻る際に速度 0 を通過するので、1 回きりの確認は
+    # 「これから逆向きに加速する」まさにその瞬間に通ってしまう（P3 で実測）。
+    settle_hold_s: float = 1.0
+
+    # Ceiling on the ordinary settling wait [s]. A craft that is still being
+    # pushed (a disturbance, a drifting estimate) would otherwise never read
+    # as stopped and the landing would never be sent, which is worse than
+    # landing with some speed left: the aircraft is in the air either way,
+    # and waiting indefinitely spends the battery that makes a landing
+    # possible at all.
+    # 通常の静定待ちの上限 [s]。押され続けている機体（外乱・推定の流れ）は
+    # いつまでも「止まった」と読めず、着陸が永遠に送られなくなる。速度を残して
+    # 着陸するより悪い — どちらにせよ機体は空中にあり、待ち続けることは、着陸を
+    # 可能にしている当の電池を使うからである。
+    settle_max_s: float = 6.0
+
+    # The same ceiling when the reason for landing cannot wait -- a battery
+    # in the danger band, a diverged estimate. Short rather than zero: even
+    # half a second of `stop` takes the worst of the approach speed off (the
+    # 3 s pause above already recovered most of the 0.45 m slide), and a
+    # dangerous battery still has this long.
+    # 着陸の理由が待てない場合の同じ上限 — 電池の危険域、推定の発散。0 ではなく
+    # 短くする。0.5 秒の `stop` でも進入速度の大部分は落ちる（上記の 3 秒の待ちは
+    # 0.45m の滑りのほとんどを回収している）し、危険域の電池にもこれだけの余裕は
+    # ある。
+    urgent_settle_max_s: float = 0.5
+
+    # How long to wait for an outstanding blocking move to answer before
+    # overriding it with `stop` [s]. A `land` that interrupts a move leaves
+    # the guidance target in place and the craft accelerates towards it
+    # after touchdown begins, so the move is ended deliberately rather than
+    # left hanging.
+    # 実行中のブロックする移動の応答を待つ上限 [s]。これを過ぎたら `stop` で
+    # 上書きする。移動の途中に割り込む `land` は誘導目標を残し、機体は降下開始後も
+    # そこへ向かって加速する。そこで移動は放置せず、意図して終わらせる。
+    move_reply_wait_s: float = 2.0
+
+
+@dataclass(frozen=True)
+class MissionConfig:
+    """The limits a mission flies under, which no answer may override
+    (`sf pilot mission`).
+
+    Every value here exists because Jev, correctly, cannot see what it
+    governs. The model is shown "the battery is running low" and "this leg
+    has been redone twice"; it is not shown a percentage, a clock or a
+    retry counter, and it is documented not to be a calculator. So the
+    decision that follows from a COUNT or a DURATION is taken here, and
+    Jev's answer is a proposal that this table can refuse.
+
+    ミッションが従う上限（`sf pilot mission`）。どの答えもこれを覆せない。
+
+    ここの値はいずれも、Jev には（当然ながら）それが支配するものが見えないから
+    存在する。モデルに見えているのは「電池が残り少ない」「この区間は 2 回
+    やり直した」という語であって、百分率でも時計でも計数器でもない。そもそも
+    計算機ではないと文書化されている。したがって**回数**や**経過時間**から従う
+    判断はこちらで決め、Jev の答えは、この表が却下しうる提案として扱う。
+    """
+
+    # How many times one leg may be redone before the code stops allowing
+    # it. Two is enough to absorb a gust that pushed one approach off; a
+    # leg that fails three times is failing for a reason repeating it will
+    # not fix, and every retry costs battery the mission still needs.
+    # 1 つの区間をやり直せる回数の上限。2 回あれば、1 回の進入を押し流した突風は
+    # 吸収できる。3 回失敗する区間は、繰り返しても直らない理由で失敗している。
+    # やり直しはそのたびに、ミッションがまだ必要とする電池を消費する。
+    max_retries_per_leg: int = 2
+
+    # The whole mission's ceiling [s], counted from the first leg. It is not
+    # a per-leg timeout -- `say.py`'s StepRunner already bounds one step --
+    # but a bound on a route that keeps holding and redoing its way through
+    # the battery without ever finishing.
+    # ミッション全体の上限 [s]。最初の区間から数える。区間ごとのタイムアウトでは
+    # なく（1 手順の上限は既に say.py の StepRunner が持つ）、待機とやり直しを
+    # 繰り返して終わらないまま電池を使い切る経路に対する上限である。
+    time_limit_s: float = 180.0
+
+    # How close to a leg's intended end point counts as having arrived [m].
+    # Chosen to sit just outside the vehicle's own 0.15 m tolerance sphere
+    # (api_task.cpp kReachRadiusM): inside that radius the firmware has
+    # already declared the move reached, so calling it "stopped short"
+    # would contradict the vehicle about its own move. The margin above it
+    # covers the settling drift measured in P3.
+    # 区間の意図した終点にどれだけ近ければ到達とみなすか [m]。機体自身の許容球
+    # 0.15m（api_task.cpp の kReachRadiusM）のすぐ外側に置いた。その内側では
+    # ファームが既に「到達した」と宣言しており、それを「手前で止まった」と
+    # 呼ぶのは、機体自身の移動について機体と食い違うことになる。上乗せの余裕は
+    # P3 で実測した静定中の流れを賄う。
+    arrival_tolerance_m: float = 0.25
+
+    # A leg's `go` speed [cm/s] when the route says `return_home`. Kept at
+    # the envelope's own horizontal ceiling so a mission cannot fly faster
+    # than a hand-written instruction may.
+    # 経路が `return_home` と言うときの `go` の速度 [cm/s]。包絡自身の水平上限に
+    # 合わせ、ミッションが手書きの指示より速く飛べないようにする。
+    return_speed_cm_s: float = 50.0
+
+
+@dataclass(frozen=True)
 class SilsConfig:
     """How a `sf pilot run --sils` flight is staged and how scenes drive it.
 
@@ -330,6 +480,8 @@ class PilotConfig:
     monitor: MonitorConfig = field(default_factory=MonitorConfig)
     arbiter: ArbiterConfig = field(default_factory=ArbiterConfig)
     instruction: InstructionConfig = field(default_factory=InstructionConfig)
+    landing: LandingConfig = field(default_factory=LandingConfig)
+    mission: MissionConfig = field(default_factory=MissionConfig)
     sils: SilsConfig = field(default_factory=SilsConfig)
 
     monitor_hz: float = MONITOR_HZ

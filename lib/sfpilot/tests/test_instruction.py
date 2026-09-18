@@ -557,16 +557,21 @@ def test_a_hovering_rc_is_withheld_while_a_plan_drives_the_vehicle():
     assert link.sent == [], f"an rc reached the vehicle: {link.sent}"
 
 
-def test_a_landing_is_still_sent_while_a_plan_drives_the_vehicle():
-    """Withholding the hover must not withhold the stop.
+def test_a_landing_is_still_begun_while_a_plan_drives_the_vehicle():
+    """Withholding the hover must not withhold the landing.
 
     The safety layer running at all is only worth anything if it can still
-    end the flight, so `land` goes out whatever else is driving.
+    end the flight, so a landing begins whatever else is driving. It begins
+    with `stop` rather than `land`, because the firmware stops holding
+    horizontal position for the whole descent (landing.py) -- the craft is
+    brought to rest first, and `land` follows.
 
-    待機を抑えることが、停止まで抑えてはならないこと。
+    待機を抑えることが、着陸まで抑えてはならないこと。
 
     安全層が動いていることに意味があるのは、飛行を終わらせられる場合だけ
-    である。`land` は、何が駆動していても送られる。
+    である。着陸は、何が駆動していても始まる。始まりが `land` ではなく `stop`
+    なのは、ファームが降下のあいだ水平の位置保持をやめるためである
+    （landing.py）。先に機体を止め、`land` はその後に続く。
     """
     from sfpilot.arbiter import Verdict, VERDICT_LAND
     from sfpilot.executor import Executor
@@ -577,7 +582,8 @@ def test_a_landing_is_still_sent_while_a_plan_drives_the_vehicle():
 
     executor.apply(Verdict(action=VERDICT_LAND))
 
-    assert link.sent == ["land"]
+    assert link.sent == ["stop"], "the landing must start by stopping the craft"
+    assert executor.landing, "the flight is ending from this moment"
 
 
 def test_a_step_waits_for_the_vehicle_to_answer_before_the_next_one():

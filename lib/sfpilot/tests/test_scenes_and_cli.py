@@ -303,3 +303,96 @@ def test_the_shipped_eval_cases_parse_and_carry_expectations():
         assert case.get("instruction"), case
         has_expectation = case.get("expect_steps") or case.get("expect_refusal")
         assert has_expectation, f"no expectation for {case['instruction']}"
+
+
+# =============================================================================
+# `sf pilot mission` argument handling / `sf pilot mission` の引数処理
+# =============================================================================
+
+def test_mission_without_sils_is_refused_before_anything_is_launched():
+    """Real hardware is P5: `mission` without --sils fails, it does not fly.
+    実機は P5。--sils 無しの `mission` は飛ばずに失敗すること。"""
+    args = _parse(["pilot", "mission", "square", "--fake", "--yes"])
+
+    assert pilot_cmd.run_mission(args) == 1
+
+
+def test_a_mission_dry_run_checks_the_route_without_flying(capsys):
+    """--dry-run loads and prints the route and launches no emulator.
+
+    This is how an operator sees what a route file became -- including the
+    envelope refusal -- before anything is in the air. It must work without
+    --yes: nothing moves, so there is nothing to consent to.
+
+    --dry-run は経路を読んで表示し、エミュレータを起動しないこと。
+
+    経路ファイルが何になったか（包絡による拒否を含む）を、何も空中に無いうちに
+    操作者が確かめる手段である。--yes 無しで動く必要がある。何も動かない以上、
+    同意すべきものが無いからである。
+    """
+    args = _parse(["pilot", "mission", "square", "--sils", "--fake", "--dry-run"])
+
+    assert pilot_cmd.run_mission(args) == 0
+    printed = capsys.readouterr().out
+    assert "forward 60" in printed
+    assert "takeoff" in printed and "land" in printed
+
+
+def test_a_mission_dry_run_does_not_need_sils_either():
+    """Checking a route is not flying, so --sils is not required for it.
+    経路の確認は飛行ではないので、--sils を要求しないこと。"""
+    args = _parse(["pilot", "mission", "square", "--fake", "--dry-run"])
+
+    assert pilot_cmd.run_mission(args) == 0
+
+
+def test_a_route_that_cannot_be_flown_is_reported_and_nothing_starts(tmp_path):
+    """A refused route exits non-zero without reaching the confirmation.
+    拒否された経路は、確認に達する前に非ゼロで終わること。"""
+    import json
+
+    far = DEFAULT_CONFIG.envelope.radius_max_m * 100.0 + 100.0
+    path = tmp_path / "too_far.json"
+    path.write_text(json.dumps({"legs": [
+        {"verb": "takeoff"}, {"verb": "forward", "amount": far},
+    ]}), encoding="utf-8")
+    args = _parse(["pilot", "mission", str(path), "--sils", "--fake", "--yes"])
+
+    assert pilot_cmd.run_mission(args) == 1
+
+
+def test_a_non_interactive_session_does_not_fly_a_mission_without_yes(monkeypatch):
+    """Silence is not consent, for a route as much as for an instruction.
+
+    pytest runs without a tty, which is exactly the situation this guards:
+    a script or a CI job must not launch a flight by omitting an answer.
+
+    無言は同意ではない。経路についても指示と同じであること。
+
+    pytest は tty 無しで動くので、まさにこの状況である。スクリプトや CI が
+    「答えないこと」で飛行を始められてはならない。
+    """
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    args = _parse(["pilot", "mission", "square", "--sils", "--fake"])
+
+    assert pilot_cmd.run_mission(args) == 1
+
+
+def test_a_mission_defaults_to_the_nominal_scene():
+    """Omitting --scene flies the route with no fault injected.
+    --scene 省略時は、故障を注入せず経路を飛ぶこと。"""
+    assert _parse(["pilot", "mission", "square", "--sils"]).scene == NOMINAL
+
+
+def test_a_mission_accepts_every_scene_the_table_offers():
+    """Each scene name is a value --scene will take for a mission too.
+    各場面の名前が、ミッションの --scene の値としても通ること。"""
+    for name in scene_names():
+        args = _parse(["pilot", "mission", "square", "--sils", "--scene", name])
+        assert args.scene == name
+
+
+def test_the_mission_time_limit_defaults_to_the_configured_one():
+    """With no override the route uses config.py's limit, not a literal here.
+    上書きが無ければ config.py の上限を使い、ここの直書き値は使わないこと。"""
+    assert _parse(["pilot", "mission", "square", "--sils"]).duration is None

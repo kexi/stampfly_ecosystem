@@ -63,7 +63,14 @@ class Pilot:
         self.operator_instruction = operator_instruction
         self.monitor = Monitor(config)
         self.arbiter = Arbiter(config)
-        self.executor = Executor(link, config)
+        # The Executor's pre-landing settling needs the craft's measured
+        # speed, and the Monitor is what holds it: the loop already folds
+        # every sample in there, so reading the link again would take
+        # samples away from the classification.
+        # Executor の着陸前の静定には機体の実測速度が要り、それを持っているのは
+        # Monitor である。ループが全サンプルをそこへ取り込んでいるので、リンクを
+        # もう一度読めば、区分からサンプルを奪うことになる。
+        self.executor = Executor(link, config, speed_probe=self.horizontal_speed)
         self.decisions: list = []
         self._pending: Optional[_Pending] = None
         self._last_asked = 0.0
@@ -73,6 +80,28 @@ class Pilot:
     @property
     def question_ids(self) -> tuple:
         return WITH_MISSION if self.mission else SAFETY_ONLY
+
+    def horizontal_speed(self):
+        """The craft's horizontal speed [m/s] from the latest sample, or None.
+
+        Read from the Monitor's numerics, where the loop already keeps the
+        figures it classified from. Callers that wait for the craft to stop
+        need the NUMBER, not the classification: "drifting slowly" spans a
+        range far too wide to settle on.
+
+        最新サンプルから見た機体の水平速度 [m/s]。分からなければ None。
+
+        Monitor の numeric から読む。ループが区分の元にした数値を既にそこへ置いて
+        いるためである。機体が止まるのを待つ側に必要なのは区分ではなく**数値**で
+        ある（「ゆっくり流されている」が表す幅は、静定の判定には広すぎる）。
+        """
+        sample = self.monitor.latest_sample
+        if not sample:
+            return None
+        north, east = sample.get("vel_n"), sample.get("vel_e")
+        if north is None or east is None:
+            return None
+        return (north * north + east * east) ** 0.5
 
     def step(self, now: float = None) -> Optional[dict]:
         """One turn of the loop. Returns the decision row if one was made.
