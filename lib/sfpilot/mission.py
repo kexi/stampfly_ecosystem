@@ -51,9 +51,18 @@ from .instruction import (
     Step, _FlightState, _GoStep, _TRAVEL_BODY_AXIS, _TURN_SIGN, check_envelope,
 )
 from .judge import (
-    MOVE_HOLD, MOVE_LAND, MOVE_NEXT, MOVE_REDO, MOVE_RETURN, MOVE_SKIP,
-    STEP_LAND, STEP_RETURN_HOME, STEP_TAKEOFF,
+    MOVE_EXPLORE, MOVE_HOLD, MOVE_LAND, MOVE_NEXT, MOVE_REDO, MOVE_RETURN,
+    MOVE_SKIP, STEP_LAND, STEP_RETURN_HOME, STEP_TAKEOFF,
 )
+
+# A leg that looks around instead of travelling. It is a `verb` like any
+# other so a route can be written with it in YAML, but it moves the
+# aircraft nowhere: the walk does not advance and the arrival is judged on
+# whether the sweep finished, not on where the craft ended up.
+# 移動の代わりに見回す区間。YAML で経路に書けるよう他と同じ `verb` にしてあるが、
+# 機体はどこへも動かない。積算は進まず、到達は「機体がどこで終わったか」ではなく
+# 「掃引が終わったか」で判定する。
+STEP_EXPLORE = "explore"
 
 # What the code decided to do with a leg, for the summary and the trace.
 # These are outcomes, not Jev's choices: `skipped` can come from Jev's
@@ -77,6 +86,19 @@ ARRIVAL_AS_PLANNED = "as planned"
 ARRIVAL_SHORT = "stopped short"
 ARRIVAL_OVERSHOT = "overshot"
 ARRIVAL_UNKNOWN = ""
+
+# How an `explore` leg ended. Distinct words from the travelling ones,
+# because "as planned" for a sweep means "the look around finished", which
+# is a different claim from "the craft is where it meant to be" -- and Jev
+# is shown these words, so one of them standing for both would be this
+# layer telling the model something it did not measure.
+# `explore` 区間がどう終わったか。移動の語とは分ける。掃引にとっての「目標どおり」
+# は「見回しが終わった」という意味であり、「機体が意図した場所にいる」とは別の
+# 主張だからである。しかも Jev はこの語を見るので、1 つの語に両方を担わせることは、
+# 測っていないことをこの層がモデルに告げることになる。
+ARRIVAL_SWEPT = "the look around finished"
+ARRIVAL_SWEEP_CUT_SHORT = "the look around was cut short"
+ARRIVAL_SWEEP_REFUSED = "the look around could not be done"
 
 # Why the mission stopped. One of these is always set when it ends early.
 # ミッションが終わった理由。途中で終わった場合は必ずどれかが設定される。
@@ -146,6 +168,15 @@ class Leg:
         """
         if self.step.verb == STEP_RETURN_HOME:
             return "go …（飛行時に計算）"
+        # An `explore` leg sends no single line: it is a turn-and-measure
+        # sequence the sweeper drives (`explore.sweep`), and how many lines
+        # that is depends on where it is interrupted. Saying so beats
+        # printing the first `cw` as though it were the whole leg.
+        # `explore` 区間は 1 行を送るのではない。掃引が駆動する「回って測る」列で
+        # あり（`explore.sweep`）、何行になるかはどこで中断されるかによる。最初の
+        # `cw` を区間の全体であるかのように表示するより、そう述べるほうがよい。
+        if self.step.verb == STEP_EXPLORE:
+            return "cw …（掃引。飛行時に組み立て）"
         return self.step.command()
 
 
@@ -317,7 +348,8 @@ def _build_leg(position: int, entry, config) -> Leg:
     needs_amount = verb in _TRAVEL_BODY_AXIS or verb in _TURN_SIGN
     if needs_amount and amount is None:
         raise MissionError(f"{position} 番目の区間「{verb}」に `amount` がありません")
-    if not needs_amount and verb not in (STEP_TAKEOFF, STEP_LAND, STEP_RETURN_HOME):
+    if not needs_amount and verb not in (STEP_TAKEOFF, STEP_LAND,
+                                         STEP_RETURN_HOME, STEP_EXPLORE):
         raise MissionError(
             f"{position} 番目の区間の `verb` が不正です: {verb!r}"
             f"（使えるのは {', '.join(_known_verbs())}）"
@@ -351,7 +383,7 @@ def _leg_step(verb: str, amount) -> Step:
 def _known_verbs() -> tuple:
     return tuple(sorted(
         set(_TRAVEL_BODY_AXIS) | set(_TURN_SIGN)
-        | {STEP_TAKEOFF, STEP_LAND, STEP_RETURN_HOME}
+        | {STEP_TAKEOFF, STEP_LAND, STEP_RETURN_HOME, STEP_EXPLORE}
     ))
 
 
@@ -612,7 +644,8 @@ def _retry_word(retries: int, config) -> str:
 
 def fly_mission(link, judge, mission: Mission, config=DEFAULT_CONFIG,
                 trace=None, scene=None, on_event=None,
-                on_cycle=None, on_decisions=None) -> MissionOutcome:
+                on_cycle=None, on_decisions=None,
+                on_sweep=None) -> MissionOutcome:
     """Fly the route, asking Jev what to do at every leg boundary.
 
     The safety layer of use (1) runs throughout, unchanged and unweakened:
@@ -628,8 +661,17 @@ def fly_mission(link, judge, mission: Mission, config=DEFAULT_CONFIG,
     ならない。
     """
     flight = _MissionFlight(link, judge, mission, config, trace, scene, on_event,
-                            on_cycle=on_cycle, on_decisions=on_decisions)
+                            on_cycle=on_cycle, on_decisions=on_decisions,
+                            on_sweep=on_sweep)
     return flight.run()
+
+
+def _blank_sweep():
+    """An empty sweep, for before the first one is taken.
+    最初の掃引を取る前の、空の掃引。"""
+    from .explore import Sweep
+
+    return Sweep()
 
 
 class _MissionFlight:
@@ -650,7 +692,7 @@ class _MissionFlight:
     """
 
     def __init__(self, link, judge, mission, config, trace, scene, on_event,
-                 on_cycle=None, on_decisions=None):
+                 on_cycle=None, on_decisions=None, on_sweep=None):
         from .pilot import Pilot
 
         self.link = link
@@ -666,6 +708,13 @@ class _MissionFlight:
         # Called once with the Pilot's decision list, before the first leg.
         # 最初の区間の前に、Pilot の判断の配列を 1 度だけ渡す先。
         self.on_decisions = on_decisions
+        # Called with `(sweep, sample)` once per completed look around, for
+        # the live view's fan of sectors. Must not block: like `on_cycle`,
+        # it is reached from the flight's own thread.
+        # 見回しが 1 回終わるごとに `(掃引, 標本)` で呼ばれる先。ライブ表示の扇形の
+        # ためのものである。`on_cycle` と同じく飛行自身のスレッドから到達するので、
+        # ブロックしてはならない。
+        self.on_sweep = on_sweep
         self.walk = MissionWalk(config)
         self.pilot = Pilot(link, judge, config, trace=trace,
                            mission=mission_state(mission, 0, ARRIVAL_UNKNOWN, 0, 0.0, config))
@@ -681,6 +730,19 @@ class _MissionFlight:
         self.started = 0.0
         self.index = 0
         self.retries = 0
+        # The most recent look around, kept so that every later leg's state
+        # carries it with its age. An empty one until a sweep is taken, and
+        # `surroundings_state` then reports "never" rather than eight
+        # unknowns (explore.py).
+        # 最後に行った見回し。以後の全区間の state が、古さとともにこれを携える
+        # ようにするため保持する。掃引を取るまでは空で、`surroundings_state` は
+        # その場合 8 つの「不明」ではなく「never」を報告する（explore.py）。
+        self.sweep = _blank_sweep()
+        # The sweep already sent to the live view, so the fan is published
+        # once per sweep rather than once per cycle.
+        # ライブ表示へ送信済みの掃引。扇形を周期ごとではなく掃引ごとに 1 度だけ
+        # 配信するために持つ。
+        self._sweep_shown = None
 
     # -- the loop / ループ -----------------------------------------------
 
@@ -697,6 +759,7 @@ class _MissionFlight:
         新しいループが、スティックの中立保持や表示の更新を黙って忘れた 1 つに
         なりえないようにするためである。
         """
+        self._publish_surroundings()
         self.pilot.step()
         self.link.hold_sticks_neutral()
         if self.on_cycle is not None:
@@ -760,6 +823,9 @@ class _MissionFlight:
             self.last_leg_elapsed = time.monotonic() - leg_started
             return True
 
+        if leg.step.verb == STEP_EXPLORE:
+            return self._sweep_current_leg(leg, leg_started)
+
         step = self._resolved_step(leg)
         start = (self.walk.north_m, self.walk.east_m)
         target = self.walk.target_after(step)
@@ -779,6 +845,106 @@ class _MissionFlight:
         self.last_leg_elapsed = time.monotonic() - leg_started
         self.last_step = step
         return True
+
+    def _sweep_current_leg(self, leg: Leg, leg_started: float) -> bool:
+        """Look all around instead of travelling. Returns whether to go on.
+
+        Classified in the same shape a travelling leg is -- an arrival word
+        that reaches Jev and an outcome that reaches the summary -- so the
+        rest of the loop does not have to know that this leg is different.
+        What differs is what "arrived" means: a sweep arrives by finishing,
+        not by ending up anywhere, and the walk is not advanced because the
+        aircraft has not moved.
+
+        A refused sweep (the feature is off, which is today's only setting)
+        does NOT stop the mission. It records why and carries on to the
+        next leg, because a route that also contains ordinary legs should
+        still fly them -- the alternative is that adding one `explore` leg
+        to a working route grounds the whole thing.
+
+        移動の代わりに見回す。続行するかを返す。
+
+        移動する区間と同じ形に区分する（Jev へ届く到達の語と、集計へ届く結果）。
+        ループの残りが「この区間は違う」と知らずに済むようにするためである。違う
+        のは「到達」の意味だけで、掃引は終わることで到達するのであって、どこかに
+        着くことで到達するのではない。機体が動いていないので、積算も進めない。
+
+        拒否された掃引（機能が無効の場合。今日のところ唯一の設定）はミッションを
+        **止めない**。理由を記録して次の区間へ進む。普通の区間も含む経路は、その
+        区間を飛べるべきだからである。そうしなければ、動いている経路に `explore`
+        区間を 1 つ足しただけで、全体が地上に留まることになる。
+        """
+        from .explore import SWEEP_COMPLETED, SWEEP_REFUSED, sweep
+
+        self.sweep = sweep(self.link, self.pilot, self.cfg,
+                           on_event=self.on_event)
+        self._publish_surroundings()
+        self.last_leg_elapsed = time.monotonic() - leg_started
+        self.last_step = leg.step
+
+        if self.sweep.outcome == SWEEP_COMPLETED:
+            self.last_arrival = ARRIVAL_SWEPT
+            return True
+        if self.sweep.outcome == SWEEP_REFUSED:
+            self.last_arrival = ARRIVAL_SWEEP_REFUSED
+            self._emit(f"leg {self.index + 1}: 掃引を実行しない — {self.sweep.detail}")
+            return True
+        # Interrupted: the safety layer stopped the turn, which is the same
+        # reason a travelling leg stops the mission.
+        # 中断: 安全層が旋回を止めた。移動する区間がミッションを止めるのと同じ
+        # 理由である。
+        self.last_arrival = ARRIVAL_SWEEP_CUT_SHORT
+        self._record(leg, LEG_NOT_REACHED, self.last_arrival,
+                     refusal=self.sweep.detail, elapsed_s=self.last_leg_elapsed)
+        self._stop(STOP_SAFETY, self.sweep.detail)
+        return False
+
+    def _publish_surroundings(self) -> None:
+        """Put the latest sweep into the state every later cycle carries.
+
+        Refreshed on each cycle rather than written once, because the age
+        word ages: `surroundings_state` bands it against the clock, so a
+        state written at the sweep would say "just now" for the rest of
+        the flight. Recomputing it is what makes a stale sweep read as
+        stale.
+
+        最新の掃引を、以後の全周期が携える state に載せる。
+
+        一度書くのではなく周期ごとに更新する。古さの語は**古くなる**ためである。
+        `surroundings_state` はそれを時計に対して区分するので、掃引の時点で書いた
+        state は、以後の飛行中ずっと「just now」と言い続ける。再計算することが、
+        古い掃引を古いと読ませるものである。
+        """
+        from .explore import surroundings_state
+
+        has_nothing_to_say = not self.sweep.readings
+        if has_nothing_to_say:
+            return
+        self.pilot.surroundings = surroundings_state(
+            self.sweep, time.monotonic(), self.cfg)
+        self._publish_sweep_picture()
+
+    def _publish_sweep_picture(self) -> None:
+        """Send the sweep to the live view, once per sweep.
+
+        Sent once rather than every cycle because the fan does not change
+        between sweeps: re-sending it at 50Hz would fill the viewer's
+        queue with identical frames and push out the samples that DO
+        change (`EventBus` drops the oldest when full).
+
+        掃引をライブ表示へ、掃引 1 回につき 1 度だけ送る。
+
+        扇形は掃引の間は変わらないので、毎周期ではなく 1 度だけ送る。50Hz で
+        送り直せば、同じ内容で閲覧者の待ち行列を埋め、**変化する**標本のほうを
+        押し出してしまう（`EventBus` は満杯なら最も古いものを捨てる）。
+        """
+        if self.on_sweep is None:
+            return
+        already_sent = self._sweep_shown is self.sweep
+        if already_sent:
+            return
+        self._sweep_shown = self.sweep
+        self.on_sweep(self.sweep, self.pilot.monitor.latest_sample)
 
     def _is_a_no_op(self, leg: Leg) -> bool:
         """Whether this leg has nothing left to fly.
@@ -900,6 +1066,16 @@ class _MissionFlight:
         allowed, refusal = self._allow(choice)
         self._announce(leg, allowed, refusal)
 
+        if allowed == MOVE_EXPLORE:
+            # Looking around is not progress along the route, so the index
+            # does not move and the leg is not counted as flown. The sweep
+            # replaces the answer's own effect: the next boundary is
+            # decided with `surroundings` in the state.
+            # 見回しは経路上の前進ではないので、区間の番号は進めず、飛んだとも
+            # 数えない。掃引が、その答え自身の効果を置き換える。次の境目は、
+            # state に `surroundings` を載せた状態で判断される。
+            self._explore_in_place(leg, choice, confidence, refusal)
+            return True
         if allowed == MOVE_REDO:
             self.retries += 1
             self._record(leg, LEG_REDONE, self.last_arrival, choice, confidence, refusal)
@@ -913,6 +1089,38 @@ class _MissionFlight:
         self.index += 1
         self.retries = 0
         return True
+
+    def _explore_in_place(self, leg: Leg, choice: str, confidence: float,
+                          refusal: str) -> None:
+        """Take a sweep Jev asked for, between legs, and record it.
+
+        Counted as a retry of the current leg. It is not one in the sense
+        of flying the leg again, but it costs the same thing a retry costs
+        -- time and battery with the route no further on -- and without
+        the count a model that answers `explore` every boundary would
+        sweep until the mission's time limit ended the flight. The retry
+        ceiling is already the code's answer to "this is not progressing";
+        reusing it means there is one such ceiling rather than two.
+
+        Jev が求めた掃引を、区間の境目で行い、記録する。
+
+        現在の区間のやり直しとして数える。区間をもう一度飛ぶという意味での
+        やり直しではないが、代償は同じである —— 経路が進まないまま時間と電池を
+        使う。数えなければ、境目ごとに `explore` と答えるモデルが、ミッションの
+        時間上限が飛行を終わらせるまで掃引し続ける。「進んでいない」に対する
+        コードの答えは既にやり直しの上限であり、それを使い回すことで、その種の
+        上限が 2 つではなく 1 つで済む。
+        """
+        from .explore import SWEEP_INTERRUPTED, sweep
+
+        self.sweep = sweep(self.link, self.pilot, self.cfg,
+                           on_event=self.on_event)
+        self._publish_surroundings()
+        self.retries += 1
+        detail = refusal or self.sweep.detail
+        outcome = (LEG_NOT_REACHED if self.sweep.outcome == SWEEP_INTERRUPTED
+                   else LEG_REDONE)
+        self._record(leg, outcome, self.last_arrival, choice, confidence, detail)
 
     def _ask_next_move(self, elapsed: float) -> tuple:
         """An answer about THIS leg boundary, or a hold if none arrives.
@@ -1048,7 +1256,24 @@ class _MissionFlight:
             has_arrived = self.last_arrival == ARRIVAL_AS_PLANNED
             proposed = MOVE_NEXT if has_arrived else MOVE_REDO
 
-        is_out_of_retries = (proposed == MOVE_REDO
+        # A sweep the build cannot fly is replaced BEFORE the other limits
+        # see it, so that the route carries on as though the option had not
+        # been offered rather than spending a retry on a refusal. The reason
+        # still reaches the trace through the returned string.
+        # この版で飛ばせない掃引は、他の上限が見る**前に**置き換える。選択肢が
+        # 提示されなかったかのように経路を進め、拒否のためにやり直しを 1 回使わ
+        # ないようにするためである。理由は、返す文字列を通じて記録には届く。
+        is_a_sweep_we_cannot_fly = (proposed == MOVE_EXPLORE
+                                    and not self.cfg.explore.enabled)
+        if is_a_sweep_we_cannot_fly:
+            has_arrived = self.last_arrival in (ARRIVAL_AS_PLANNED, ARRIVAL_SWEPT)
+            proposed = MOVE_NEXT if has_arrived else MOVE_REDO
+
+        # Sweeping costs what a retry costs and leaves the route where it
+        # was, so it answers to the same ceiling (`_explore_in_place`).
+        # 掃引の代償はやり直しと同じで、経路も進まない。したがって同じ上限に
+        # 従わせる（`_explore_in_place`）。
+        is_out_of_retries = (proposed in (MOVE_REDO, MOVE_EXPLORE)
                              and self.retries >= self.cfg.mission.max_retries_per_leg)
         if is_out_of_retries:
             return MOVE_SKIP, (
@@ -1056,7 +1281,12 @@ class _MissionFlight:
                 f"この区間を飛ばす"
             )
 
-        goes_on = proposed in (MOVE_NEXT, MOVE_REDO, MOVE_SKIP)
+        # `explore` is included: a sweep does not go anywhere, but it is a
+        # yaw rotation costing time and battery, and the reason to end a
+        # route on a low battery is the battery, not the direction.
+        # `explore` も含める。掃引はどこへも行かないが、時間と電池を使うヨー回転
+        # であり、電池が少ないときに経路を終える理由は、向きではなく電池である。
+        goes_on = proposed in (MOVE_NEXT, MOVE_REDO, MOVE_SKIP, MOVE_EXPLORE)
         if goes_on and self._battery_is_low():
             return MOVE_RETURN, "電池が残り少ないため、先へ進まず離陸点へ戻る"
 

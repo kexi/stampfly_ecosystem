@@ -45,6 +45,14 @@ VERDICT_CONTINUE = "continue"
 VERDICT_HOVER = "hover"
 VERDICT_LAND = "land"
 VERDICT_STOP = "stop"
+# Back away from an obstacle a stop did not open any distance from. Reached
+# only through the Monitor's immediate rules -- Jev is never offered it,
+# because it is not a judgement about the situation but the escalation of a
+# rule that has already fired and not worked (monitor.SAFETY_BACK).
+# 停止しても距離が開かなかった障害物から後退する。Monitor の即時則からのみ到達
+# する。Jev には提示しない。状況についての判断ではなく、既に発火して効かなかった
+# 規則の格上げだからである（monitor.SAFETY_BACK）。
+VERDICT_BACK = "back"
 
 
 @dataclass

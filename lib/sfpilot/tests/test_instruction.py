@@ -277,6 +277,53 @@ def test_a_spoken_figure_overrides_the_size_jev_chose():
     assert forward.amount_source == "spoken"
 
 
+def test_a_figure_goes_to_the_move_the_sentence_names_beside_it():
+    """A lone figure reaches the move the operator named, not the first one.
+
+    Measured 2026-09-19: "前に80cm進んで" was read as `up` then `forward` --
+    a climb the model added, plus the travel that was asked for -- and
+    pairing by order alone handed the only 80 cm to the `up`. The aircraft
+    flew `up 80` and then `forward 50`, the default band, having been told
+    80 cm and forward. The sentence never names a climb, so the figure
+    belongs to the travel it does name.
+
+    数値が 1 つのとき、最初の動作ではなく、文が名指しした動作に届くこと。
+
+    2026-09-19 実測:「前に80cm進んで」が `up` → `forward` と読まれ（モデルが
+    足した上昇と、求められた移動）、順序だけの対応付けが唯一の 80cm を `up` へ
+    渡した。機体は「前に 80cm」と言われて `up 80` を飛び、続けて既定の区分で
+    ある `forward 50` を飛んだ。文は上昇を名指ししていないので、その数値は、
+    文が名指しした移動のものである。
+    """
+    plan = build_plan("前に80cm進んで", _judgement([STEP_UP, STEP_FORWARD]))
+
+    climb, forward = plan.steps[1], plan.steps[2]
+    assert (forward.verb, forward.amount) == (STEP_FORWARD, 80.0)
+    assert forward.amount_source == "spoken"
+    assert climb.amount != 80.0, "the climb was never given an amount to fly"
+
+
+def test_a_figure_for_every_move_is_still_paired_in_order():
+    """When the sentence names every move, the pairing is the order given.
+
+    The rule above only withholds a figure from a move nobody mentioned.
+    A sentence that mentions both must keep the straightforward reading,
+    or fixing the case above would have broken the ordinary one.
+
+    文が全ての動作を名指ししていれば、対応付けは言われた順のままであること。
+
+    上の規則が数値を差し控えるのは、誰も言及していない動作に対してだけである。
+    両方に言及している文は素直な読み方を保つ必要がある。そうでなければ、上の
+    事例を直したことが普通の事例を壊したことになる。
+    """
+    plan = build_plan("1m上がって前に70cm進んで",
+                      _judgement([STEP_UP, STEP_FORWARD]))
+
+    climb, forward = plan.steps[1], plan.steps[2]
+    assert (climb.verb, climb.amount) == (STEP_UP, 100.0)
+    assert (forward.verb, forward.amount) == (STEP_FORWARD, 70.0)
+
+
 def test_a_distance_and_an_angle_go_to_the_moves_they_can_belong_to():
     """Centimetres reach the travel and degrees reach the turn, by unit.
     cm は移動へ、度は旋回へ、単位に従って割り当てられること。"""
@@ -640,6 +687,172 @@ def test_a_step_waits_for_the_vehicle_to_answer_before_the_next_one():
     _wait_until(lambda: len(link.sent) == 2)
     assert link.sent == ["forward 50", "back 50"]
 
+    link.answer()
+    _wait_until(lambda: runner.done)
+
+
+def test_a_forward_move_is_shortened_to_stop_short_of_a_wall():
+    """A move that would end inside a wall is cut to stop clear of it.
+
+    `forward N` is a step to a position target N cm ahead and the craft
+    accelerates towards it, so a move that ENDS at the wall arrives there at
+    speed -- exactly the approach the immediate rule then has to arrest
+    without brakes. Shortening the move is what keeps that rule a last
+    resort rather than the thing every approach depends on.
+
+    壁の中で終わる移動が、手前で止まるように切り詰められること。
+
+    `forward N` は N cm 先の位置目標へのステップであり、機体はそこへ向かって加速
+    する。したがって壁で終わる移動は、そこへ速度を乗せて到達する ―― 制動手段を
+    持たない即時則がその後で止める羽目になる進入そのものである。移動を短く刻む
+    ことが、その規則を「最後の砦」に留め、あらゆる接近が頼る当てにしない条件で
+    ある。
+    """
+    from sfpilot.say import StepRunner
+
+    link = _CountingLink()
+    # A wall 1.5 m ahead, and an instruction to fly 1.4 m: unshortened, the
+    # move ends 0.1 m from it.
+    # 1.5m 先に壁があり、1.4m 進めという指示である。刻まなければ、移動は壁の
+    # 0.1m 手前で終わる。
+    runner = StepRunner(link, [_step(STEP_FORWARD, 140)],
+                        speed_probe=lambda: 0.0,
+                        forward_probe=lambda: 1.5)
+    runner.SETTLE_HOLD_S = 0.0
+
+    runner.start()
+    _wait_until(lambda: len(link.sent) == 1)
+
+    sent_cm = int(link.sent[0].split()[1])
+    assert sent_cm < 140, "the move was sent at full length into the wall"
+    # The move AND the stopping distance of the speed it reaches must both
+    # fit in the gap. The speed is bounded by the travel itself, so a short
+    # move is not charged the envelope ceiling's stopping distance.
+    # 移動と、それが到達する速度の停止距離の**両方**が隙間に収まること。速度は
+    # 移動距離自身で抑えられるので、短い移動に飛行領域の上限での停止距離が
+    # 課されることはない。
+    cfg = DEFAULT_CONFIG.forward
+    travel_m = sent_cm / 100.0
+    reached = min(travel_m / cfg.coast_per_speed_s,
+                  DEFAULT_CONFIG.envelope.speed_max_mps)
+    needed_m = min(cfg.safety_margin_m + cfg.coast_per_speed_s * reached,
+                   cfg.stop_distance_max_m)
+    assert travel_m + needed_m <= 1.5 + 1e-6, (
+        f"the move travels {travel_m:.2f} m and then needs {needed_m:.2f} m "
+        f"to stop, which overruns the 1.5 m available")
+
+    link.answer()
+    _wait_until(lambda: runner.done)
+
+
+def test_a_forward_move_with_open_space_ahead_is_left_alone():
+    """Nothing is shortened when the wall is far enough away.
+
+    The limit must not tax ordinary flight: an instruction that fits
+    comfortably in the room available is flown exactly as it was given.
+    壁が十分に遠ければ、何も刻まれないこと。
+
+    この制限が通常の飛行に税を課してはならない。空間に余裕をもって収まる指示は、
+    与えられたとおりに飛ぶ。
+    """
+    from sfpilot.say import StepRunner
+
+    link = _CountingLink()
+    runner = StepRunner(link, [_step(STEP_FORWARD, 50)],
+                        speed_probe=lambda: 0.0,
+                        forward_probe=lambda: 8.0)
+    runner.SETTLE_HOLD_S = 0.0
+
+    runner.start()
+    _wait_until(lambda: len(link.sent) == 1)
+
+    assert link.sent == ["forward 50"]
+    link.answer()
+    _wait_until(lambda: runner.done)
+
+
+def test_a_forward_move_with_no_room_left_is_not_sent_at_all():
+    """Inside its own stopping distance, the craft is not sent forward.
+
+    The vehicle refuses a move under `move_min_cm` anyway (`error out of
+    range`), and a craft already too close to stop should not be asked to
+    travel further towards the wall.
+    自身の停止距離の内側にいる機体を、前へ進ませないこと。
+
+    機体はどのみち `move_min_cm` 未満の移動を拒否するし（`error out of range`）、
+    既に止まれないほど近い機体に、さらに壁へ向かえと求めるべきではない。
+    """
+    from sfpilot.say import StepRunner
+
+    link = _CountingLink()
+    runner = StepRunner(link, [_step(STEP_FORWARD, 100)],
+                        speed_probe=lambda: 0.0,
+                        forward_probe=lambda: 0.3)
+    runner.SETTLE_HOLD_S = 0.0
+
+    runner.start()
+    _wait_until(lambda: runner.done)
+
+    assert link.sent == [], f"a move was sent with no room: {link.sent}"
+    # The step is still recorded, so the operator's summary shows it was
+    # reached rather than silently skipped.
+    # 手順は記録に残す。操作者の要約に、黙って飛ばされたのではなく到達したことが
+    # 出るようにするためである。
+    assert len(runner.sent) == 1
+
+
+def test_a_move_is_left_alone_when_the_forward_distance_is_unknown():
+    """With no forward reading, the move goes out at its full length.
+
+    An unknown distance is not a small one. Shortening on an absent reading
+    would cripple every flight without a forward sensor -- which is every
+    flight the regression suite runs -- and the immediate rule remains the
+    protection there, as it was before.
+    前方距離が分からないとき、移動は元の長さで出ること。
+
+    分からない距離は、小さい距離ではない。無い読み値で刻めば、前方センサの無い
+    全ての飛行が不自由になる ―― 回帰一式が走らせる飛行は全てそれである。そこでの
+    防護は従来どおり即時則である。
+    """
+    from sfpilot.say import StepRunner
+
+    link = _CountingLink()
+    runner = StepRunner(link, [_step(STEP_FORWARD, 100)],
+                        speed_probe=lambda: 0.0,
+                        forward_probe=lambda: None)
+    runner.SETTLE_HOLD_S = 0.0
+
+    runner.start()
+    _wait_until(lambda: len(link.sent) == 1)
+
+    assert link.sent == ["forward 100"]
+    link.answer()
+    _wait_until(lambda: runner.done)
+
+
+def test_only_forward_moves_are_limited_by_the_wall_ahead():
+    """A retreat or a climb is not shortened by a wall in front.
+
+    The forward sensor constrains travel along the nose and nothing else.
+    Limiting a `back` by the distance ahead would refuse the craft the one
+    move that opens that distance up.
+    前方の壁が、後退や上昇を刻まないこと。
+
+    前方センサが制約するのは機首方向の移動だけである。`back` を前方の距離で
+    刻めば、その距離を開ける唯一の移動を機体から取り上げることになる。
+    """
+    from sfpilot.say import StepRunner
+
+    link = _CountingLink()
+    runner = StepRunner(link, [_step(STEP_BACK, 100)],
+                        speed_probe=lambda: 0.0,
+                        forward_probe=lambda: 0.2)
+    runner.SETTLE_HOLD_S = 0.0
+
+    runner.start()
+    _wait_until(lambda: len(link.sent) == 1)
+
+    assert link.sent == ["back 100"]
     link.answer()
     _wait_until(lambda: runner.done)
 

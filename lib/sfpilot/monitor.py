@@ -21,6 +21,7 @@ Monitor は即時安全則も担う。500ms の判断を待てない状況があ
 Judge を介さず `land`/`stop` を出せる。
 """
 
+import math
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -36,6 +37,14 @@ from .config import MonitorConfig, EnvelopeConfig, DEFAULT_CONFIG
 SAFETY_NONE = "none"
 SAFETY_STOP = "stop"
 SAFETY_LAND = "land"
+# Retreat from an obstacle a `stop` did not open any distance from. Distinct
+# from SAFETY_STOP because the two are not interchangeable: a stop asks the
+# craft to keep its position, and this asks it to give some up. It is the
+# escalation of a stop that did not work, never the first response.
+# `stop` では距離が開かなかった障害物から後退する。SAFETY_STOP とは別にする。
+# 両者は互換ではないからである ―― 停止は位置を保てという指示であり、こちらは位置を
+# 明け渡せという指示である。効かなかった停止の格上げであって、最初の対応ではない。
+SAFETY_BACK = "back"
 
 # The battery trend classifications, as named constants.
 #
@@ -137,6 +146,14 @@ class Monitor:
         # 停止則がラッチされている間 True。抜けるときに効くのは停止しきい値ではなく
         # 解除しきい値である。
         self._forward_stopped = False
+        # When the current stop began, and the forward distance at that
+        # moment. Together they answer the one question the retreat rule
+        # asks: has the craft got closer since it was told to stop?
+        # `None` whenever no stop is latched.
+        # 現在の停止が始まった時刻と、その時点の前方距離。この 2 つで、後退の規則が
+        # 問う唯一のこと ――「停止を指示されてから、機体はより近づいたか」―― に
+        # 答える。停止がラッチされていない間は `None`。
+        self._stopped_since = None      # (t, metres)
         # The altitude "on target" is measured against. `None` means nobody
         # has said, and the first settled hover supplies it (`_adopt_target`).
         #
@@ -497,6 +514,65 @@ class Monitor:
         is_plausible = self.cfg.tof_min_m <= tof <= self.cfg.tof_max_m and _is_finite(tof)
         return "正常" if is_plausible else "当てにならない値"
 
+    def closing_speed(self, sample: dict) -> float:
+        """How fast the craft is approaching whatever is ahead [m/s].
+
+        The horizontal velocity PROJECTED ON THE NOSE, not its magnitude.
+        The forward sensor looks along the nose, so only the component
+        travelling that way closes the distance it reports: a craft sliding
+        sideways at 0.4 m/s is not approaching the wall in front of it at
+        all, and using the magnitude would have it brake for a wall it is
+        travelling parallel to.
+
+        Never negative. Reversing away from a wall is not an approach, and a
+        negative closing speed would SHRINK the stopping distance below the
+        safety margin exactly when the craft is escaping.
+
+        前方にあるものへ、どれだけの速さで近づいているか [m/s]。
+
+        水平速度の大きさではなく、**機首方向への射影**である。前方センサは機首の
+        向きを見ているので、その報告する距離を詰めるのは、その向きに進む成分だけで
+        ある。0.4m/s で横滑りしている機体は、正面の壁へはまったく近づいていない。
+        大きさを使えば、平行に進んでいるだけの壁に対して制動することになる。
+
+        負にはしない。壁から遠ざかることは接近ではないし、負の接近速度は、機体が
+        まさに逃れているときに停止距離を安全余裕より**縮める**ことになる。
+        """
+        north, east = sample.get("vel_n"), sample.get("vel_e")
+        if north is None or east is None:
+            return 0.0
+        if not (_is_finite(north) and _is_finite(east)):
+            return 0.0
+        # The nose direction in the NED frame. Without a yaw the craft's own
+        # heading is unknown, and north is the only defensible guess: SILS
+        # starts level and facing north (SilsConfig.drift_wind_n's note).
+        # NED フレームでの機首方向。yaw が無ければ機体自身の向きは不明であり、
+        # 北が唯一根拠のある推定である（SILS は水平・北向きで開始する。
+        # SilsConfig.drift_wind_n の注記）。
+        yaw = sample.get("yaw")
+        if yaw is None or not _is_finite(yaw):
+            yaw = 0.0
+        closing = north * math.cos(yaw) + east * math.sin(yaw)
+        return max(0.0, closing)
+
+    def stop_distance(self, sample: dict) -> float:
+        """How much room this craft needs to stop, at the speed it is doing.
+
+        `safety_margin_m + coast_per_speed_s * closing_speed`, capped. The
+        coefficient is measured, not assumed -- see `ForwardConfig` for the
+        eight approaches it comes from and why it is the upper envelope of
+        them rather than a fit through them.
+
+        この機体が、今出している速度で止まるのに必要な余地。
+
+        `safety_margin_m + coast_per_speed_s * 接近速度`（上限つき）。係数は仮定
+        ではなく実測である —— 元にした 8 回の接近と、なぜそれらへのあてはめでは
+        なく上側の覆いなのかは `ForwardConfig` を参照。
+        """
+        cfg = self.forward
+        needed = cfg.safety_margin_m + cfg.coast_per_speed_s * self.closing_speed(sample)
+        return min(needed, cfg.stop_distance_max_m)
+
     def _classify_forward(self, sample: dict, now: float) -> str:
         """Forward clearance in words, with hysteresis and a grace period.
 
@@ -514,11 +590,14 @@ class Monitor:
         「測定不能」になる。これは独立した語であって、進んでよいという意味を
         決して持たない。
         """
+        stop_at = self.stop_distance(sample)
         forward = sample.get("tof_front_m")
         is_valid = forward is not None and _is_finite(forward)
         if is_valid:
             self._forward_last_valid = (now, forward)
-            return self._forward_word(forward)
+            word = self._forward_word(forward, stop_at)
+            self._track_stop_progress(word, now, forward)
+            return word
 
         has_recent = self._forward_last_valid is not None
         if not has_recent:
@@ -532,24 +611,92 @@ class Monitor:
             # 保持し続けると、機体は永久に固まる。
             self._forward_stopped = False
             return FORWARD_UNKNOWN
-        return self._forward_word(last)
+        return self._forward_word(last, stop_at)
 
-    def _forward_word(self, metres: float) -> str:
+    def _track_stop_progress(self, word: str, now: float, metres: float) -> None:
+        """Remember when the current stop began and how close it began.
+
+        Only the START of a stop is recorded, never updated while it holds:
+        the retreat rule compares against the distance at which the craft was
+        first told to stop, so overwriting it each cycle would compare the
+        craft with itself a cycle ago and never accumulate the closing that
+        matters.
+
+        現在の停止が「いつ・どれだけ近い距離で」始まったかを憶える。
+
+        記録するのは停止の**開始時**だけで、継続中に更新はしない。後退の規則が
+        比べる相手は「最初に停止を指示された時点の距離」だからである。毎周期
+        上書きすれば、1 周期前の自分と比べることになり、問題にすべき接近が
+        いつまでも積み上がらない。
+        """
+        is_stopped = word == FORWARD_WALL_NEAR
+        if not is_stopped:
+            self._stopped_since = None
+            return
+        is_new_stop = self._stopped_since is None
+        if is_new_stop:
+            self._stopped_since = (now, metres)
+
+    def _is_still_closing(self, now: float, sample: dict) -> bool:
+        """Whether the craft has kept closing since it was told to stop.
+
+        True only once position hold has had `backoff_grace_s` to take
+        effect AND the distance has shrunk by more than the sensor's noise
+        in that time. Both halves are needed: judging earlier would condemn
+        a stop that was still working (the measured coast re-accelerates
+        before it settles), and judging on a smaller change would retreat
+        from a stationary craft's own reading noise.
+
+        停止を指示されてから、機体が詰め続けているか。
+
+        True になるのは、位置保持に `backoff_grace_s` の猶予を与えたうえで、かつ
+        その間に距離がセンサの雑音を超えて縮んだ場合だけである。どちらも必要で
+        ある。これより早く判ずれば、まだ効いている最中の停止を断罪することになり
+        （実測の惰走は、落ち着く前に再加速する）、これより小さい変化で判ずれば、
+        静止している機体自身の読み値の雑音から後退することになる。
+        """
+        if self._stopped_since is None:
+            return False
+        began_at, began_m = self._stopped_since
+        has_had_time = (now - began_at) >= self.forward.backoff_grace_s
+        if not has_had_time:
+            return False
+        current = sample.get("tof_front_m")
+        if current is None or not _is_finite(current):
+            return False
+        closed_by = began_m - current
+        return closed_by > self.forward.backoff_closing_m
+
+    def _forward_word(self, metres: float, stop_at: float) -> str:
         """Band a forward distance, latching the stop band with hysteresis.
-        前方距離を帯域に落とす。停止帯域はヒステリシス付きでラッチする。"""
+
+        `stop_at` is this cycle's stopping distance, which grows with the
+        closing speed (`stop_distance`). So the same reading is a wall when
+        the craft is travelling at it and is not when the craft is holding
+        still in front of it -- which is the point: what makes a distance
+        dangerous is how fast it is being consumed.
+
+        前方距離を帯域に落とす。停止帯域はヒステリシス付きでラッチする。
+
+        `stop_at` はこの周期の停止距離であり、接近速度とともに伸びる
+        （`stop_distance`）。したがって同じ読み値でも、機体がそちらへ進んでいれば
+        壁であり、その前で静止していれば壁ではない —— それこそが要点である。距離を
+        危険にするのは、それがどれだけ速く費やされつつあるかだからである。
+        """
         cfg = self.forward
-        is_within_stop = metres <= cfg.stop_distance_m
+        is_within_stop = metres <= stop_at
         if is_within_stop:
             self._forward_stopped = True
             return FORWARD_WALL_NEAR
-        # Once stopped, stay stopped until the reading clears the RELEASE
-        # distance -- otherwise the classification flips back and forth on a
-        # reading that sits on the threshold, and the craft brakes and
-        # accelerates alternately at a wall.
-        # 一度止まったら、読み値が「解除」距離を超えるまでは止まったままにする ――
-        # さもないと、しきい値上に乗った読み値で区分が行き来し、機体は壁の前で
-        # 制動と加速を交互に繰り返す。
-        is_still_latched = self._forward_stopped and metres < cfg.release_distance_m
+        # Once stopped, stay stopped until the reading clears the stopping
+        # distance plus the release margin -- otherwise the classification
+        # flips back and forth on a reading that sits on the threshold, and
+        # the craft brakes and accelerates alternately at a wall.
+        # 一度止まったら、読み値が「停止距離＋解除余裕」を超えるまでは止まったまま
+        # にする ―― さもないと、しきい値上に乗った読み値で区分が行き来し、機体は
+        # 壁の前で制動と加速を交互に繰り返す。
+        is_still_latched = (self._forward_stopped
+                            and metres < stop_at + cfg.release_margin_m)
         if is_still_latched:
             return FORWARD_WALL_NEAR
         self._forward_stopped = False
@@ -678,6 +825,26 @@ class Monitor:
         # 未知の障害物の脇で降下することが、離れて静止することより安全とは言えない。
         is_obstacle_close = assessment.forward_clearance == FORWARD_WALL_NEAR
         if is_obstacle_close:
+            # A stop that has not opened any distance is escalated to a
+            # retreat. `stop` restores position hold, which is enough when
+            # the craft still has room to coast into; when it does not --
+            # measured, the craft keeps closing for over a second after the
+            # stop because the interrupted move's position target is still
+            # pulling it on -- the only move left that increases the
+            # distance is backwards. Checked here rather than left to Jev
+            # for the reason the stop itself is: a round trip has no
+            # guaranteed upper bound, and this is the case where the
+            # distance is already being consumed faster than expected.
+            # 距離がまったく開かない停止は、後退へ格上げする。`stop` が戻すのは
+            # 位置保持であり、惰走してよい余地が残っているうちはそれで足りる。
+            # 足りないとき ―― 実測では、割り込まれた移動の位置目標がなお機体を
+            # 引くため、停止後も 1 秒以上詰め続ける ―― 距離を増やす手段として
+            # 残っているのは後退だけである。Jev に委ねずここで見るのは、停止
+            # そのものと同じ理由による。往復には上限の保証が無く、しかもこれは
+            # 距離が既に想定より速く費やされている場合だからである。
+            now = sample.get("t", 0.0)
+            if self._is_still_closing(now, sample):
+                return SAFETY_BACK, "停止しても前方の障害物に近づき続けるため後退"
             return SAFETY_STOP, "前方に障害物が近いため即時停止"
 
         altitude = sample.get("altitude_m")

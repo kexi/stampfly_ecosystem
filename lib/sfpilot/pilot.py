@@ -54,13 +54,21 @@ class Pilot:
     任意の Link に対して判断ループを回す。"""
 
     def __init__(self, link, judge, config=DEFAULT_CONFIG, trace=None,
-                 mission=None, operator_instruction=None):
+                 mission=None, operator_instruction=None, surroundings=None):
         self.link = link
         self.judge = judge
         self.cfg = config
         self.trace = trace
         self.mission = mission
         self.operator_instruction = operator_instruction
+        # The eight-bearing sweep, as words, or None when none has been
+        # taken. Set by whoever runs a sweep (`explore.sweep`'s caller) and
+        # read on every cycle, so the state keeps carrying the measurement
+        # and its age until a newer one replaces it.
+        # 8 方位の掃引を語にしたもの。取っていなければ None。掃引を行う側
+        #（`explore.sweep` の呼び出し元）が設定し、毎周期読まれる。新しいものに
+        # 置き換わるまで、state が測定とその古さを携え続けるようにするためである。
+        self.surroundings = surroundings
         self.monitor = Monitor(config)
         self.arbiter = Arbiter(config)
         # The Executor's pre-landing settling needs the craft's measured
@@ -70,7 +78,8 @@ class Pilot:
         # Executor の着陸前の静定には機体の実測速度が要り、それを持っているのは
         # Monitor である。ループが全サンプルをそこへ取り込んでいるので、リンクを
         # もう一度読めば、区分からサンプルを奪うことになる。
-        self.executor = Executor(link, config, speed_probe=self.horizontal_speed)
+        self.executor = Executor(link, config, speed_probe=self.horizontal_speed,
+                                 forward_probe=self.forward_distance)
         self.decisions: list = []
         self._pending: Optional[_Pending] = None
         self._last_asked = 0.0
@@ -111,6 +120,34 @@ class Pilot:
             return None
         return (north * north + east * east) ** 0.5
 
+    def forward_distance(self):
+        """The latest valid forward distance [m], or None when there is none.
+
+        Read from the Monitor's latest sample for the same reason the speed
+        is: the loop owns the sample stream, and a second reader would take
+        samples away from the classification.
+
+        Callers that plan a move need the FIGURE rather than the word: "wall
+        near" spans every distance from the sensor's floor to 0.8 m, which
+        is far too wide to size a move against.
+
+        最新の有効な前方距離 [m]。無ければ None。
+
+        速度と同じ理由で Monitor の最新サンプルから読む。サンプル列はループの
+        ものであり、2 人目の読み手は区分からサンプルを奪うからである。
+
+        移動を計画する側に必要なのは語ではなく**数値**である。「壁が近い」が表す幅は
+        センサの下限から 0.8m までで、移動の大きさを決めるには広すぎる。
+        """
+        sample = self.monitor.latest_sample
+        if not sample:
+            return None
+        distance = sample.get("tof_front_m")
+        if distance is None:
+            return None
+        is_finite = distance == distance and abs(distance) != float("inf")
+        return distance if is_finite else None
+
     def step(self, now: float = None) -> Optional[dict]:
         """One turn of the loop. Returns the decision row if one was made.
         ループ 1 周。判断が成立した場合はその行を返す。"""
@@ -119,7 +156,8 @@ class Pilot:
             self._started = now
         samples = self.link.read_samples()
         assessment = self.monitor.update(samples)
-        state = summarize(assessment, self.mission, self.operator_instruction)
+        state = summarize(assessment, self.mission, self.operator_instruction,
+                          self.surroundings)
         current_signature = signature(state)
 
         # `_collect` returns the answer together with the signature that

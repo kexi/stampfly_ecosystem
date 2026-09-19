@@ -98,15 +98,48 @@ def _word(japanese: str) -> str:
     return _WORDS.get(japanese, japanese)
 
 
+def forward_word(japanese: str) -> str:
+    """Translate one forward-clearance classification for Jev.
+
+    Exposed because `explore.py` classifies EIGHT bearings with the same
+    `monitor.FORWARD_*` words and has to put all eight in the state. It
+    goes through this table rather than keeping its own, so a wall reads as
+    the same word whether it is in front of the craft or off to one side --
+    a second table would be the way the two come to disagree, which is the
+    failure the battery-trend names were made constants to prevent.
+
+    前方の空きの区分を 1 つ、Jev 向けに訳す。
+
+    公開するのは、`explore.py` が同じ `monitor.FORWARD_*` の語で **8 方位**を
+    区分し、その 8 つすべてを state に載せるためである。独自の表を持たずここを
+    通すので、壁は、機体の正面にあろうと横にあろうと同じ語として読める。表が
+    2 つあることこそ両者が食い違う経路であり、電池の傾向の区分名を定数にして
+    防いだのと同じ失敗である。
+    """
+    return _word(japanese)
+
+
 def summarize(
     assessment: Assessment,
     mission: dict = None,
     operator_instruction: str = None,
+    surroundings: dict = None,
 ) -> dict:
     """Build the state object sent to Jev.
 
     Fields whose value is unknown are left out entirely (rule 2 above).
     Jev へ送る state を組み立てる。値が不明な項目は丸ごと省く（上記の規則 2）。
+
+    `surroundings` is the eight-bearing sweep (`explore.surroundings_state`)
+    and is absent unless one has been taken. It is passed in rather than
+    derived from the assessment because a sweep is a MEASUREMENT the craft
+    went and made, not a classification of the present sample: the Monitor
+    sees only where the sensor points now.
+
+    `surroundings` は 8 方位の掃引（`explore.surroundings_state`）であり、掃引を
+    取っていない限り載らない。評価から導かず引数で受け取るのは、掃引が「機体が
+    出かけて行って取ってきた**測定**」であって、今このサンプルの区分ではない
+    からである。Monitor に見えるのは、センサが今向いている先だけである。
     """
     flight = {}
     _put(flight, "phase", assessment.phase)
@@ -125,6 +158,8 @@ def summarize(
     state = {"flight": flight}
     if battery:
         state["battery"] = battery
+    if surroundings:
+        state["surroundings"] = surroundings
     if mission:
         state["mission"] = mission
     if assessment.recent_events:
@@ -165,12 +200,28 @@ def signature(state: dict) -> str:
     answer look stale.
     `recent_events` と `mission.elapsed` は除外する。状況が変わらなくても
     絶えず変化し、すべての答えが鮮度切れに見えてしまうため。
+
+    `surroundings.measured` is excluded for exactly the reason
+    `mission.elapsed` is: it is the age of the sweep, so it moves on its
+    own as time passes while the bearings it describes stay put. The
+    BEARINGS are included, because a bearing changing from open to wall
+    near is precisely the kind of change an answer in flight should be
+    discarded for.
+    `surroundings.measured` は `mission.elapsed` とまったく同じ理由で除外する。
+    掃引の古さなので、記述している方位が動かないまま、時間の経過だけで勝手に
+    変わる。**方位そのもの**は含める。ある方位が「開けている」から「壁が近い」へ
+    変わることは、往復中の答えを破棄すべき変化そのものだからである。
     """
     parts = []
     for section in ("flight", "battery"):
         values = state.get(section) or {}
         for key in sorted(values):
             parts.append(f"{section}.{key}={values[key]}")
+    surroundings = state.get("surroundings") or {}
+    for key in sorted(surroundings):
+        if key == "measured":
+            continue
+        parts.append(f"surroundings.{key}={surroundings[key]}")
     mission = state.get("mission") or {}
     for key in sorted(mission):
         if key == "elapsed":

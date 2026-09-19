@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P4b: SILS の前方距離の模擬と、回転を要しない即時安全則を実装。**ヨー回転による探索は保留** — 4.9 節）。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P4b: ヨー回転による探索を**完全に実装し、設定で無効にした状態で同梱**。飛ばせないのは機体がヨー回転で落下するためで、解除条件と解除手順は 4.11 節）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -27,7 +27,7 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 | P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**。Jev 実走で 3 場面すべて確認済み（下記 4.5）|
 | P3 | `sf pilot say`（自然言語の指示） | **実装済み**。Jev 実走で 7/10 → 原因を特定して修正 → **10/10**（下記 4.5）|
 | P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**。Jev 実走で応答計数の競合を発見して修正し、**全 6 区間が `as planned` で完走**（下記 4.5）|
-| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。前提 ②**SILS の前方距離の模擬**は実装した（下記 4.9） | **一部実装**（4.9）。前方距離の模擬と、回転を要しない即時安全則までは実装済み。**ヨー回転による探索と方位選択は保留** — 現状の SILS では `cw 30` でも機体が落下するため（4.9.1）。解除条件はバックログ #12 の解消 |
+| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ） | **実装済み、ただし無効**（4.11）。前方距離の模擬・回転を要しない即時安全則（4.9）に加え、**ヨー回転による掃引と方位選択も実装した**。既定で無効であり、飛ばして検証していない — 現状の SILS では `cw 30` でも機体が落下するため（4.9.1）。**解除は `ExploreConfig.enabled` を有効にするだけ**（手順は 4.11.2、依存はバックログ #12）<br>**停止則は 2026-09-19 に設計変更済み（4.9.10）**: 停止距離を接近速度から算出し、前進量の制限と後退を加えた。SILS 13 回で**通過 0 件・最小余裕 +0.714m** |
 | P4c | **飛行を見る手段**（`--web` のライブ表示＋飛行後の動画・GUI 再生。4.6 節） | **実装済み** |
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
@@ -829,6 +829,11 @@ v2 のフロー 2 項目は当初「前回送信からの差分」だった。**
 **前方距離の模擬を SILS に実装し、それを使う「前進中の即時安全則」までを入れた。
 ヨー回転による探索と方位選択は、実測に基づき保留した。**
 
+> **停止則については 4.9.10 節が最新である。** 本節（とくに 4.9.7）が記録した
+> 「8 回中 3 回が壁を通り越す」欠陥は 2026-09-19 に対処済みで、停止距離は固定値では
+> なく接近速度から算出する。SILS 13 回で再実測し、**通過 0 件・最小余裕 +0.714m** を
+> 確認した。本節の数値は**修正前**のものである。
+
 保留は仕様の都合ではない。**現状の SILS では、機体はヨー回転そのもので墜落する。**
 `cw 30` でも `cw 90` と同じように落ちることを実測で確かめた（下表）。探索は回転の上に
 しか成り立たないので、回転が成立しない以上、探索を実装しても試験の証拠が「墜落」に
@@ -946,7 +951,7 @@ alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
 
 | 層 | 変更 |
 |----|------|
-| `config.py` | `ForwardConfig` — `stop_distance_m=0.5` / `release_distance_m=0.7`（ヒステリシス）/ `wall_near_m=0.8` / `somewhat_near_m=1.5` / `invalid_grace_s=2.0` |
+| `config.py` | `ForwardConfig` — **停止距離は固定値ではなく接近速度から算出する**（`safety_margin_m=0.5` ＋ `coast_per_speed_s=4.0` × 接近速度、上限 `stop_distance_max_m=1.8`。4.9.10 節）/ `release_margin_m=0.2`（ヒステリシス。停止距離への上乗せ）/ `wall_near_m=0.8` / `somewhat_near_m=1.5` / `invalid_grace_s=2.0` |
 | `monitor.py` | 前方の区分（`開けている` / `やや近い` / `壁が近い` / `測定不能`）と、**即時安全則**（`壁が近い` なら Jev を待たず `stop`） |
 | `summarizer.py` | `flight.forward_clearance` を英語（`open` / `somewhat near` / `wall near` / `cannot be measured`）で state に載せる |
 | `pilot_web.html` | 上から見た図に前方距離の線（機首方位に沿って伸び、終端に面の印。停止しきい値以下で赤） |
@@ -959,12 +964,21 @@ alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
 （2 秒）だけ保持し、それを過ぎたら `測定不能` にする。`測定不能` だけでは停止しない
 （前方センサの無い全飛行が止まってしまうため）が、`開けている` にも決してしない。
 
-### 4.9.7 SILS 実測（`--fake`）
+### 4.9.7 SILS 実測（`--fake`。**固定しきい値 0.5m だった時点の記録**）
+
+> **この節は欠陥の記録である。** ここに載る数値はすべて、停止しきい値が固定 0.5m
+> だった時点のものであり、**現在のコードの性能ではない。** 速度に応じた停止距離への
+> 設計変更と、その後の全数実測は 4.9.10 節にある。本節を残すのは、何が起きていたかと、
+> なぜ固定しきい値では直らないかの根拠を保つためである。
 
 | 場面 | 実測 |
 |---|---|
 | `wall_ahead` で前進 | t=15.65s に区分が `壁が近い` になり、**Monitor 由来**の `stop` が 1 回（理由「前方に障害物が近いため即時停止」）。真値の最大到達 N=**0.668m** ＝ 壁（N=1.0m）の **0.332m 手前**で停止 |
 | `dead_end` で前進 | 同じく Monitor の `stop`（t=14.54s）。**飛行中**の最大到達 N=0.946m ＝ **0.054m 手前**。接地後に地面を滑って N=0.996m まで進んだ |
+
+**この 2 行は成功例ではない。** 当初この節はこの 2 回だけを挙げていたが、全 8 回を
+数えると 3 回は壁を通り越していた（下表）。とりわけ `dead_end` の「0.054m 手前」は、
+**余裕がほとんど無かったこと**を示す数値であって、止まれたことの証拠ではない。
 
 #### 本物の Jev による実走（2 回）
 
@@ -982,11 +996,40 @@ alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
 `hold`(0.27) / `land`(0.13) に割れた。割れた答えは Arbiter が待機として扱う（4.5 節の
 規則）。Jev は「壁が近い」という語を、確信度を下げる理由として正しく読んでいる。
 
-**`dead_end` の余裕が 54mm しかない点は、率直に問題として記録する。** 原因は停止則では
-なく接近速度と降下中の横流れである（`wall_ahead` は直前に `up 80` を含み高度 1.48m から
-0.35m/s で接近、`dead_end` は 0.17m/s だが 0.5m 付近から降下に入った）。降下中に位置保持
-が効かないことは 4.2・4.3 節で報告済みの既知の挙動であり、本作業では直していない。
-**壁の直前で着陸する状況では、停止則だけでは接触を防げない可能性がある。**
+#### 停止則は壁への接触を防げていない（8 回の実測による訂正）
+
+**当初この節は好成績の 2 回だけを挙げていた。全 8 回を数えたところ、3 回は壁を
+通り越していた。** 以下が全数である（`truth.csv`、飛行中＝高度 0.10m 超で測定）。
+
+| 実行 | しきい値通過時の速度 | 通過後の惰走 | 壁までの余裕 |
+|---|---|---|---|
+| `…175531` | 0.129 m/s | 0.086 m | +0.414 m |
+| `…173927` | 0.347 m/s | 0.167 m | +0.332 m |
+| `…132255` | 0.181 m/s | 0.355 m | +0.145 m |
+| `…175047` | 0.155 m/s | 0.390 m | +0.110 m |
+| `…174029` | 0.172 m/s | 0.446 m | +0.054 m |
+| `…175008` | 0.219 m/s | 0.747 m | **−0.247 m（通過）** |
+| `…200842` | 0.236 m/s | 0.920 m | **−0.420 m（通過）** |
+| `…175254` | 0.240 m/s | 0.961 m | **−0.462 m（通過）** |
+
+**停止が遅れているのではない。** 記録を見ると、`stop` は区分が `壁が近い` に
+変わったその周期に送られている（例: `…200842` は区分の変化・`stop` ともに t=14.72）。
+**遅いのは停止則ではなく機体である** — `stop` が戻すのは位置保持であって制動ではなく、
+機体が既に持っている運動量は、制御器が存在を知らない障害物に対しては止められない。
+
+**しきい値 0.5m は小さすぎる。** 当初 `config.py` のコメントは「SILS では停止までおよそ
+0.4m 進む」と書いていたが、**これは実測していない数値だった。** 実測は 0.086〜0.961m で、
+上限は想定の 2 倍以上ある。
+
+**ただし、しきい値を大きくするだけでは直らない。** 惰走は接近速度に比例する
+（0.129m/s で 0.086m、0.240m/s で 0.961m）ので、どんな固定値も、速いときは小さすぎ、
+遅いときは無駄に臆病になる。**正しい手当ては「実測した接近速度から停止距離を出す」
+ことであり、それは定数の調整ではなく設計変更である。** 本作業では**数値を調整せず、
+欠陥を欠陥として残した** — しきい値を上げれば 8 回とも「成功」に見えるが、速度が上がれば
+同じことが再発するためである。
+
+したがって現状の評価は: **前方距離の模擬・区分・state・即時則の経路は動作しているが、
+「壁の手前で確実に止まる」性能はまだ無い。** 4.9.9 節に残る問題として記載した。
 
 ### 4.9.8 実装中に見つけた不具合（いずれも本作業で作り込み、直した）
 
@@ -1003,11 +1046,174 @@ alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
 
 | 事項 | 状況 |
 |------|------|
-| ヨー回転での探索・方位選択 | **保留。** 解除条件は 4.9.1 のとおり（バックログ #12 待ち）|
-| `dead_end` の 54mm | 停止則は働いたが余裕が薄い。根治は降下中の位置保持（4.2・4.3 節、ファーム側の判断事項）|
+| ヨー回転での探索・方位選択 | **実装済み、ただし無効**（4.11 節）。解除条件は 4.9.1 のとおり（バックログ #12 待ち）|
+| **壁の手前で確実に止まれない（最重要）** | ~~8 回中 3 回が壁を通り越した~~ → **2026-09-19 に対処済み。4.9.10 節を参照。** 停止距離を接近速度から算出する設計に変え、前進量の制限と後退の escalation を加えた。SILS で全数再実測している |
 | 前方モデルのノイズ | 付けていない（4.9.3）。N3 tier で底面と併せて扱うのが筋 |
 | 実機の前方 ToF での本節の確認 | 未実施。本節はすべて SILS の実測である |
-| `sf pilot say` の日本語解釈 | 「前に80cm進んで」が `up 80` + `forward 50` になる事例を観測した。本作業の範囲外（P3 の指示解釈）だが、記録しておく |
+| `sf pilot say` の日本語解釈 | 「前に80cm進んで」が `up 80` + `forward 50` になる事例を観測した。**2026-09-19 に修正済み**（4.11.7 節）|
+
+## 4.9.10 停止距離を接近速度から算出する（2026-09-19、4.9.7 の欠陥への対処）
+
+### 要旨
+
+**4.9.7 節・4.9.9 節が「最重要」として残した「壁の手前で確実に止まれない」を直した。**
+停止の判定を「距離 < 固定しきい値」から「距離 < 停止距離(速度)」に変え、さらに
+**そもそも突っ込まないための前進量の制限**と、**停止が効かなかったときの後退**を
+加えた。3 層の関係は次のとおりで、**即時則は最後の砦に戻った**。
+
+| 層 | 働き | いつ効くか |
+|----|------|-----------|
+| ① 前進量の制限（`say.py`） | 壁までの距離に収まるよう、1 回の前進を刻む | 移動を送る前。**予防** |
+| ② 停止距離(速度)（`monitor.py`） | 接近速度に応じた距離で `stop` を出す | 飛行中の毎周期。**即時則** |
+| ③ 後退（`monitor.py` → `executor.py`） | 停止しても詰まり続けるなら `back` で離れる | 停止の 1.5 秒後。**最後の砦** |
+
+### 4.9.10.1 惰走のモデルと係数の根拠
+
+4.9.7 節の 8 回は、しきい値通過時の速度と、その後の惰走距離の組を与える。
+これに対する係数の選び方が本節の要点である。
+
+**採用した形: `停止距離 = 0.5m + 4.0s × 接近速度`（上限 1.8m）。**
+
+`4.0s` は 8 点に対する `惰走/速度` の**上側の覆い**であって、最小二乗のあてはめでは
+ない。理由は非対称な代償にある。
+
+| 形 | 係数 | rms | 8 点中の過小見積もり |
+|---|---|---|---|
+| 最小二乗 `0.84v + 0.33` | — | 0.31m | **5 件**（うち 3 件は実際に壁を通過した） |
+| `a·v²`（抗力型） | a=7.6 | 0.41m | **6 件** |
+| **上側の覆い `4.0·v`（採用）** | k=4.0 | — | **0 件** |
+
+**最小二乗はデータの真ん中を通るので、構造上ほぼ半数を過小に見積もる。** そして
+停止距離の過小見積もりとは、壁への衝突のことである。この覆いは 8 点すべてを下回らない
+（拘束点は 0.240m/s → 0.961m、すなわち 0.961/0.240 = 4.00）。
+
+**`a·v²` を採らなかった理由（Why not）。** 惰走する機体からは抗力型が示唆されるが、
+同じ点にあてはめると**むしろ悪い**（過小 6 件 / rms 0.41m）。原因は fixture に
+見えている。`wall_approach_states.jsonl` で、しきい値通過後の速度は
+**0.214 → 0.132 m/s と落ちた後、0.185 m/s へ再加速する。**
+滑らかに静止へ減衰する自由滑走ではないのである。`stop` が戻すのは位置保持だけで、
+**割り込まれた `forward` の位置目標がなお機体を前へ引いている**ためであり、模型化して
+いるのは制御の相互作用であって空力抗力ではない。したがって抗力の法則にはこれを説明する
+資格が無い。線形の覆いを使うのは、それが実測を**覆う**からであって、説明するからでは
+ない（この但し書きは `config.py` にも同文で置いた）。
+
+ばらつきが大きいこと（8 点で `惰走/速度` は 0.48〜4.00）も理由は同じであり、だからこそ
+**中心ではなくこの覆いだけが、このデータの安全な読み方である。**
+
+### 4.9.10.2 前進量の制限（予防層）
+
+`forward N` は N cm 先の位置目標へのステップであり、機体はそこへ向かって加速する。
+**壁の中で終わる移動とは、壁へ速度を乗せて到達する移動である。** そこで移動と、その
+移動が到達する速度の停止距離の**両方**が隙間に収まるよう刻む:
+
+```
+移動距離 + 停止距離(その移動が到達する速度) <= 前方距離
+```
+
+**速度を移動距離自身で抑えるのが要点である。** 当初、飛行領域の上限 0.5m/s を常に
+仮定して実装したところ、所要が常に 1.8m になり、**1.0m の壁がある SILS の場面では
+前進が一切禁じられた**（機体は慎重に飛ぶのではなく、単に飛ばなくなった）。短い移動は
+上限速度に達しないので、到達しうる速度を `移動距離 / coast_per_speed_s` と上限の
+小さいほうで抑える。これで上限は自己無撞着になる:
+
+| 前方距離 | 許される前進 | 到達速度 | その停止距離 | 合計 |
+|---|---|---|---|---|
+| 0.5m | 0.00m | — | 0.50m | 0.50m |
+| 1.0m | 0.25m | 0.06m/s | 0.75m | 1.00m |
+| 1.5m | 0.50m | 0.13m/s | 1.00m | 1.50m |
+| 3.0m | 1.25m | 0.31m/s | 1.75m | 3.00m |
+| 8.0m | 6.20m | 0.50m/s | 1.80m | 8.00m |
+
+刻んだ結果が `move_min_cm` 未満なら**送らない**（機体はどのみち拒否する）。手順は記録に
+残し、操作者の要約に出す。
+
+### 4.9.10.3 後退（最後の砦）
+
+停止を指示してから `backoff_grace_s`（1.5 秒。実測の再加速がほぼこの長さで起きる）
+経ってもなお `backoff_closing_m`（0.05m。センサ雑音より大きい）を超えて詰まって
+いれば、`stop` を `back 20` へ格上げする。
+
+- **`stop` を先に送る。** 割り込まれた移動の位置目標がなお機体を引いており、それを
+  取り消さずに `back` を送れば、古い目標を追いかけたまま新しい目標を置くことになる
+- **1 回の後退につき 1 度だけ送る。** `back` は到達時に応答するブロックする移動なので、
+  50Hz で送り直せば後退が積み上がり、**まったく見えていない後方**へ機体が飛ぶ
+- 後退中は `rc` を送らない（速度目標が位置目標を置き換えて移動を打ち消すため）
+- `back` は `stop`・`land` と同様に `say` の手順列と掃引を**中断する**。機体が障害物から
+  離される最中に次の移動を送れば、逃れている当のものへ向かって指令することになる
+
+### 4.9.10.4 SILS 全数実測（`--fake`、速度を 0.1〜0.5m/s で振った 13 回）
+
+**条件**: `sf pilot say`（`--fake`）で壁へ前進させる。飛行領域の水平上限
+`EnvelopeConfig.speed_max_mps` を **0.10〜0.50 m/s** で振り、前進量も変えた。壁は
+`wall_ahead` / `dead_end` とも北 1.0m（`SilsConfig.wall_distance_m`）。余裕は
+`truth.csv`（真値。ファーム自身の推定とは独立）で測り、**飛行中＝高度 0.10m 超**で
+数える（4.9.7 節と同じ定義）。
+
+**2 つの余裕を分けて載せる。** 支配する機構が別だからである。
+
+- **接近**: 巡航高度（0.40m 超）での最接近。**停止則**が支配する
+- **飛行中**: 降下を含む最接近。**着陸**が支配する（降下中、ファームは水平位置を
+  保持しない）
+
+| 実行 | 上限速度 | 場面 | 修正前・接近 | 修正前・飛行中 | **修正後・飛行中** |
+|---|---|---|---|---|---|
+| A | 0.10 m/s | `wall_ahead` | +0.426 m | +0.269 m | **+0.729 m** |
+| B | 0.15 m/s | `wall_ahead` | +0.283 m | +0.060 m | **+0.732 m** |
+| C | 0.20 m/s | `wall_ahead` | +0.349 m | +0.145 m | **+0.731 m** |
+| D | 0.25 m/s | `wall_ahead` | +0.387 m | +0.181 m | **+0.741 m** |
+| E | 0.30 m/s | `wall_ahead` | +0.221 m | +0.021 m | **+0.716 m** |
+| F | 0.35 m/s | `wall_ahead` | +0.316 m | +0.035 m | **+0.714 m** |
+| G | 0.40 m/s | `wall_ahead` | +0.385 m | +0.194 m | **+0.731 m** |
+| H | 0.45 m/s | `wall_ahead` | +0.215 m | **−0.028 m（通過）** | **+0.732 m** |
+| I | 0.50 m/s | `wall_ahead` | +0.268 m | +0.096 m | **+0.738 m** |
+| J | 0.50 m/s | `wall_ahead` | +0.316 m | +0.035 m | **+0.742 m** |
+| K | 0.20 m/s | `dead_end` | +0.250 m | +0.051 m | **+0.738 m** |
+| L | 0.35 m/s | `dead_end` | +0.257 m | +0.026 m | **+0.742 m** |
+| M | 0.50 m/s | `dead_end` | +0.515 m | +0.358 m | **+0.739 m** |
+
+**合格基準（突き抜け 0 件・最小余裕 ≥ 0.10m）を 13 回すべてで満たした。**
+
+| 指標 | 修正前 | 修正後 |
+|---|---|---|
+| 壁の通過 | **1 件 / 13** | **0 件 / 13** |
+| 飛行中の最小余裕 | **−0.028 m** | **+0.714 m** |
+| 余裕 < 0.10m | **8 件 / 13** | **0 件 / 13** |
+| 接近（巡航）の最小余裕 | +0.215 m | +0.714 m |
+
+**この実測は、欠陥が 2 つ重なっていたことを示した。** 修正前の「接近」列に注目すると、
+**停止則そのものは 13 回すべてで 0.215m 以上の余裕を残しており、1 件も失敗していない。**
+速度を 0.5m/s まで上げても接近の最小余裕は +0.215m である。したがって
+**速度に応じた停止距離は、それ単体で目的を達している。**
+
+残っていた侵入はすべて**降下中**に起きていた。修正前の A〜M では、巡航高度で
+0.22〜0.52m の余裕をもって止まった機体が、降下のあいだに 0.02〜0.27m まで詰め、
+H では壁を通り越した。真値を追うと原因は明白である（実行 B）:
+
+```
+t=19.2  n=+0.302  alt=1.14   vx=-0.015   ← 停止則が効き、機体は n≈0.30 で振動
+t=20.5  n=+0.183  alt=1.13   vx=+0.100   ← 降下開始
+t=21.5  n=+0.367  alt=0.87   vx=+0.225   ← 位置保持が無く、前へ加速
+t=23.7  n=+0.919  alt=0.13   vx=+0.242   ← 接地直前。0.72m 前進していた
+```
+
+降下中に前へ**加速**しており、これは `LandingConfig` が文書化しているファームの設計
+（降下中は `computePositionHold()` を通さない）そのものである。**静定では直らない。
+流れが始まるのは静定が終わった後だからである。** そこで着陸前手順に
+「降下の前に壁から離れる」段階を足した（4.9.10.3 節）。修正後の 13 回が
++0.714〜+0.742m とほぼ一定なのは、この後退が接近速度によらず一定の余地を確保する
+ためである。
+
+**なお、修正後も `back` による escalation（4.9.10.3）は 1 度も発火していない。**
+前進量の制限と停止距離が先に効いており、設計どおり**最後の砦は使われないまま**で
+ある。発火経路そのものは fixture と単体試験で確認してある。
+
+### 4.9.10.5 併せて直した設計上の穴
+
+| # | 穴 | 直し方 |
+|---|---|---|
+| 1 | ヒステリシスの反転 | `release_distance_m=0.7` は旧来の固定 0.5m の上にはあったが、停止距離が速度で動くと、接近速度が約 0.05m/s を超えた時点で**停止距離を下回る**。機体は停止の原因となった帯域の中にいるまま停止を解除しうる。停止距離への**上乗せ**（`release_margin_m=0.2`）に改めた |
+| 2 | 横滑りでの誤制動 | 接近速度に水平速度の**大きさ**を使うと、壁と平行に飛ぶ機体が「接近中」と読まれる。**機首方向への射影**に改めた（前方センサが見ているのはその向きだけである） |
+| 3 | 後退での停止距離の縮小 | 射影は壁から離れるとき負になる。クランプしないと、機体が逃れている最中に停止距離が安全余裕より**縮む**。`max(0, ...)` で下側を止めた |
 
 ## 4.10 ヨー飽和の是正案 3 件の実測と結論（2026-09-19）
 
@@ -1064,6 +1270,152 @@ alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
 
 落下を特徴づける指標（duty の上限張り付き率等）は使い捨ての試験プログラムで算出した。`tools/` にスクリプトを増やさない方針（PROJECT_PLAN §8）に従い、恒久化するなら `sf sils scenario` の既存の指標に足すのが筋である（提案のみ、未実装）。
 
+## 4.11 前方 ToF による探索 — 実装済み、ただし無効（2026-09-19）
+
+### 要旨
+
+**4.9 節・4.10 節が保留とした「ヨー回転による探索」を完全に実装し、設定 1 つで無効にした状態で同梱した。** 飛ばして検証していないのは、飛ばせないからである。解除条件が満たされた時点で `ExploreConfig.enabled` を `True` にすれば有効になり、他に変更すべき箇所は無い。
+
+保留の判断そのものは 4.9.1 節・4.10.2 節のまま変えない。本節が変えるのは「保留中に何を用意しておくか」だけである。**バックログ #12 が解消された日に、探索を一から書き起こすのではなく、設定を 1 つ変えて確かめられる状態にしてある。**
+
+### 4.11.1 なぜ無効なのか（実測の再掲）
+
+| 送った指令 | 最低高度 | 衝撃 | 解除 |
+|---|---|---|---|
+| 何も送らない（対照） | +0.498 m | 0 | なし |
+| `rc 0 0 0 0`（純ホバー） | +0.490 m | 0 | なし |
+| `cw 90` / `cw 45` / `cw 30` | −0.000 m | 4.7〜5.3 G | **解除** |
+| `rc 0 0 0 10`（0.1 rad/s） | −0.000 m | 0 | なし（沈下） |
+
+出典は 4.9.1 節。原因はミキサーの独立クランプによる揚力損失（`simulation-policy.md` 改修バックログ **#12**）で、是正案 3 件はいずれも不採用である（4.10 節）。**探索は回転の上にしか成り立たないので、回転が成立しない以上、実装を有効にすれば試験の証拠は「墜落」になる。**
+
+**高度を上げて地面に届かなくする回避は入れていない**（4.3 節の方針）。
+
+### 4.11.2 解除手順
+
+1. **バックログ #12 についてオーナーが選択肢 (a)/(b)/(c) を決める**（4.10.3 節）。
+2. 高度 0.5m のホバリングから **`cw 90` が、落下・衝撃検出・解除のいずれも起こさずに完了する**ことを確かめる（4.9.1 節の解除条件。高度を上げる回避は含めない）。
+3. `lib/sfpilot/config.py` の **`ExploreConfig.enabled` を `True`** にする。**変更箇所はここだけである。**
+4. `sf pilot explore --sils --scene dead_end` を**完走**させる（`--fake` でキー無し、本物の Jev でも可）。
+5. 本節の表「飛ばして検証していないこと」を、実測で埋めて書き換える。
+
+(b)（現状維持）が選ばれた場合、**ヨー回転による探索は恒久的に保留**となる（4.10.3 節）。そのときは本節の実装を削除するのではなく、無効のまま残し、理由を本節に残す — 実装が存在することと、それを飛ばしてよいことは別だからである。
+
+### 4.11.3 実装したもの
+
+| 層 | 変更 |
+|----|------|
+| `config.py` | `ExploreConfig` — `enabled`（既定 False）・無効の理由の文字列（#12 と解除条件を含む）・刻み 45°・方位数 8・静定待ち 1.5s・方位あたりのサンプル数 5・有効期限 20s・旋回方法（`cw`/`ccw` か `rc` のヨー速度か）。**距離の区分閾値は持たず `ForwardConfig` と共有する** |
+| `explore.py`（新規） | 掃引本体（`sweep`）、1 方位の区分（`classify_bearing`）、state の組み立て（`surroundings_state`）、選択肢の生成（`bearing_criteria`）、答えの却下（`check_bearing_choice`）、規則ベースの既定（`rule_based_bearing`） |
+| `monitor.py` | 変更なし。前方の区分（`FORWARD_*`）と即時安全則を**そのまま**使う |
+| `summarizer.py` | `forward_word()` を公開（8 方位が同じ変換表を通るようにするため）。`surroundings` を state に追加。`signature()` は方位を含め、`measured`（古さ）は除外 |
+| `judge.py` | `next_move` に `explore` を追加（**代償も書く**）。`bearing_question()`（掃引ごとに組み立て）。`ExploreFakeJudge`（`MissionFakeJudge` を継承し両方の質問に答える） |
+| `mission.py` | 区間種別 `explore`（YAML の `verb`）。掃引の到達区分 3 種。やり直し上限と電池の規則を掃引にも適用 |
+| `missions/explore_pocket.yaml`（新規） | 袋小路で探索して開いている側へ 0.6m 進む経路。`square.yaml` は触っていない |
+| `pilot.py` | `surroundings` を state に載せる（掃引を行う側が設定し、毎周期読まれる） |
+| `events.py` / `pilot_web.html` | `sweep` 事象と、上から見た図の扇形 8 つ。`stampfly3d.js` は触っていない |
+| `lib/sfcli/commands/pilot.py` | `sf pilot explore`。**無効時は起動前に拒否し、終了コード 1** |
+
+### 4.11.4 設計上の判断（なぜそうしなかったか）
+
+| 判断 | 理由 |
+|---|---|
+| **「測定不能」を「開けている」と同義にしない** | 前方の部品は、前に何も無いときも、面が近すぎて復元できないときも無効を返す（4.8.6 節）。無い読み値を空きと読めば、**見えていない方の場合へ機体を進める**ことになる。掃引でも同じ規則を貫き、`rule_based_bearing` は測れていない方位を決して選ばない |
+| **方位の区分に平均ではなく最も近い値を使う** | 同じ方位の複数の読み取りが食い違うのは、何かがビームの縁にあるからである。壁とその脇の空間を平均すれば、**実際には何も無い距離**が出てくる |
+| **距離の閾値を `ForwardConfig` と共有する** | 壁は、機体がそちらへ飛んでいようと見ているだけだろうと同じ距離で近い。表が 2 つあれば、ある距離で止まる一方で同じ距離を「開けている」と呼ぶ機体へ食い違っていく |
+| **`explore` の選択肢に代償を書く** | 慎重に聞こえるだけの選択肢は、少しでも不確かなら常に選ばれる。「時間と電池を使い、どこへも動かない」と明記し、モデルが天秤にかけられるようにした |
+| **進む方向を別の Choice にする** | `next_move`（進むか・待つか・掃引するか）と「どちらへ」は別の問いである。1 つの質問に混ぜれば選択肢が 14 個になり、無関係な選択肢は精度を下げる（2 節の制約表） |
+| **掃引ごとに質問を組み立てる** | 選択肢は「読み取れた方位」そのものである。中断された掃引は提示する方位が少なくなるし、誰も測っていない方位を差し出すことは、**見たものと想像したものの間で選べ**と求めることになる |
+| **壁が近い方位を選んだ答えをコードが却下する** | Jev は「壁が近い」を見せられたうえでなおその方位を選びうる（センサに見えない隙間を通る経路を読むモデルはもっともらしくありうる）。しかし前方センサは 1 つしかなく、それが「そこに面がある」と言っている。**両者のうち勝つのは測定である** |
+| **掃引後に必ず元のヨーへ戻す** | 呼び出し側が持つ「前」の概念（`MissionWalk`・`_FlightState`）は掃引で更新されない。途中で終わった掃引がそれを黙って無効にすると、**以後のどの区間も、間違った方向へ飛ぶまで気づかない**。中断時も戻す |
+| **拒否された掃引でミッションを止めない** | 普通の区間も含む経路は、その区間を飛べるべきである。そうしなければ、動いている経路に `explore` を 1 つ足しただけで全体が地上に留まる |
+| **掃引をやり直しとして数える** | 掃引の代償はやり直しと同じで、経路も進まない。数えなければ、境目ごとに `explore` と答えるモデルが時間上限まで掃引し続ける。上限を 2 つ持たず既存のものを使い回す |
+
+### 4.11.5 fixture で検証したこと
+
+`lib/sfpilot/tests/test_explore.py`（43 件）と `simulator/tests/test_explore_sils.py`（3 件）。**キーも通信もエミュレータの飛行も要らない。**
+
+| 確認内容 | 試験 |
+|---|---|
+| 距離が前方の語のいずれかになる（数値にならない）。閾値は `ForwardConfig` と共有 | `test_a_bearing_is_banded_by_its_nearest_reading` |
+| 区分は平均ではなく**最も近い**読み取りで決まる | `test_the_nearest_reading_decides_not_the_average` |
+| 有効な読み取りが足りない方位は「測定不能」であり、`is_open` にならない | `test_a_bearing_nobody_could_measure_is_unknown_not_open` |
+| 8 方位が英語の語で state に載り、数値が 1 つも無い（§4.5 の教訓） | `test_the_surroundings_carry_eight_english_words_and_no_numbers` |
+| 「測定不能」が省かれず、「開けている」にもならずに Jev へ届く | `test_an_unmeasured_bearing_says_so_rather_than_saying_open` |
+| 掃引していないことが「never」であり、8 つの「不明」ではない | `test_a_sweep_that_never_happened_says_never_not_eight_unknowns` |
+| 有効期限を過ぎた掃引が「古い」の語になる（時計ではなく語） | `test_a_sweep_past_its_freshness_window_is_reported_as_old` |
+| 指紋が方位の変化には追随し、時間の経過には追随しない | `test_the_signature_follows_the_bearings_but_not_the_clock` |
+| 掃引が読まなかった方位を選択肢に出さない | `test_the_choice_offers_only_bearings_that_were_swept` |
+| 選択肢が対比と除外を書く（名前の言い換えでない） | `test_each_option_says_what_it_commits_to_and_what_it_rules_out` |
+| 質問文が目的を名指しし、兼ね合いを選好として書く | `test_the_question_names_the_goal_so_the_trade_off_is_the_models` |
+| **壁が近い方位を選んだ答えをコードが却下する** | `test_code_refuses_a_bearing_the_sweep_measured_as_a_wall` |
+| 測れていない方位・掃引に無い方位も却下する | `test_code_refuses_a_bearing_that_was_never_measured` |
+| 開けている方位と「進まない」は却下しない | `test_an_open_bearing_and_staying_put_are_both_allowed` |
+| **FakeJudge の既定が開いている側を、目的に近い順で選ぶ** | `test_the_rule_based_default_picks_an_open_bearing_near_the_goal` |
+| 規則ベースの既定が壁も測定不能も決して選ばない | `test_the_rule_based_default_never_picks_a_wall_or_an_unknown` |
+| `ExploreFakeJudge` の答えがコードの却下を通る | `test_the_explore_fake_judge_answers_the_bearing_question_by_rule` |
+| **`enabled=False` で実行を拒否し、理由が trace に出て、機体へ何も送らない** | `test_a_sweep_is_refused_while_the_feature_is_disabled` |
+| 同梱の既定が無効のままである（解除条件を満たさない有効化を捕まえる） | `test_the_shipped_default_keeps_exploration_off` |
+| 8 方位を訪れ、それぞれを区分する | `test_a_sweep_visits_every_bearing_and_classifies_each` |
+| **掃引後に元のヨーへ戻す指令を出す**（記録用リンクで確認） | `test_a_sweep_returns_the_craft_to_the_heading_it_started_on` |
+| **中断された掃引も元のヨーへ戻し、読めた方位は保持する** | `test_an_interrupted_sweep_still_turns_back_and_keeps_what_it_read` |
+| **旋回中に前方距離が閾値未満になったら掃引を中断する** | `test_a_wall_that_appears_mid_sweep_stops_the_turning` |
+| 全読み取りが無効な方位は「測定不能」になり、既定は「進まない」を選ぶ | `test_a_bearing_whose_readings_are_all_invalid_is_unknown_not_open` |
+| 刻みが `step_deg` であり、最後に円を閉じて戻る | `test_the_sweep_turns_by_the_configured_step` |
+| `rc` での旋回がヨー速度を保ってから中立へ戻す | `test_turning_by_rc_sends_a_yaw_stick_and_returns_it_to_centre` |
+| **実測 fixture の壁への接近が段階的に区分を変える** | `test_the_measured_approach_crosses_every_band_it_should` |
+| **実測 fixture の「前方センサ無し」の飛行が「測定不能」になる**（空きと読まない） | `test_a_measured_open_room_sweeps_to_unknown_not_to_open` |
+| **YAML の `explore` 区間が読み込め、どこへも動かない** | `test_an_explore_leg_loads_from_yaml_and_travels_nowhere` |
+| 同梱の `explore_pocket` が「入る → 見回す → 横へ」の形である | `test_the_shipped_pocket_route_sweeps_between_two_travelling_legs` |
+| `explore` の選択肢が代償を述べる | `test_the_explore_option_tells_the_model_what_looking_around_costs` |
+| ライブ表示へ渡る項目が選ばれたものだけである | `test_the_live_view_gets_one_sector_per_bearing_with_no_stray_fields` |
+| **`sf pilot explore` が、エミュレータを起動する前に拒否する** | `test_explore_refuses_and_never_reaches_the_emulator`（SILS） |
+| 拒否が解除条件とバックログ番号を述べる | `test_the_refusal_names_the_release_condition`（SILS） |
+
+実行結果: `pytest lib/sfpilot lib/sfcli lib/sflog` が **446 passed / 1 skipped**（基準 401 passed / 1 skipped に対し追加 45 件）。`pytest simulator/tests/test_explore_sils.py` が **3 passed**。
+
+### 4.11.6 飛ばして検証していないこと
+
+**以下はいずれも 1 度も飛んでいない。** 4.11.1 節の理由により、SILS でも実機でも実行していない。
+
+| 事項 | 状況 |
+|---|---|
+| **掃引そのもの**（ヨー回転しながらの測距） | **未検証。** 機体がヨー回転で落下するため実行していない |
+| 各方位の静定待ち 1.5 秒が十分か | **未検証。** 値は「旋回後に機体の振れが収まる時間」の見積もりであり、実測ではない |
+| 方位あたり 5 サンプル・有効 2 件が妥当か | **未検証。** 実測 fixture の**連続**する読み値からは妥当に見えるが、旋回中の読み値は採れていない |
+| 旋回中の前方 ToF の読み値が信頼できるか | **未検証。** ビームが動いている間の測距は、静止時とは別の挙動をしうる |
+| 有効期限 20 秒が妥当か | **未検証。** 機体がどれだけ動けば掃引が古くなるかは、実際の飛行速度に依存する |
+| `cw` と `rc` のどちらが掃引に適するか | **未検証。** 4.9.1 節で**どちらも落下する**ことだけが分かっている |
+| 掃引 1 回の所要時間と電池消費 | **未計測** |
+| Jev が `surroundings` をどう読むか | **未検証。** 本物の Jev に 8 方位の state を見せていない。`--eval` に相当する評価も未実施 |
+| Jev が `explore` を適切な頻度で選ぶか | **未検証。** 代償を criteria に書いたが、それが効くかは実走でしか分からない |
+| 実機の前方 ToF での本節の確認 | **未実施**（前方 ToF 自体が実機未確認。4.7 節） |
+
+**fixture で検証したことと、飛ばして検証していないことの境目は明確である**: コードが数値を語に変える規則・却下の規則・state の語・指令の列は固定した。**その指令を送ったときに機体がどう振る舞うかは、何も分かっていない。**
+
+### 4.11.7 併せて直したもの — `sf pilot say` の「前に80cm進んで」
+
+4.9.9 節が記録していた誤変換を直した。
+
+**症状**: 「前に80cm進んで」が `up 80` + `forward 50` になる。80cm という指定が**上昇**に渡り、肝心の前進は既定の区分 50cm で飛ぶ。
+
+**原因**: Jev はこの文を `up` → `forward` の 2 動作と読むことがある（モデルが自分で上昇を足す）。一方 `instruction._match_numbers_to_verbs` は、数値と動作を**単位で分けたうえで順序だけ**で突き合わせていた。cm の数値が 1 つ・cm を取りうる動作が 2 つのとき、順序による対応付けは数値を**最も早い**動作へ渡す。文中で 80cm がどこにあるかは一切見ていなかった。
+
+**なぜ既存の試験が捕まえなかったか**: 事例集にあった「1m上がって前に70cm進んで」は数値 2 つ・動作 2 つで、順序の対応付けが正しく働く。**数値のほうが少ない**場合だけが壊れており、その形の事例が無かった。
+
+**対処**: 数値を差し出す相手を、**その動作を文が名指ししている**ものに限った（`_MOVE_CUES`。「前」「進ん」「上が」等）。「前に80cm進んで」は前進を 2 度名指しし、上昇は 1 度も名指ししないので、80cm は `forward` に届く。数値と動作の数が揃っている文では何も飛ばさず、対応付けは従来どおりの順序になる。手がかりが 1 つも一致しない場合も元の順序を保つ — 操作者が**名指しした**動作から数値を取り上げることは、逆向きの同じ誤りだからである。
+
+**数値自身の文中位置で対応させない理由**: それには**動作**の側にも位置が要るが、動作は「3 番目の動作は何か」への Jev の答えであって、位置をまったく持たない。文と動作の列が出会う場所は、この手がかりの語だけである。
+
+**固定した試験**（`--eval` は Jev が要るため、組み立て側の単体試験で固定した）:
+
+| 確認内容 | 試験 |
+|---|---|
+| 数値が 1 つのとき、最初の動作ではなく文が名指しした動作に届く | `test_instruction.py::test_a_figure_goes_to_the_move_the_sentence_names_beside_it` |
+| 動作の数だけ数値がある文は、従来どおり順序で対応する（直したことが普通の事例を壊していない） | `test_instruction.py::test_a_figure_for_every_move_is_still_paired_in_order` |
+
+事例集 `say_eval_cases.yaml` にも「前に80cm進んで」→ `["takeoff", "forward 80", "land"]` を追加した（本物の Jev に対する評価用）。
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -1079,13 +1431,14 @@ alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
 | `lib/sfpilot/executor.py` | 行動 → `rc`/`stop`/`land` | 実装済み |
 | `lib/sfpilot/trace.py` | 1 判断 1 行の JSON 記録 | 実装済み |
 | `lib/sfpilot/pilot.py` | ループ本体 | 実装済み |
-| `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `replay` / `run` / `say` | 実装済み |
+| `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `replay` / `run` / `say` / `mission` / `explore` | 実装済み（`explore` は無効時に起動前拒否）|
 | `lib/sfpilot/instruction.py` | 指示 → 手順の列（数値の抽出・組み立て規則・飛行領域の事前検査・`return_home`） | 実装済み（P3） |
 | `lib/sfpilot/say.py` | 手順の実行と、その間も動き続ける監視層 | 実装済み（P3） |
 | `lib/sfpilot/tests/say_eval_cases.yaml` | `sf pilot say --eval` の指示 10 例と期待 | 実装済み（P3） |
 | `lib/sfpilot/mission.py` | 経路の読み込み・到達の区分・飛行ループ・コード側の上限 | 実装済み（P4） |
 | `lib/sfpilot/mission_run.py` | SILS の段取りと結果の集計表示（CLI から処理本体を移した先）| 実装済み（P4） |
-| `lib/sfpilot/missions/*.yaml` | 同梱の経路（`line`＝現状飛べる、`square`＝P4 の対象だが現状飛べない）| 実装済み（P4） |
+| `lib/sfpilot/missions/*.yaml` | 同梱の経路（`line`＝現状飛べる、`square`＝P4 の対象だが現状飛べない、`explore_pocket`＝4.11 の対象だが現状飛べない）| 実装済み（P4 / 4.11） |
+| `lib/sfpilot/explore.py` | 掃引・方位の区分・選択肢・答えの却下・規則ベースの既定 | **実装済み、既定で無効**（4.11）|
 | `lib/sfpilot/landing.py` | 着陸前手順（移動を終える → `stop` → 静定待ち → `land`）| 実装済み（P4） |
 | `lib/sfpilot/events.py` | 出来事の流れ（`EventBus`）。記録とライブ表示の分岐点 | 実装済み（P4c） |
 | `lib/sfpilot/recording.py` | SILS 飛行のフライトログ一式の置き場所と命名 | 実装済み（P4c） |
@@ -1147,7 +1500,7 @@ security add-generic-password -U -a "$USER" -s typesafe-api-key -w
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 253 件（ライブ表示 14 件・記録 6 件を含む）。キー不要・通信不要で
+`lib/sfpilot/tests/` に 296 件（ライブ表示 14 件・記録 6 件・探索 43 件を含む）。キー不要・通信不要で
 通る。ブラウザ表示の共有部分は `lib/sfcli/commands/test_web_assets.py` に 10 件
 （3D シーンの切り出しで `sf telemetry --web` が壊れていないことの確認を含む）。加えて
 `simulator/tests/test_mission_sils.py` に SILS の実飛行 6 件（`--fake`。エミュレータの
@@ -1191,6 +1544,7 @@ security add-generic-password -U -a "$USER" -s typesafe-api-key -w
 | ミッションの state（P4） | 数値が 1 つも無いこと。「3/10」が位置として渡ること。やり直し回数と経過時間が語になること。到達が未確定なら項目ごと省くこと |
 | コード側の上限（P4） | やり直しが上限で「飛ばす」に変わること。待機がやり直しに解決された場合も計数に含まれること。電池が少ないとき進む系の答えが `return_home` に置き換わり、`land` は置き換わらないこと。時間上限が次の区間の前に効くこと |
 | 着陸前手順（P4） | `land` より先に `stop` が届くこと。実測速度が高い間は `land` を送らないこと。低速が継続して初めて送ること。一瞬の低速では静定としないこと。上限に達したら送ること。緊急時は短い上限を使い、実行中の移動を待たないこと。着陸中は他の指令を出さないこと。記録に経路と待ち時間が残ること |
+| 探索（4.11、**無効のまま**） | 距離が方位の語になること（最も近い読み値で決まる）。有効な読み取りが足りない方位が「測定不能」であり「開けている」にならないこと。8 方位が数値なしで state に載ること。指紋が方位に追随し時間に追随しないこと。**壁が近い／測れていない方位を選んだ答えをコードが却下すること**。規則ベースの既定が開いている側を目的に近い順で選ぶこと。**`enabled=False` で実行を拒否し理由が trace に出ること**。**掃引後に元のヨーへ戻す指令を出すこと**（中断時も）。**旋回中に前方距離が閾値未満になったら中断すること**。YAML の `explore` 区間が読めること |
 | SILS 実飛行（P4） | `nominal` が完走し真値が経路と一致すること。帰還が離陸点へ戻すこと。降下中の横移動が手順なしの基準を超えないこと。`battery_drop` が経路を途中で終えて着陸すること。`drift` が区間を無限にやり直さず、飛ばした理由を記録すること |
 
 ## 8. 別計画として提案（本計画の範囲外）
@@ -1228,7 +1582,7 @@ P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 | P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done**. All three scenes confirmed against the live Jev (§4.5) |
 | P3 | `sf pilot say` (natural-language instruction) | **Done**. 7/10 against the live Jev, all three misses diagnosed and fixed, now **10/10** (§4.5) |
 | P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done**. A reply-count race found and fixed during the live-Jev flights; **all six legs now complete `as planned`** (§4.5) |
-| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). Premise (2), a simulated forward distance in SILS, is now implemented (§4.9) | **Partly implemented** (§4.9): the simulated forward distance and the turn-free immediate safety rule are done. **Yaw-turn exploration and heading selection are deferred** — in SILS as it stands even `cw 30` drops the aircraft (§4.9.1). The release condition is resolving backlog #12 |
+| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead) | **Implemented and disabled** (§4.11). Beyond the simulated forward distance and the turn-free immediate rule (§4.9), **the yaw sweep and heading selection are implemented too**. Off by default and never flown — in SILS as it stands even `cw 30` drops the aircraft (§4.9.1). **Lifting it is one setting, `ExploreConfig.enabled`** (steps in §4.11.2; depends on backlog #12) |
 | P4c | **Ways to watch a flight** (`--web` live view, plus video / GUI replay afterwards; §4.6) | **Done** |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
@@ -1749,6 +2103,12 @@ With the totals firmware (`1dd1b3c6`) flashed, the craft was held by hand (0.15-
 safety rule that uses it while flying forward. Yaw-turn exploration and heading
 selection were DEFERRED, on the strength of measurement.**
 
+> **For the stop rule, §4.9.10 supersedes this section.** The defect this section
+> records (§4.9.7: 3 of 8 approaches went past the wall) was fixed on 2026-09-19 — the
+> stopping distance is now derived from the closing speed rather than fixed. Re-measured
+> over 13 SILS flights: **0 wall strikes, minimum clearance +0.714 m.** The figures in
+> this section are from **before** that fix.
+
 The deferral is not a matter of scope. **In SILS as it stands, the aircraft falls out
 of the air from the yaw rotation itself.** `cw 30` was measured to fall exactly as
 `cw 90` does (table below). Exploration rests entirely on turning, so while turning
@@ -1874,7 +2234,7 @@ sensor really starts and ranges, so this measurement is that path's verification
 
 | Layer | Change |
 |---|---|
-| `config.py` | `ForwardConfig` — `stop_distance_m=0.5`, `release_distance_m=0.7` (hysteresis), `wall_near_m=0.8`, `somewhat_near_m=1.5`, `invalid_grace_s=2.0` |
+| `config.py` | `ForwardConfig` — **the stopping distance is computed from the closing speed, not fixed** (`safety_margin_m=0.5` + `coast_per_speed_s=4.0` × closing speed, capped at `stop_distance_max_m=1.8`; §4.9.10), `release_margin_m=0.2` (hysteresis, added on top of the stopping distance), `wall_near_m=0.8`, `somewhat_near_m=1.5`, `invalid_grace_s=2.0` |
 | `monitor.py` | The forward classification (`open` / `somewhat near` / `wall near` / `cannot be measured`) and the **immediate safety rule**: `wall near` sends `stop` without waiting for Jev |
 | `summarizer.py` | `flight.forward_clearance` reaches the state in English |
 | `pilot_web.html` | The top view draws the forward distance as a ray along the heading, ending in a mark for the surface, red at or below the stop threshold |
@@ -1888,12 +2248,16 @@ last valid reading is held for `invalid_grace_s` (2 s) and then becomes "cannot 
 measured". That word alone does not stop the craft — every flight without a forward
 sensor would stop — but it never becomes "open" either.
 
-### 4.9.7 Measured in SILS (`--fake`)
+### 4.9.7 Measured in SILS (`--fake`. **Recorded while the threshold was a fixed 0.5 m**)
+
+> **This section is the record of a defect.** Every figure in it dates from when the stop threshold was a fixed 0.5 m, and **none of it describes the current code.** The design change to a speed-dependent stopping distance, and the full re-measurement that followed, are in §4.9.10. It is kept because it is the evidence for what was happening and for why a fixed threshold cannot fix it.
 
 | Scene | Measured |
 |---|---|
 | Flying forward in `wall_ahead` | At t=15.65 s the classification became `wall near` and one `stop` was issued **from the Monitor** (reason: "前方に障害物が近いため即時停止"). Ground truth reached N=**0.668 m**, stopping **0.332 m short** of the wall at N=1.0 m |
 | Flying forward in `dead_end` | The same Monitor `stop` (t=14.54 s). Maximum **while airborne** N=0.946 m, i.e. **0.054 m short**; after touchdown it slid along the ground to N=0.996 m |
+
+**These two rows are not successes.** This section originally listed only these two runs; counting all 8 showed 3 had gone past the wall (table below). The `dead_end` figure in particular — "0.054 m short" — records **how little margin was left**, not evidence that the craft could stop.
 
 #### Two flights against the live Jev
 
@@ -1913,13 +2277,45 @@ the answer split between `continue` (0.60), `hold` (0.27) and `land` (0.13). A s
 answer is taken as a hold by the Arbiter (the rule from §4.5). Jev reads the words
 "wall near" as a reason to be less certain, which is correct.
 
-**The 54 mm margin in `dead_end` is recorded plainly as a problem.** The cause is not
-the stop rule but the approach speed and the sideways drift during descent
-(`wall_ahead` included an `up 80` beforehand and approached from 1.48 m at 0.35 m/s;
-`dead_end` approached at 0.17 m/s but began descending near 0.5 m). Position hold not
-acting during descent is the known behaviour reported in §4.2 and §4.3, and it was not
-changed here. **Where the flight ends by landing just in front of a wall, the stop rule
-alone may not prevent contact.**
+#### The stop rule does not reliably prevent contact (a correction, from 8 runs)
+
+**This section originally cited only the two favourable runs. Counting all eight, three
+of them went PAST the wall.** The full set follows (`truth.csv`, measured while airborne,
+i.e. above 0.10 m).
+
+| Run | Speed at the threshold | Coast past it | Margin to the wall |
+|---|---|---|---|
+| `…175531` | 0.129 m/s | 0.086 m | +0.414 m |
+| `…173927` | 0.347 m/s | 0.167 m | +0.332 m |
+| `…132255` | 0.181 m/s | 0.355 m | +0.145 m |
+| `…175047` | 0.155 m/s | 0.390 m | +0.110 m |
+| `…174029` | 0.172 m/s | 0.446 m | +0.054 m |
+| `…175008` | 0.219 m/s | 0.747 m | **−0.247 m (through)** |
+| `…200842` | 0.236 m/s | 0.920 m | **−0.420 m (through)** |
+| `…175254` | 0.240 m/s | 0.961 m | **−0.462 m (through)** |
+
+**The stop is not late.** The traces show `stop` issued on the very cycle the
+classification became `wall near` (e.g. `…200842`: both at t=14.72). **What is slow is
+the aircraft, not the rule** — `stop` restores position hold rather than braking, and the
+momentum already in the airframe is not arrested against an obstacle the controller knows
+nothing about.
+
+**The 0.5 m threshold is too small.** The original comment in `config.py` claimed "SILS
+measures roughly 0.4 m of travel" before the craft is still — **a figure that had never
+been measured.** The measurement is 0.086–0.961 m, the upper end more than double the
+assumption.
+
+**But simply raising the threshold does not fix it.** The coast scales with the approach
+speed (0.086 m at 0.129 m/s, 0.961 m at 0.240 m/s), so any fixed distance is too small
+when fast and uselessly cautious when slow. **The correct remedy is a stopping distance
+derived from the measured closing speed, which is a design change rather than a constant.**
+This work **left the number alone and left the defect visible**: raising the threshold
+would make all eight runs look like successes while the same failure returns at higher
+speed.
+
+The honest assessment is therefore: **the simulated forward distance, the classification,
+the state and the immediate-rule path all work, but there is not yet a reliable "stops
+before the wall" capability.** It is recorded as an open problem in §4.9.9.
 
 ### 4.9.8 Faults found while implementing (both introduced and fixed in this work)
 
@@ -1937,11 +2333,107 @@ been rewritten to match the measurement.
 
 | Item | Status |
 |---|---|
-| Yaw-turn exploration and heading selection | **Deferred.** The release condition is in 4.9.1 (waiting on backlog #12) |
-| The 54 mm in `dead_end` | The stop rule worked, but the margin is thin. A real fix is position hold during descent (§4.2, §4.3 — a vehicle-side decision) |
+| Yaw-turn exploration and heading selection | **Implemented and disabled** (§4.11). The release condition is in §4.9.1 (waiting on backlog #12) |
+| **Cannot reliably stop before a wall (most important)** | ~~3 of 8 runs went past the wall~~ → **Fixed on 2026-09-19; see §4.9.10.** The stopping distance is now derived from the closing speed, the forward move is limited so the craft never builds the speed in the first place, and a stop that opens no distance escalates to a retreat. Re-measured over 13 SILS flights: 0 wall strikes, minimum clearance +0.714 m |
 | Noise on the forward model | Not added (4.9.3). The N3 tier, covering it together with the downward part, is the right place |
 | Confirming this section on hardware | Not done. Everything here is measured in SILS |
-| `sf pilot say`'s Japanese parsing | "前に80cm進んで" was observed to become `up 80` + `forward 50`. Outside this work's scope (P3 instruction parsing), but recorded |
+| `sf pilot say`'s Japanese parsing | "前に80cm進んで" was observed to become `up 80` + `forward 50`. **Fixed 2026-09-19** (§4.11.7) |
+
+## 4.9.10 A Stopping Distance Derived from the Closing Speed (2026-09-19, the fix for §4.9.7)
+
+### Summary
+
+**The "cannot reliably stop before a wall" item that §4.9.7 and §4.9.9 left as the most important one is fixed.** The stop test changed from "distance < a fixed threshold" to "distance < stopping distance(speed)", and two more layers were added around it: a **limit on the forward move** so the craft never builds the speed, and a **retreat** for when a stop opens no distance. **The immediate rule is a last resort again.**
+
+| Layer | What it does | When it acts |
+|---|---|---|
+| ① Move limiting (`say.py`) | Cuts one forward move to fit the room ahead | Before the move is sent. **Prevention** |
+| ② Stopping distance(speed) (`monitor.py`) | Issues `stop` at a distance that grows with the closing speed | Every cycle in flight. **Immediate rule** |
+| ③ Retreat (`monitor.py` → `executor.py`) | `back` when a stop did not open any distance | 1.5 s after the stop. **Last resort** |
+
+### 4.9.10.1 The coast model, and where the coefficient comes from
+
+**The adopted form: `stopping distance = 0.5 m + 4.0 s × closing speed`, capped at 1.8 m.**
+
+`4.0 s` is the **upper cover** of `coast / speed` over §4.9.7's eight approaches — not a least-squares fit. The costs are asymmetric:
+
+| Form | Coefficient | rms | Under-predictions out of 8 |
+|---|---|---|---|
+| Least squares `0.84v + 0.33` | — | 0.31 m | **5** (3 of which did hit the wall) |
+| `a·v²` (drag-like) | a=7.6 | 0.41 m | **6** |
+| **Upper cover `4.0·v` (adopted)** | k=4.0 | — | **0** |
+
+**A least-squares line runs through the middle of the data, so by construction it under-predicts about half the runs** — and an under-predicted stopping distance is a wall strike. The cover is at or above all 8 (the binding point is 0.240 m/s → 0.961 m, i.e. 4.00).
+
+**Why not `a·v²`.** A coasting airframe suggests a drag law, but fitted to the same points it is **worse** (6 under-predictions, rms 0.41 m). The fixture shows why: after the threshold is crossed the speed falls **0.214 → 0.132 m/s and then RE-ACCELERATES to 0.185 m/s**. It is not a free glide decaying to rest. `stop` restores position hold while the interrupted `forward` move's own position target is still pulling the craft on, so what is being modelled is a control interaction, not aerodynamic drag. The linear cover is used because it **bounds** the measurements, not because it explains them.
+
+The spread is wide (`coast / speed` runs 0.48–4.00), which is exactly why **the cover, not the centre, is the only safe reading of this data.**
+
+### 4.9.10.2 Limiting the forward move (the prevention layer)
+
+`forward N` steps to a position target N cm ahead and the craft accelerates towards it, so **a move that ends inside a wall arrives at the wall at speed.** The move and the stopping distance of the speed it reaches must both fit:
+
+```
+travel + stopping_distance(speed the travel reaches) <= distance ahead
+```
+
+**Bounding the speed by the travel itself is the point.** A first implementation assumed the envelope ceiling of 0.5 m/s always, which demanded 1.8 m and therefore **forbade all forward motion in the SILS scenes, whose walls are 1.0 m away** — the craft stopped flying rather than flying carefully. A short move never reaches the ceiling, so the reachable speed is `min(travel / coast_per_speed_s, ceiling)`, which makes the bound self-consistent.
+
+### 4.9.10.3 The retreat (last resort)
+
+If the craft is still closing by more than `backoff_closing_m` (0.05 m, above sensor noise) after `backoff_grace_s` (1.5 s, the measured length of the re-acceleration), the stop escalates to `back 20`. A `stop` precedes it (the interrupted move's target is still pulling), it is sent **once** per retreat (`back` blocks, so re-sending at 50 Hz would fly the craft backwards into what it cannot see), no `rc` goes out during it, and it interrupts a `say` sequence and a sweep like `stop` and `land` do.
+
+### 4.9.10.4 Measured across 13 SILS flights (`--fake`, 0.1–0.5 m/s)
+
+Two clearances are reported, because two mechanisms govern them: **approach** (closest while above 0.40 m, governed by the stop rule) and **airborne** (closest above 0.10 m, which includes the descent and is governed by the landing).
+
+| Run | Speed ceiling | Scene | Before: approach | Before: airborne | **After: airborne** |
+|---|---|---|---|---|---|
+| A | 0.10 m/s | `wall_ahead` | +0.426 m | +0.269 m | **+0.729 m** |
+| B | 0.15 m/s | `wall_ahead` | +0.283 m | +0.060 m | **+0.732 m** |
+| C | 0.20 m/s | `wall_ahead` | +0.349 m | +0.145 m | **+0.731 m** |
+| D | 0.25 m/s | `wall_ahead` | +0.387 m | +0.181 m | **+0.741 m** |
+| E | 0.30 m/s | `wall_ahead` | +0.221 m | +0.021 m | **+0.716 m** |
+| F | 0.35 m/s | `wall_ahead` | +0.316 m | +0.035 m | **+0.714 m** |
+| G | 0.40 m/s | `wall_ahead` | +0.385 m | +0.194 m | **+0.731 m** |
+| H | 0.45 m/s | `wall_ahead` | +0.215 m | **−0.028 m (through)** | **+0.732 m** |
+| I | 0.50 m/s | `wall_ahead` | +0.268 m | +0.096 m | **+0.738 m** |
+| J | 0.50 m/s | `wall_ahead` | +0.316 m | +0.035 m | **+0.742 m** |
+| K | 0.20 m/s | `dead_end` | +0.250 m | +0.051 m | **+0.738 m** |
+| L | 0.35 m/s | `dead_end` | +0.257 m | +0.026 m | **+0.742 m** |
+| M | 0.50 m/s | `dead_end` | +0.515 m | +0.358 m | **+0.739 m** |
+
+**The acceptance criterion (0 strikes, minimum clearance ≥ 0.10 m) is met on all 13.**
+
+| Metric | Before | After |
+|---|---|---|
+| Went through the wall | **1 / 13** | **0 / 13** |
+| Minimum airborne clearance | **−0.028 m** | **+0.714 m** |
+| Clearance < 0.10 m | **8 / 13** | **0 / 13** |
+| Minimum approach clearance | +0.215 m | +0.714 m |
+
+**This measurement showed two defects stacked.** In the "before: approach" column **the stop rule itself never failed** — it kept at least 0.215 m on all 13, even at a 0.5 m/s ceiling. **The speed-dependent stopping distance achieves its purpose on its own.**
+
+Every remaining encroachment happened **during the descent**. Following the ground truth of run B:
+
+```
+t=19.2  n=+0.302  alt=1.14   vx=-0.015   <- the stop holds; the craft oscillates about n≈0.30
+t=20.5  n=+0.183  alt=1.13   vx=+0.100   <- the descent begins
+t=21.5  n=+0.367  alt=0.87   vx=+0.225   <- no position hold, so it ACCELERATES forward
+t=23.7  n=+0.919  alt=0.13   vx=+0.242   <- just before touchdown, 0.72 m further on
+```
+
+That is the firmware behaviour `LandingConfig` documents (a descent is excluded from `computePositionHold()`). **Settling cannot fix it, because the drift starts after the settling ends.** So the pre-landing approach gained a "back away before descending" stage (§4.9.10.3). The after column is nearly constant at +0.714–0.742 m because that retreat secures a fixed amount of room regardless of the approach speed.
+
+**The `back` escalation never fired in any of the 13 flights.** The move limit and the stopping distance act first, so the last resort stays unused, as designed; its path is covered by fixtures and unit tests instead.
+
+### 4.9.10.5 Design holes fixed alongside
+
+| # | Hole | Fix |
+|---|---|---|
+| 1 | Inverted hysteresis | `release_distance_m=0.7` sat above the old fixed 0.5 m, but once the stopping distance moves with speed it falls **below** it past about 0.05 m/s, so the craft could release a stop while still inside the band that caused it. It is now a margin **on top of** the stopping distance (`release_margin_m=0.2`) |
+| 2 | Braking for a wall being flown past | Using the **magnitude** of the horizontal velocity reads a craft sliding sideways as closing. It is now the **projection on the nose**, which is the only direction the forward sensor looks |
+| 3 | A retreat shrinking the stopping distance | That projection goes negative when reversing away, which without a clamp would shrink the distance below the safety margin exactly while escaping. Clamped at 0 |
 
 ## 4.10 Measurement of Three Yaw-Saturation Fixes, and the Conclusion (2026-09-19)
 
@@ -1997,6 +2489,110 @@ Two reference scenarios were added under `simulator/sils/scenarios/`. **Neither 
 | `yaw_cw90_low.scn` | §4.9.1's fall under pure yaw (`cw 90`). `--duration 36000000`, window 18-28 s |
 
 The metrics characterising the fall (duty-rail pinning fraction and so on) were computed with a throw-away test program. Per the policy of not adding standalone scripts under `tools/` (PROJECT_PLAN §8), keeping them means adding them to the existing metric set of `sf sils scenario` (a proposal only; not implemented).
+
+## 4.11 Exploration by Forward ToF — Implemented, and Disabled (2026-09-19)
+
+### Summary
+
+**The yaw-turn exploration that §4.9 and §4.10 deferred is now fully implemented, and shipped switched off by a single setting.** It has not been verified in flight because it cannot be flown. When the release condition is met, setting `ExploreConfig.enabled` to `True` enables it; nothing else has to change.
+
+The decision to defer is unchanged from §4.9.1 and §4.10.2. What this section changes is only what is prepared *during* the deferral: **on the day backlog #12 is resolved, exploration can be checked by changing one setting rather than by being written from scratch.**
+
+### 4.11.1 Why it is disabled (the measurement, restated)
+
+| Command sent | Minimum altitude | Impact | Disarm |
+|---|---|---|---|
+| Nothing (control) | +0.498 m | 0 | none |
+| `rc 0 0 0 0` (pure hover) | +0.490 m | 0 | none |
+| `cw 90` / `cw 45` / `cw 30` | −0.000 m | 4.7–5.3 G | **disarm** |
+| `rc 0 0 0 10` (0.1 rad/s) | −0.000 m | 0 | none (sinks) |
+
+From §4.9.1. The cause is lift lost to the mixer's independent clamping (`simulation-policy.md` backlog **#12**), and all three candidate fixes were rejected (§4.10). **Exploration stands on rotation, so while rotation does not work, enabling it would make the evidence of any test a crash.**
+
+**No workaround that climbs first so the ground is out of reach has been added** (the §4.3 rule).
+
+### 4.11.2 How to lift the restriction
+
+1. **The owner chooses (a)/(b)/(c) on backlog #12** (§4.10.3).
+2. Confirm that **`cw 90` from a 0.5 m hover completes with no fall, no impact detection and no disarm** (the §4.9.1 release condition; climbing out of reach does not count).
+3. Set **`ExploreConfig.enabled` to `True`** in `lib/sfpilot/config.py`. **That is the only edit.**
+4. Fly `sf pilot explore --sils --scene dead_end` **to completion** (`--fake` needs no key; the live Jev works too).
+5. Replace this section's "not verified in flight" table with measurements.
+
+If (b) (leave as is) is chosen, **yaw-turn exploration is deferred permanently** (§4.10.3). In that case this implementation is not deleted but left disabled with the reason recorded here — that an implementation exists and that it may be flown are different facts.
+
+### 4.11.3 What was implemented
+
+| Layer | Change |
+|---|---|
+| `config.py` | `ExploreConfig` — `enabled` (default False), the reason string for being off (naming #12 and the release condition), 45° step, 8 bearings, 1.5 s settle, 5 samples per bearing, 20 s freshness, and the turning method (`cw`/`ccw` or an `rc` yaw rate). **It holds no distance thresholds of its own and shares `ForwardConfig`'s** |
+| `explore.py` (new) | The sweep itself (`sweep`), one bearing's banding (`classify_bearing`), the state (`surroundings_state`), the options (`bearing_criteria`), the refusal (`check_bearing_choice`) and the rule-based default (`rule_based_bearing`) |
+| `monitor.py` | Unchanged. The forward bands (`FORWARD_*`) and the immediate safety rules are used **as they are** |
+| `summarizer.py` | `forward_word()` exposed (so all eight bearings go through one table). `surroundings` added to the state. `signature()` includes the bearings and excludes `measured` (the age) |
+| `judge.py` | `explore` added to `next_move` (**with its cost stated**). `bearing_question()` (built per sweep). `ExploreFakeJudge` (extends `MissionFakeJudge`, answers both questions) |
+| `mission.py` | The `explore` leg type (a YAML `verb`); three sweep arrival words; the retry ceiling and the battery rule applied to sweeping too |
+| `missions/explore_pocket.yaml` (new) | Look around in a dead end and take the open side, 0.6 m. `square.yaml` untouched |
+| `pilot.py` | Carries `surroundings` in the state (set by whoever sweeps, read every cycle) |
+| `events.py` / `pilot_web.html` | A `sweep` event and eight sectors on the top view. `stampfly3d.js` untouched |
+| `lib/sfcli/commands/pilot.py` | `sf pilot explore`. **Refuses before launching anything, exit code 1, while disabled** |
+
+### 4.11.4 Design decisions (and what was not done)
+
+| Decision | Reason |
+|---|---|
+| **"Cannot measure" is never a synonym for "open"** | The forward part reports an invalid reading both when nothing is ahead and when a surface is too close to resolve (§4.8.6). Reading an absent value as clearance flies the craft **at the case it cannot see**. The sweep keeps the same rule, and `rule_based_bearing` never picks an unmeasured bearing |
+| **A bearing is banded by its nearest reading, not its average** | Several readings of one bearing differ because something is at the beam's edge. Averaging a wall with the space beside it produces **a distance at which nothing actually is** |
+| **Distance thresholds are shared with `ForwardConfig`** | A wall is near at the same distance whether the craft is flying at it or looking at it. Two tables drift into a craft that stops at one distance and calls the same distance open at another |
+| **The `explore` option states its cost** | An option that only ever sounds prudent is chosen whenever anything is uncertain. Saying "costs time and battery and moves the aircraft nowhere" gives the model something to weigh it against |
+| **The direction is a separate Choice** | `next_move` (go on, wait, sweep) and "which way" are different questions. Merging them would make a 14-option choice, and irrelevant options lower accuracy (the §2 constraint table) |
+| **The question is built per sweep** | The options ARE the bearings that were read. An interrupted sweep offers fewer, and offering an unmeasured bearing asks the model to **choose between something seen and something imagined** |
+| **Code refuses an answer naming a walled bearing** | Jev may name such a bearing even having been shown "wall near" (a model reading a route through a gap the sensor cannot see is not unreasonable). But there is exactly one forward sensor and it says there is a surface there. **Between the two, the measurement wins** |
+| **The sweep always returns to the starting heading** | The caller's own idea of where "forward" is (`MissionWalk`, `_FlightState`) is not updated by a sweep. A sweep that ended part-way round would silently invalidate it, and **no later leg would notice until it flew the wrong way**. This holds for an interrupted sweep too |
+| **A refused sweep does not stop the mission** | A route with ordinary legs should still fly them; otherwise adding one `explore` leg to a working route grounds the whole thing |
+| **Sweeping counts as a retry** | It costs what a retry costs and leaves the route where it was. Without the count, a model answering `explore` at every boundary would sweep until the time limit. One ceiling is reused rather than a second one invented |
+
+### 4.11.5 What the fixtures verify
+
+`lib/sfpilot/tests/test_explore.py` (43 cases) and `simulator/tests/test_explore_sils.py` (3). **No key, no network, and no emulator flight.**
+
+The full list of properties is in the Japanese table above; the ones that matter most are: a distance becomes one of the forward words and never a figure; too few valid readings is "cannot measure" and never "open"; the eight bearings reach Jev as English words with no numbers in the state; the signature follows a bearing changing but not the clock; **an answer naming a walled or unmeasured bearing is refused by code**; the rule-based default picks the open bearing nearest the goal and never a wall; **`enabled=False` refuses, records the reason and sends nothing to the vehicle**; **the sweep commands the craft back to its starting heading, interrupted or not**; **a wall appearing mid-sweep interrupts the turning**; the measured `wall_approach` fixture crosses every band while the measured no-forward-sensor fixture reads as "cannot measure"; and the YAML `explore` leg loads and travels nowhere.
+
+Results: `pytest lib/sfpilot lib/sfcli lib/sflog` gives **446 passed / 1 skipped** (against a 401 / 1 baseline, so 45 added). `pytest simulator/tests/test_explore_sils.py` gives **3 passed**.
+
+### 4.11.6 What has NOT been verified in flight
+
+**None of the following has ever flown**, in SILS or on hardware, for the reason in §4.11.1.
+
+| Item | Status |
+|---|---|
+| **The sweep itself** (ranging while yawing) | **Unverified.** Not run, because the craft falls when it yaws |
+| Whether the 1.5 s settle per bearing is enough | **Unverified.** The figure is an estimate of how long the airframe takes to stop swinging, not a measurement |
+| Whether 5 samples with 2 valid is the right rule | **Unverified.** It looks right against *consecutive* readings in the fixtures, but no reading was taken while turning |
+| Whether the forward ToF is trustworthy while rotating | **Unverified.** Ranging with the beam in motion may behave differently from ranging at rest |
+| Whether 20 s freshness is right | **Unverified.** How far the craft must move before a sweep is stale depends on real flight speed |
+| Whether `cw` or `rc` suits a sweep better | **Unverified.** §4.9.1 established only that **both fall** |
+| Time and battery for one sweep | **Not measured** |
+| How Jev reads `surroundings` | **Unverified.** The live Jev has not been shown an eight-bearing state, and no `--eval` equivalent has been run |
+| Whether Jev chooses `explore` at a sensible rate | **Unverified.** The cost is written into the criteria, but only a live flight shows whether that works |
+| Confirming this section on hardware | **Not done** (the forward ToF itself is unconfirmed on hardware, §4.7) |
+
+**The line between what the fixtures pin and what is unverified is sharp**: the rules that turn numbers into words, the refusal rules, the state's vocabulary and the sequence of commands are all fixed. **What the aircraft does when those commands are sent is entirely unknown.**
+
+### 4.11.7 Also fixed — `sf pilot say` on "前に80cm進んで"
+
+The mis-translation §4.9.9 recorded is fixed.
+
+**Symptom**: "前に80cm進んで" ("go forward 80 cm") became `up 80` + `forward 50`. The 80 cm went to a **climb**, and the travel that was actually asked for flew the default 50 cm band.
+
+**Cause**: Jev sometimes reads this sentence as two actions, `up` then `forward` (the model adds a climb of its own). Meanwhile `instruction._match_numbers_to_verbs` paired figures with moves **by unit and then by order alone**. With one centimetre figure and two moves that can take one, order-pairing hands the figure to the **earliest** move. Where the 80 cm sat in the sentence was never consulted.
+
+**Why the existing tests missed it**: the eval case "1m上がって前に70cm進んで" has two figures and two moves, where order-pairing is correct. Only the case with **fewer figures than moves** was broken, and no case had that shape.
+
+**Fix**: a figure is now offered only to moves the sentence actually **names** (`_MOVE_CUES` — 「前」, 「進ん」, 「上が」 and so on). "前に80cm進んで" names a forward travel twice and a climb not at all, so the 80 cm reaches the `forward`. Where the counts match, nothing is withheld and the pairing is the order it always was; if no cue matches at all, the original order is kept too — withholding a figure from a move the operator **did** name would be the same error in the other direction.
+
+**Why not match on the figure's own position in the text**: that would need each MOVE to have a position too, and a move is Jev's answer to "what is action number 3?", which carries no position. The cue words are the only place the sentence and the move list meet.
+
+**Pinned by** (`--eval` needs Jev, so the assembly side is pinned by unit tests): `test_a_figure_goes_to_the_move_the_sentence_names_beside_it` and `test_a_figure_for_every_move_is_still_paired_in_order` in `test_instruction.py`. The case "前に80cm進んで" → `["takeoff", "forward 80", "land"]` was added to `say_eval_cases.yaml` for evaluation against the live model.
 
 ## 5. Placement
 

@@ -1,0 +1,94 @@
+# Look around in a dead end, then take the side that is open.
+# 袋小路で見回し、開いている側へ進む。
+#
+# **This route cannot be flown today, and the reason is not this file.**
+# Its `explore` leg is a yaw rotation, and in SILS the aircraft falls out
+# of the air when it yaws at all: from a 0.5 m hover, `cw 90`, `cw 45` and
+# `cw 30` each reach the ground in about 1.3 s with a 4.7-5.3 G impact and
+# a disarm, and an `rc` yaw rate as low as 0.1 rad/s sinks just the same
+# (docs/plans/jev-autopilot.md §4.9.1). So `ExploreConfig.enabled` is
+# False, the sweep refuses itself, and this route flies its other legs
+# with the look around recorded as "could not be done".
+#
+# **この経路は現状では飛べない。理由はこのファイルにはない。** `explore` 区間は
+# ヨー回転であり、SILS では機体がヨー回転しただけで落下する。高度 0.5m の
+# ホバリングから `cw 90`・`cw 45`・`cw 30` のいずれでも約 1.3 秒で接地し、
+# 4.7〜5.3G の衝撃と解除に至る。`rc` のヨー速度を 0.1 rad/s まで落としても同じ
+# ように沈下する（docs/plans/jev-autopilot.md §4.9.1）。したがって
+# `ExploreConfig.enabled` は False であり、掃引は自身を拒否し、この経路は残りの
+# 区間を飛んで、見回しは「実行できなかった」として記録される。
+#
+# Fly it with the `dead_end` scene, which is what makes the sweep mean
+# anything: a wall 1.0 m to the north and one along the east side, with the
+# west left open (`scenes.py`, `SilsConfig.wall_distance_m`). Against the
+# `nominal` scene there is nothing to find and every bearing reads the same.
+#
+#     sf pilot explore --sils --scene dead_end
+#     sf pilot mission explore_pocket --sils --scene dead_end
+#
+# `dead_end` の場面で飛ばす。掃引に意味を与えるのはこの場面である —— 北に 1.0m の
+# 壁、東側にも壁があり、西だけが開いている（`scenes.py`・
+# `SilsConfig.wall_distance_m`）。`nominal` の場面では見つけるものが無く、どの
+# 方位も同じに読める。
+#
+# Why the move after the sweep is only 0.6 m: the pocket's open side is
+# 1.0 m wide, and the forward stop rule already halts the craft 0.5 m from
+# anything it can see when it is barely moving
+# (`ForwardConfig.safety_margin_m`, the floor under the speed-dependent
+# stopping distance). A move that would need the stop rule to save it is not
+# a demonstration of choosing a direction -- it is a demonstration of
+# stopping, which `wall_ahead` already covers.
+#
+# 掃引の後の移動を 0.6m に留める理由: 袋小路の開いている側の幅は 1.0m であり、
+# 前方の停止則は、見えているものの 0.5m 手前で既に機体を止める
+# （`ForwardConfig.safety_margin_m`。速度に応じた停止距離の下限）。停止則に救って
+# もらう必要がある移動は、
+# 「方向を選ぶこと」の実演ではない。それは「止まること」の実演であり、そちらは
+# `wall_ahead` が既に担っている。
+
+name: explore_pocket
+purpose: look around in a dead end and go the way that is open
+
+legs:
+  - verb: takeoff
+    label: 離陸
+
+  # Into the pocket first, so the sweep has walls to find. The forward stop
+  # rule watches this leg as it watches any other: if the far wall comes
+  # inside the stop distance, the Monitor halts the craft without waiting
+  # for Jev, and the route ends there rather than at the sweep.
+  # まず袋小路へ入る。掃引が見つける壁があるようにするためである。前方の停止則は
+  # 他の区間と同じくこの区間も見張る。奥の壁が停止距離の内側に入れば、Monitor が
+  # Jev を待たずに機体を止め、経路は掃引ではなくそこで終わる。
+  - verb: forward
+    amount: 40
+    label: 袋小路へ入る
+
+  # The look around. It travels nowhere: the walk does not advance and the
+  # arrival is judged on whether the sweep finished, not on where the craft
+  # ended up (`mission.ARRIVAL_SWEPT`).
+  # 見回し。どこへも移動しない。積算は進まず、到達は「機体がどこで終わったか」
+  # ではなく「掃引が終わったか」で判定する（`mission.ARRIVAL_SWEPT`）。
+  - verb: explore
+    label: 周囲を見回す
+
+  # West, which is the side `dead_end` leaves open. Written as a fixed leg
+  # rather than as "whichever way the sweep found": the route is the code's
+  # (mission.py's opening note), and a leg whose direction depended on an
+  # answer would be a route that cannot be checked against the envelope
+  # before it flies. What the sweep's answer governs is whether to go on at
+  # all -- Jev's `next_move` at this boundary sees `surroundings`.
+  # 西へ。`dead_end` が開けておく側である。「掃引が見つけたほう」ではなく固定の
+  # 区間として書く。経路はコードのものであり（mission.py 冒頭の注記）、向きが
+  # 答えで決まる区間は、飛ぶ前に飛行領域と照合できない経路になる。掃引の答えが
+  # 左右するのは「そもそも進むか」である —— この境目での Jev の `next_move` が
+  # `surroundings` を見る。
+  - verb: left
+    amount: 60
+    label: 開いている側（西）へ進む
+
+  - verb: return_home
+    label: 離陸点へ戻る
+
+  - verb: land
+    label: 着陸

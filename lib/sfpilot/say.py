@@ -33,8 +33,11 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .arbiter import VERDICT_HOVER, VERDICT_LAND, VERDICT_STOP, Verdict
+import dataclasses
+
+from .arbiter import VERDICT_BACK, VERDICT_HOVER, VERDICT_LAND, VERDICT_STOP, Verdict
 from .config import DEFAULT_CONFIG
+from .judge import STEP_FORWARD
 from .pilot import Pilot
 
 
@@ -126,10 +129,22 @@ class StepRunner:
     # 止まる時点である。
     SETTLE_HOLD_S = 1.0
 
-    def __init__(self, link, steps: list, config=DEFAULT_CONFIG, speed_probe=None):
+    def __init__(self, link, steps: list, config=DEFAULT_CONFIG, speed_probe=None,
+                 forward_probe=None):
         self.link = link
         self.steps = list(steps)
         self.cfg = config
+        # Reads the latest valid forward distance [m], or None when there is
+        # none. Used to shorten a forward move that would end inside a wall,
+        # so the craft never builds the speed the safety rule would then have
+        # to arrest. Optional: without it moves go out at their full length
+        # and the immediate rule remains the only protection, which is the
+        # behaviour this class had before.
+        # 最新の有効な前方距離 [m] を読む。無ければ None。壁の中で終わる前進を
+        # 短く刻むために使い、そもそも安全則が止める羽目になる速度を機体に
+        # 付けさせない。省略可能で、無ければ移動は元の長さのまま出て、即時則だけが
+        # 防護になる ―― 本クラスの従来の挙動である。
+        self.forward_probe = forward_probe
         # Reads the aircraft's current horizontal speed [m/s], or None when
         # it is not known. The monitor loop owns the sample stream, so the
         # runner asks it rather than reading the link itself -- two readers
@@ -173,11 +188,145 @@ class StepRunner:
                 # **自分の**応答を待つようにするためである（`_drain_stale_replies`）。
                 self._drain_stale_replies()
                 answered_before = self._reply_count()
-                self.link.send_command(step.command())
-                self.sent.append(step)
-                self._await_step(step, answered_before)
+                flown = self._limited(step)
+                # A move limited down to nothing is not sent: the vehicle
+                # refuses anything under `move_min_cm` (`error out of
+                # range`), and there is no distance left to travel anyway.
+                # It stays in `sent` so the operator's summary still shows
+                # the step was reached and what became of it.
+                # 0 まで刻まれた移動は送らない。機体は `move_min_cm` 未満を拒否
+                # するし（`error out of range`）、そもそも進む距離が残っていない。
+                # `sent` には残す。操作者の要約に、その手順に到達したことと、
+                # どうなったかが出るようにするためである。
+                is_flyable = (flown.amount is None
+                              or flown.amount >= self.cfg.instruction.move_min_cm)
+                self.sent.append(flown)
+                if not is_flyable:
+                    continue
+                self.link.send_command(flown.command())
+                self._await_step(flown, answered_before)
         finally:
             self._done.set()
+
+    def _limited(self, step):
+        """The step as it will actually be flown, shortened if a wall is near.
+
+        Only a `forward` is limited, and only when the forward distance is
+        known. A `forward N` is a step to a position target N centimetres
+        ahead, and the craft accelerates towards it up to the envelope's
+        ceiling -- so a move that ENDS inside a wall is a move that arrives
+        at the wall at speed, which is exactly the approach the immediate
+        rule then has to arrest without any brakes.
+
+        The move is cut to stop short of the wall by the distance the craft
+        will need to stop from the speed the move will reach
+        (`ForwardConfig`). That keeps the wall outside the stopping distance
+        throughout, so the immediate rule stays what it is meant to be --
+        the last resort -- rather than the thing every approach relies on.
+
+        A move can be shortened to nothing, and then nothing is sent: the
+        vehicle refuses a move below `move_min_cm` anyway, and a craft
+        already inside its own stopping distance should not be asked to
+        travel further forward at all. The step is kept in the sequence with
+        a zero amount so the trace still shows it was asked for.
+
+        実際に飛ぶ形の手順。壁が近ければ短く刻む。
+
+        刻むのは `forward` だけであり、前方距離が分かっている場合だけである。
+        `forward N` は N cm 先の位置目標への移動であり、機体は飛行領域の上限まで
+        加速する。したがって壁の**中で終わる**移動とは、壁へ速度を乗せて到達する
+        移動のことであり、それこそが、制動手段を持たない即時則がその後で止める
+        羽目になる進入そのものである。
+
+        移動は、「その移動が到達する速度から止まるのに要る距離」だけ壁の手前で
+        終わるように切り詰める（`ForwardConfig`）。こうすれば壁は常に停止距離の
+        外に留まり、即時則は本来あるべきもの ―― 最後の砦 ―― のままでいられる。
+        あらゆる接近が頼る当てにはならない。
+
+        刻んだ結果が 0 になることもあり、そのときは何も送らない。機体はどのみち
+        `move_min_cm` 未満の移動を拒否するし、既に自身の停止距離の内側にいる機体に、
+        これ以上前へ進めと求めるべきではない。手順は量 0 のまま列に残す。求められた
+        こと自体は記録に残すためである。
+        """
+        is_forward = step.verb == STEP_FORWARD and step.amount is not None
+        if not is_forward:
+            return step
+        if self.forward_probe is None:
+            return step
+        ahead_m = self.forward_probe()
+        if ahead_m is None:
+            return step
+
+        allowed_cm = self._room_to_travel_cm(ahead_m)
+        is_within_limit = step.amount <= allowed_cm
+        if is_within_limit:
+            return step
+        return dataclasses.replace(
+            step, amount=round(allowed_cm), amount_source="limited")
+
+    def _room_to_travel_cm(self, ahead_m: float) -> float:
+        """How far forward the craft may be sent with `ahead_m` of room.
+
+        The move and its own stopping distance have to fit inside the gap:
+
+            travel + stop_distance(speed the travel reaches) <= ahead
+
+        The speed term is what makes this more than a subtraction. A move is
+        a position step, so the craft accelerates towards the target and
+        then slows for it -- a long move reaches the envelope's ceiling, but
+        a SHORT one never does, and charging it the ceiling's stopping
+        distance would be wrong in the expensive direction: at 0.5 m/s the
+        requirement is 1.8 m, so a wall 1.5 m away would forbid all forward
+        motion, including the 1.0 m walls the SILS scenes are built around.
+        The craft would simply stop flying rather than fly carefully.
+
+        So the reachable speed is bounded by the travel itself. Over a
+        distance `d` the craft must both accelerate and stop, and the coast
+        coefficient is the only measured description of how it slows, so
+        `d / coast_per_speed_s` is the speed whose stopping distance is
+        exactly `d`. Taking the smaller of that and the envelope's ceiling
+        is the speed the move can actually reach, and it makes the bound
+        self-consistent: the answer never claims room the move would then
+        use up getting there.
+
+        `ahead_m` の余地があるとき、機体を前へどれだけ送ってよいか。
+
+        移動と、その移動自身の停止距離が、隙間に収まらねばならない:
+
+            移動距離 + stop_distance(その移動が到達する速度) <= 前方距離
+
+        これを単なる引き算以上のものにしているのが速度の項である。移動は位置の
+        ステップなので、機体は目標へ加速し、そして減速する ―― 長い移動は飛行領域の
+        上限に達するが、**短い**移動は決して達しない。短い移動に上限での停止距離を
+        課すのは、高くつく向きに誤ることである。0.5m/s では所要は 1.8m なので、
+        1.5m 先の壁は前進を一切禁じることになり、SILS の場面が拠って立つ 1.0m の壁も
+        そこに含まれる。機体は慎重に飛ぶのではなく、単に飛ばなくなる。
+
+        そこで、到達しうる速度を移動距離自身で抑える。距離 `d` の間に機体は加速も
+        減速もせねばならず、減速の仕方についての唯一の実測的な記述が惰走係数なので、
+        `d / coast_per_speed_s` は「停止距離がちょうど `d` になる速度」である。これと
+        飛行領域の上限の小さいほうが、その移動が実際に到達しうる速度であり、これに
+        より上限は自己無撞着になる ―― 答えが、移動がそこへ至る過程で使い切る余地を
+        主張することは無くなる。
+        """
+        cfg = self.cfg.forward
+        ceiling = self.cfg.envelope.speed_max_mps
+        # Solve travel + margin + k*min(travel/k, ceiling) <= ahead for travel.
+        # Below the ceiling the speed term is travel/k * k = travel itself, so
+        # the gap splits in two; above it the term is the constant k*ceiling.
+        # travel + margin + k*min(travel/k, ceiling) <= ahead を travel について
+        # 解く。上限より下では速度の項は travel/k * k すなわち travel そのものに
+        # なるので隙間は 2 等分され、上限より上では項は定数 k*ceiling になる。
+        room_m = ahead_m - cfg.safety_margin_m
+        if room_m <= 0.0:
+            return 0.0
+        travel_m = room_m / 2.0
+        reaches_ceiling = (travel_m / cfg.coast_per_speed_s) > ceiling
+        if reaches_ceiling:
+            stopping_m = min(cfg.safety_margin_m + cfg.coast_per_speed_s * ceiling,
+                             cfg.stop_distance_max_m)
+            travel_m = ahead_m - stopping_m
+        return max(0.0, travel_m * 100.0)
 
     def _drain_stale_replies(self) -> None:
         """Wait out a reply an earlier command has not delivered yet.
@@ -385,7 +534,8 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
     # Executor.hold_commands_silently を参照。
     pilot.executor.hold_commands_silently = True
     runner = StepRunner(link, plan.steps, config,
-                        speed_probe=pilot.horizontal_speed)
+                        speed_probe=pilot.horizontal_speed,
+                        forward_probe=pilot.forward_distance)
     outcome = SayOutcome()
     started = time.monotonic()
     period = 1.0 / config.monitor_hz
@@ -474,7 +624,14 @@ def _interrupt_reason(pilot) -> str:
     if not pilot.decisions:
         return ""
     verdict = pilot.decisions[-1]["verdict"]
-    is_unsafe = verdict.action in (VERDICT_LAND, VERDICT_STOP)
+    # A retreat interrupts for the same reason a stop does, and more so: the
+    # craft is being driven AWAY from the obstacle, so letting the sequence
+    # send its next move would command it back towards the thing it is
+    # escaping.
+    # 後退も停止と同じ理由で中断させる。むしろ理由は強い。機体は障害物から
+    # **離される**最中であり、ここで列の次の移動を送れば、逃れている当のものへ
+    # 向かって指令することになるからである。
+    is_unsafe = verdict.action in (VERDICT_LAND, VERDICT_STOP, VERDICT_BACK)
     # Only a hold Jev actually CHOSE stops the sequence. The Arbiter also
     # reports a hold derived from an answer it was not confident enough to
     # act on (arbiter.py), and that is not the model asking to wait -- such

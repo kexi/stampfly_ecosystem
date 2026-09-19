@@ -60,10 +60,12 @@ MOVE_REDO = "redo_step"
 MOVE_SKIP = "skip_step"
 MOVE_RETURN = "return_home"
 MOVE_LAND = "land"
+MOVE_EXPLORE = "explore"
 
 Q_SAFETY = "safety_action"
 Q_ABNORMAL = "abnormal"
 Q_NEXT_MOVE = "next_move"
+Q_BEARING = "which_way"
 
 # `sf pilot say`: the moves an instruction may be made of, and the named
 # sizes a move may have. Code maps a size to centimetres or degrees
@@ -136,6 +138,18 @@ QUESTIONS = {
             MOVE_SKIP: "The current step cannot be completed; leave it out and move on.",
             MOVE_RETURN: "Stop the route and fly back to the point it took off from.",
             MOVE_LAND: "Stop the route and land now.",
+            # Described by what it COSTS as well as what it gains, so the
+            # model has something to weigh it against: looking around is
+            # never free, and an option that only ever sounds prudent would
+            # be chosen whenever anything at all is uncertain.
+            # 得るものだけでなく**代償**も書く。モデルが天秤にかけられるように
+            # するためである。見回すことは決して無償ではなく、慎重に聞こえる
+            # だけの選択肢は、少しでも不確かなら常に選ばれてしまう。
+            MOVE_EXPLORE: "Turn on the spot to look all around before going "
+                          "further, because which way is clear is not known. "
+                          "This costs time and battery and moves the aircraft "
+                          "nowhere, so it is worth it only when the way ahead "
+                          "is genuinely unclear rather than merely untried.",
         },
     },
 }
@@ -283,6 +297,63 @@ def step_questions(total: int) -> dict:
         questions[Q_STEP_MOVE.format(index)] = step_move_question(index, total)
         questions[Q_STEP_AMOUNT.format(index)] = step_amount_question(index, total)
     return questions
+
+
+# =============================================================================
+# `sf pilot explore`: which way to go, after a sweep
+# `sf pilot explore`: 掃引の後、どちらへ進むか
+# =============================================================================
+
+def bearing_question(criteria: dict, goal: str = "") -> dict:
+    """The Choice asking which swept bearing to travel along.
+
+    Built per sweep rather than kept in `QUESTIONS`, because the options
+    ARE the bearings that were read: a sweep cut short by the safety layer
+    offers fewer of them, and offering a bearing nobody measured would ask
+    the model to choose between something seen and something imagined
+    (`explore.bearing_criteria`).
+
+    The instructions name the goal as well as the clearance, because the
+    two together are the question. "Which way is open" is arithmetic the
+    sweep already did and the criteria already carry; what is left for the
+    model is the trade-off -- the open way that goes most nearly where the
+    aircraft is trying to get to. Stated as a preference rather than a
+    calculation, since the model is documented not to compare figures and
+    is never given a bearing in degrees.
+
+    掃引した方位のうち、どちらへ進むかを問う Choice。
+
+    `QUESTIONS` に据え置かず掃引ごとに組み立てる。選択肢が「読み取れた方位」
+    そのものだからである。安全層に打ち切られた掃引は提示する方位が少なくなるし、
+    誰も測っていない方位を差し出すことは、見たものと想像したものの間で選べと
+    求めることになる（`explore.bearing_criteria`）。
+
+    instructions には空き具合だけでなく**目的**も書く。両者が揃って初めて問いに
+    なるからである。「どちらが開けているか」は掃引が既に済ませた計算であり、
+    criteria が既に携えている。モデルに残るのは兼ね合い —— 開けている方位のうち、
+    機体が行こうとしている先に最も近いもの —— である。計算ではなく選好として
+    書くのは、モデルが数値を比較しないと文書化されており、方位を角度で渡すことも
+    決してないためである。
+    """
+    goal_sentence = (
+        f" The aircraft is trying to get {goal}, so among the ways that are "
+        f"clear, prefer the one that heads most nearly that way; a clear way "
+        f"that leads somewhere else is still better than a blocked one "
+        f"towards it."
+        if goal else
+        " Among the ways that are clear, prefer the one that continues most "
+        "nearly the way the aircraft is already facing."
+    )
+    return {
+        "type": "choice",
+        "instructions": (
+            "A small indoor drone has turned on the spot and measured how far "
+            "away the nearest surface is in each direction around it. Those "
+            "measurements are in the state as `surroundings`. Which way should "
+            "it travel now?" + goal_sentence
+        ),
+        "criteria": dict(criteria),
+    }
 
 
 @dataclass
@@ -609,6 +680,74 @@ class MissionFakeJudge(FakeJudge):
         if wants_next_move:
             judgement.answers[Q_NEXT_MOVE] = _rule_based_next_move(state)
         return judgement
+
+
+class ExploreFakeJudge(MissionFakeJudge):
+    """A rule-based stand-in for the "which way" judgement, keyless.
+
+    Built on the mission rules rather than beside them, because a route
+    containing an `explore` leg is asked BOTH questions: `next_move` at
+    every leg boundary and `which_way` after a sweep. Two separate fakes
+    would mean a rehearsal answering one and holding on the other.
+
+    ミッションの規則の隣ではなく、その**上に**組み立てる。`explore` 区間を含む
+    経路は**両方**の質問を受けるためである（区間の境目ごとの `next_move` と、
+    掃引の後の `which_way`）。fake が 2 つに分かれていれば、予行は一方に答え、
+    他方で止まることになる。
+
+    The rule is `explore.rule_based_bearing`: among the OPEN bearings, the
+    one pointing nearest the goal. It answers the bearing question by its
+    id, so a caller sets this up once and every sweep of a rehearsal is
+    answered without a key or a network.
+
+    Like `MissionFakeJudge`, it is not a model of Jev and does not claim
+    to be. What a rehearsal under it shows is that the sweep, the state,
+    the refusal rule and the flight path all connect -- never that Jev
+    would have chosen the same bearing.
+
+    「どちらへ」の判断の代役。規則で書いてあり、キーは要らない。
+
+    規則は `explore.rule_based_bearing` である。**開けている**方位のうち、目的に
+    最も近いものを選ぶ。方位の質問には ID で答えるので、呼び出し側が一度これを
+    据えれば、予行のすべての掃引がキーも通信も無しで答えを得る。
+
+    `MissionFakeJudge` と同様、Jev のモデルではないし、そう主張もしない。この
+    規則の下での予行が示すのは、掃引・state・却下規則・飛行経路が繋がっている
+    ことであって、Jev が同じ方位を選ぶことではない。
+    """
+
+    def __init__(self, *args, sweep=None, goal: str = "ahead", **kwargs):
+        super().__init__(*args, **kwargs)
+        # The sweep the rule reads. Set by the caller before each ask, so
+        # one judge serves a whole flight of successive sweeps.
+        # 規則が読む掃引。問う前に呼び出し側が設定する。1 つの judge が、続けて
+        # 行われる掃引からなる飛行全体を賄えるようにするためである。
+        self.sweep = sweep
+        self.goal = goal
+
+    def ask_questions(self, state: dict, questions: dict) -> Judgement:
+        judgement = super().ask_questions(state, questions)
+        wants_bearing = Q_BEARING in questions and judgement.error is None
+        if wants_bearing:
+            judgement.answers[Q_BEARING] = self._bearing_answer()
+        return judgement
+
+    def _bearing_answer(self) -> Answer:
+        """Apply the rule to the sweep in hand. / 手元の掃引に規則を当てる。"""
+        from .explore import BEARING_NONE, Sweep, rule_based_bearing
+
+        sweep_result = self.sweep if self.sweep is not None else Sweep()
+        choice = rule_based_bearing(sweep_result, self.goal)
+        # `stay put` is answered with the same confidence as any other
+        # option: declining to travel is a decision, not a failure to make
+        # one, and marking it uncertain would have the Arbiter discard the
+        # one answer that is always safe to act on.
+        # `stay put` も他の選択肢と同じ確信度で答える。進まないことは判断の失敗
+        # ではなく判断であり、これを不確かとすれば、常に安全に実行できる唯一の
+        # 答えを Arbiter が破棄することになる。
+        return Answer(kind="choice", choice=choice, confidence=0.9,
+                      probabilities={choice: 0.9,
+                                     BEARING_NONE: 0.1 if choice != BEARING_NONE else 0.9})
 
 
 def _rule_based_next_move(state: dict) -> Answer:

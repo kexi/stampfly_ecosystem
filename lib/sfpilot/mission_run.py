@@ -69,7 +69,7 @@ def prepare(path: str, config=DEFAULT_CONFIG):
 
 def fly_in_sils(request: MissionRequest, mission, judge, config=DEFAULT_CONFIG,
                 trace=None, on_event=None, recording=None, on_cycle=None,
-                on_decisions=None):
+                on_decisions=None, on_sweep=None):
     """Launch the emulator, settle it, fly the mission, shut it down.
 
     The launch is `sfcli.commands.sils`'s, shared with `sf sils fly` and
@@ -127,7 +127,7 @@ def fly_in_sils(request: MissionRequest, mission, judge, config=DEFAULT_CONFIG,
         link.send_command("command")
         outcome = fly_mission(link, judge, mission, config, trace=trace,
                               scene=scene, on_event=on_event, on_cycle=on_cycle,
-                              on_decisions=on_decisions)
+                              on_decisions=on_decisions, on_sweep=on_sweep)
         return outcome
     finally:
         link.close()

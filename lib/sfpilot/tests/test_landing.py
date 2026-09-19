@@ -22,7 +22,7 @@ from sfpilot.arbiter import VERDICT_HOVER, VERDICT_LAND, Verdict
 from sfpilot.config import DEFAULT_CONFIG
 from sfpilot.executor import Executor
 from sfpilot.landing import (
-    STAGE_AWAIT_MOVE, STAGE_LAND, STAGE_SETTLE, LandingApproach,
+    STAGE_AWAIT_MOVE, STAGE_BACK_OFF, STAGE_LAND, STAGE_SETTLE, LandingApproach,
 )
 
 
@@ -393,3 +393,155 @@ def test_the_trace_records_how_the_landing_was_reached():
     assert summary["settled"] is False
     assert summary["reason"] == "上限の確認"
     assert summary["ceiling_s"] == DEFAULT_CONFIG.landing.settle_max_s
+
+
+# =============================================================================
+# Backing away from a wall before descending / 降下の前に壁から離れる
+#
+# The descent is the hazard this covers, and it is NOT the stop rule's
+# coast. The firmware holds no horizontal position while descending
+# (see the module docstring), so a landing that begins facing a wall drifts
+# towards it for the whole descent with nothing opposing it. Measured over
+# the 13-flight SILS campaign of 2026-09-19: the stop rule left the craft
+# 0.28-0.43 m clear at cruise, and the descent alone closed that to
+# 0.02-0.27 m.
+# =============================================================================
+
+def test_a_landing_next_to_a_wall_backs_away_before_descending():
+    """With a wall close ahead, `back` goes out before `land`.
+
+    Settling cannot solve this one: the drift begins when the descent does,
+    which is after the settling has ended. The only thing that keeps the
+    craft off the wall is starting the descent further from it.
+    前方に壁が近いとき、`land` の前に `back` が出ること。
+
+    これは静定では解決しない。流れが始まるのは降下の開始時、すなわち静定が終わった
+    後だからである。機体を壁から守るのは、降下をより遠くから始めることだけである。
+    """
+    link = _RecordingLink()
+    approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
+                               forward_probe=lambda: 0.3)
+
+    approach.start()
+
+    assert approach.stage == STAGE_BACK_OFF
+    backs = [line for line in link.sent if line.startswith("back")]
+    assert backs, f"no retreat was commanded: {link.sent}"
+    assert "land" not in link.sent, "the descent began facing the wall"
+
+
+def test_the_retreat_is_long_enough_to_absorb_the_measured_descent_drift():
+    """The craft backs off far enough that the descent cannot reach the wall.
+
+    The figure is the measured worst-case forward travel of a descent, so
+    the assertion is against what a descent actually does rather than
+    against a number chosen to make it pass.
+    降下が壁に届かないところまで下がること。
+
+    値は実測した降下中の前進の最悪値なので、この表明は「通すために選んだ数値」では
+    なく「降下が実際に行うこと」に対して行われる。
+    """
+    cfg = DEFAULT_CONFIG.forward
+    link = _RecordingLink()
+    ahead_m = 0.3
+    approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
+                               forward_probe=lambda: ahead_m)
+
+    approach.start()
+
+    retreat_cm = float([l for l in link.sent if l.startswith("back")][0].split()[1])
+    after_m = ahead_m + retreat_cm / 100.0
+    assert after_m >= cfg.safety_margin_m + cfg.descent_drift_m - 1e-6, (
+        f"after backing {retreat_cm:g} cm the craft is {after_m:.2f} m from "
+        f"the wall, which the measured {cfg.descent_drift_m} m descent drift "
+        f"would still cross")
+
+
+def test_a_landing_with_open_space_ahead_does_not_back_away():
+    """No wall, no retreat: an ordinary landing is left exactly as it was.
+    壁が無ければ後退もしない。通常の着陸は従来どおりであること。"""
+    link = _RecordingLink()
+    approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
+                               forward_probe=lambda: 8.0)
+
+    approach.start()
+
+    assert approach.stage == STAGE_SETTLE
+    assert not [line for line in link.sent if line.startswith("back")]
+
+
+def test_an_unknown_forward_distance_does_not_back_away():
+    """With no reading there is no wall to back away from.
+
+    Retreating on an absent reading would move the craft backwards into
+    space it can see even less of, on every flight without a forward
+    sensor -- which is most of them.
+    読み値が無ければ、離れるべき壁も無いこと。
+
+    無い読み値で後退すれば、前方センサの無い全ての飛行で ―― それが大半である ――
+    機体は、さらに見えていない後方の空間へ動くことになる。
+    """
+    link = _RecordingLink()
+    approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
+                               forward_probe=lambda: None)
+
+    approach.start()
+
+    assert approach.stage == STAGE_SETTLE
+    assert not [line for line in link.sent if line.startswith("back")]
+
+
+def test_an_urgent_landing_does_not_stop_to_back_away():
+    """A dying battery outranks a wall the craft has already stopped for.
+
+    The retreat costs seconds an urgent landing may not have, and the
+    aircraft is stationary in front of the wall either way.
+    電池の枯渇は、既に手前で止まっている壁に優先すること。
+
+    後退には、緊急の着陸には無いかもしれない秒数がかかる。そしてどちらにせよ機体は
+    壁の手前で静止している。
+    """
+    link = _RecordingLink()
+    approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
+                               urgent=True, forward_probe=lambda: 0.3)
+
+    approach.start()
+
+    assert approach.stage == STAGE_SETTLE
+    assert not [line for line in link.sent if line.startswith("back")]
+
+
+def test_the_retreat_is_followed_by_the_ordinary_settle_and_land():
+    """After backing off, the landing proceeds as it always did.
+
+    The retreat is an extra stage, not a replacement: the craft still has
+    to come to rest before the descent, because the descent still does not
+    hold position.
+    後退の後は、従来どおりの着陸が続くこと。
+
+    後退は段階の追加であって置き換えではない。降下が位置を保持しないことは変わら
+    ないので、機体は降下の前になお静止する必要がある。
+    """
+    clock = _FakeClock()
+    link = _RecordingLink()
+    approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
+                               clock=clock, forward_probe=lambda: 0.3)
+
+    approach.start()
+    assert approach.stage == STAGE_BACK_OFF
+
+    # The retreat answers, so the approach moves on to settling.
+    # 後退が応答し、手順は静定へ進む。
+    link.reply_count += 1
+    approach.step()
+    assert approach.stage == STAGE_SETTLE
+
+    # Resting for long enough sends the landing, as it always did.
+    # 十分な時間静止すれば、従来どおり着陸が送られる。
+    approach.step()
+    clock.advance(DEFAULT_CONFIG.landing.settle_hold_s + 0.01)
+    approach.step()
+
+    assert approach.stage == STAGE_LAND
+    assert link.sent[-1] == "land"
+    assert approach.backed_off_cm > 0, "the trace must record the retreat"

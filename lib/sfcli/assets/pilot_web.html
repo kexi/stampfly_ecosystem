@@ -177,12 +177,27 @@ import { mountStampFly3D } from "/asset/stampfly3d.js";
 const R2D = 180 / Math.PI;
 const MAX_DECISIONS = 120;          // keep the DOM small / DOM を小さく保つ
 const ENVELOPE_R_M = 2.0;           // config.py's horizontal envelope / 水平飛行領域
-// ForwardConfig.stop_distance_m. Mirrored here only to colour the forward ray
-// at the same boundary the code stops at; the decision itself is made in
-// Python, and this page never decides anything.
-// ForwardConfig.stop_distance_m。ここに写すのは、コードが止まるのと同じ境界で
-// 前方の線の色を変えるためだけである。判断そのものは Python 側にあり、この
-// ページは何も決めない。
+// ForwardConfig.safety_margin_m: the FLOOR under the stopping distance, which
+// is what the code stops at when the craft is barely moving. Mirrored here
+// only to colour the forward ray; the decision itself is made in Python, and
+// this page never decides anything.
+//
+// The real threshold is not a constant any more -- it grows with the closing
+// speed (`Monitor.stop_distance`), so the code can stop further out than this
+// line is drawn. The page deliberately shows the FLOOR rather than tracking
+// the live figure: a boundary that moved every cycle would read as flicker,
+// and the one thing a viewer needs from this colour is "the craft is at the
+// distance where stopping begins". See jev-autopilot.md §4.9.10.
+//
+// ForwardConfig.safety_margin_m。停止距離の**下限**であり、機体がほとんど動いて
+// いないときにコードが止まる距離である。ここに写すのは前方の線の色を変えるため
+// だけで、判断そのものは Python 側にあり、このページは何も決めない。
+//
+// 実際のしきい値はもはや定数ではなく、接近速度とともに伸びる
+//（`Monitor.stop_distance`）ので、コードはこの線より手前で止まりうる。ページが
+// 現在値ではなく**下限**を描くのは意図的である。毎周期動く境界はちらつきとして
+// しか読めず、この色から見る側が必要とするのは「停止が始まる距離に機体が居る」
+// ことだけだからである。jev-autopilot.md 4.9.10 節参照。
 const FORWARD_STOP_M = 0.5;
 const $ = (id) => document.getElementById(id);
 const fmt = (x, d = 2) => (x >= 0 ? "+" : "") + x.toFixed(d);
@@ -204,6 +219,40 @@ let missionLegs = [], currentLeg = -1;
 // 1 本だけを保つ: 前方距離は「今どこに居るか」を語るものであり、古い線を並べると、
 // 機体が既に離れた位置に障害物を描くことになる。
 let forwardHit = null;   // {n, e, yaw, metres}
+// The latest look around, drawn as a fan of sectors around the point the
+// sweep was taken from. Only the newest is kept, for the same reason the
+// forward ray keeps only the newest: an older fan describes a room the
+// craft has since travelled through.
+//
+// The sector's radius is the nearest surface that bearing found, so the
+// fan's SHAPE is the shape of the space around the aircraft. A bearing
+// nothing could be measured on has no radius, and is drawn hollow at the
+// sensor's range instead of solid at zero -- "we looked and could not
+// tell" must not look like "there is a wall touching us".
+//
+// 最新の見回し。掃引を行った地点のまわりに扇形の集まりとして描く。最新の 1 つ
+// だけを保つのは、前方の線と同じ理由による。古い扇形は、機体がその後に通り抜けて
+// しまった部屋を語る。
+//
+// 扇形の半径は、その方位が見つけた最も近い面までの距離である。したがって扇形の
+// **形**が、機体のまわりの空間の形になる。何も測れなかった方位には半径が無く、
+// 0 の塗りではなくセンサの射程に輪郭だけで描く ——「見たが判別できなかった」が
+//「壁が接している」に見えてはならない。
+let sweepFan = null;     // {n, e, bearings: [{deg, clearance, metres?}]}
+// The sweep's own range, for drawing an unmeasured bearing. Mirrored from
+// Plant's `tof_front_max_m`, and used for nothing but the picture.
+// 掃引の射程。測れなかった方位を描くために使う。Plant の `tof_front_max_m` から
+// 写したもので、図を描く以外には使わない。
+const FORWARD_RANGE_M = 2.0;
+// The classification words the sectors are coloured by. They arrive from
+// Python as `monitor.FORWARD_*`, so they are compared against, never
+// built here -- a second spelling would silently colour a wall as open.
+// 扇形の色分けに使う区分の語。Python から `monitor.FORWARD_*` として届くので、
+// ここでは組み立てず比較するだけにする。綴りが 2 つあれば、壁が黙って「開けて
+// いる」の色で描かれることになる。
+const CLEAR_OPEN = "開けている";
+const CLEAR_SOMEWHAT = "やや近い";
+const CLEAR_WALL = "壁が近い";
 
 function drawMap() {
   const cv = $("map"), ctx = cv.getContext("2d");
@@ -262,6 +311,57 @@ function drawMap() {
       ctx.beginPath();
       ctx.arc(X(leg[1]), Y(leg[0]), (i === currentLeg ? 5 : 3) * ratio, 0, Math.PI * 2);
       ctx.fill();
+    });
+  }
+
+  // The look around, as a fan of sectors. Drawn BEFORE the track and the
+  // craft so it reads as the space they sit in rather than as something
+  // painted over them.
+  //
+  // Each sector spans the step between bearings and is centred on the
+  // bearing itself, so the fan tiles the circle exactly and no direction
+  // is claimed to have been measured twice or not at all.
+  //
+  // 見回しを扇形の集まりとして描く。軌跡と機体より**先に**描き、それらの上に
+  // 塗ったものではなく、それらが在る空間として読めるようにする。
+  //
+  // 各扇形は方位の刻みぶんの角度を占め、方位そのものを中心に置く。これにより
+  // 扇形は円をちょうど敷き詰め、どの向きも「二重に測った」とも「測っていない」
+  // とも主張しない。
+  if (sweepFan && sweepFan.bearings.length) {
+    const bad = style.getPropertyValue("--bad").trim() || "#e55";
+    const span = (Math.PI * 2) / sweepFan.bearings.length;
+    sweepFan.bearings.forEach((b) => {
+      const measured = typeof b.metres === "number";
+      const radius = (measured ? b.metres : FORWARD_RANGE_M) * scale;
+      // Canvas angles run clockwise from east(+x); a bearing runs
+      // clockwise from north. The quarter turn converts between them.
+      // Canvas の角度は東(+x)から時計回り、方位は北から時計回りである。
+      // 1/4 回転がその間の変換になる。
+      const mid = (b.deg * Math.PI) / 180 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(X(sweepFan.e), Y(sweepFan.n));
+      ctx.arc(X(sweepFan.e), Y(sweepFan.n), radius, mid - span / 2, mid + span / 2);
+      ctx.closePath();
+      if (!measured) {
+        // Hollow, and dashed: an outline says "this is the edge of what we
+        // know", where a fill would say "this much space is there".
+        // 輪郭だけ、破線で描く。輪郭は「ここまでが分かっている範囲だ」と言い、
+        // 塗りなら「これだけの空間がある」と言ってしまう。
+        ctx.setLineDash([4 * ratio, 4 * ratio]);
+        ctx.strokeStyle = muted; ctx.lineWidth = 1 * ratio;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        return;
+      }
+      ctx.fillStyle = b.clearance === CLEAR_WALL ? bad
+                    : b.clearance === CLEAR_SOMEWHAT ? muted : ok;
+      ctx.globalAlpha = 0.18;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = b.clearance === CLEAR_WALL ? bad : muted;
+      ctx.lineWidth = 1 * ratio;
+      ctx.stroke();
     });
   }
 
@@ -488,6 +588,16 @@ es.onmessage = (raw) => {
     return;
   }
   if (ev.kind === "status") { renderStatus(ev); return; }
+  if (ev.kind === "sweep") {
+    // Replaces the previous fan rather than adding to it: only the newest
+    // look around describes where the craft is now.
+    // 前の扇形に足すのではなく置き換える。今いる場所を語るのは、最新の見回し
+    // だけだからである。
+    sweepFan = { n: ev.n ?? 0, e: ev.e ?? 0, bearings: ev.bearings || [] };
+    $("sStep").textContent = `見回し / look around (${sweepFan.bearings.length})`;
+    drawMap();
+    return;
+  }
   if (ev.kind === "phase") {
     if (ev.legs) { missionLegs = ev.legs; }
     if (ev.leg_index !== undefined) currentLeg = ev.leg_index;

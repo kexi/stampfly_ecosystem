@@ -36,6 +36,7 @@ EVENT_DECISION = "decision"     # one judgement + verdict + command / 1 判断
 EVENT_SAMPLE = "sample"         # one telemetry sample / テレメトリ 1 件
 EVENT_PHASE = "phase"           # a change of flight phase, step or leg / 段階の変化
 EVENT_STATUS = "status"         # the running totals shown at the top / 上部の現在値
+EVENT_SWEEP = "sweep"           # one look around, as eight sectors / 見回し 1 回
 
 
 class EventBus:
@@ -149,6 +150,52 @@ def sample_payload(sample, phase: str = None) -> dict:
         payload["flight_state"] = state
     if phase:
         payload["phase"] = phase
+    return payload
+
+
+def sweep_payload(sweep_result, sample=None) -> dict:
+    """One sweep as the top view's fan of sectors wants it.
+
+    Each bearing becomes an angle, a classification and a distance, plus
+    where the craft was when it swept -- the fan is drawn around that
+    point, not around wherever the craft has got to since, or a sweep
+    would appear to follow the aircraft down the corridor it measured.
+
+    The distance is the NEAREST valid reading and may be absent, which is
+    what an unmeasured bearing is. The page draws such a sector at the
+    sensor's own range rather than at length zero, so "we looked and could
+    not tell" is visible instead of missing.
+
+    掃引 1 回分を、上から見た図の扇形が要する形にする。
+
+    各方位は角度・区分・距離になり、加えて「掃引した時点で機体がどこにいたか」を
+    持つ。扇形はその点のまわりに描くのであって、その後に機体が着いた場所のまわり
+    ではない。そうしないと、掃引が、それが測った通路を機体について回るように
+    見えてしまう。
+
+    距離は**最も近い**有効な読み値で、欠けることがある。それが「測れていない
+    方位」である。ページはその扇形を長さ 0 ではなくセンサ自身の射程で描くので、
+    「見たが判別できなかった」が、欠落ではなく目に見える形で出る。
+    """
+    if sweep_result is None or not sweep_result.readings:
+        return {}
+    origin = sample or {}
+    payload = {
+        "n": round(float(origin.get("pos_n") or 0.0), 4),
+        "e": round(float(origin.get("pos_e") or 0.0), 4),
+        "yaw": round(float(origin.get("yaw") or 0.0), 4),
+        "outcome": sweep_result.outcome,
+        "bearings": [],
+    }
+    for reading in sweep_result.readings:
+        bearing = {
+            "name": reading.name,
+            "deg": round(float(reading.relative_deg), 2),
+            "clearance": reading.clearance,
+        }
+        if reading.nearest_m is not None:
+            bearing["metres"] = round(float(reading.nearest_m), 4)
+        payload["bearings"].append(bearing)
     return payload
 
 

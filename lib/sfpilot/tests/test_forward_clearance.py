@@ -45,7 +45,7 @@ from pathlib import Path
 
 import pytest
 
-from sfpilot.arbiter import Arbiter, VERDICT_STOP
+from sfpilot.arbiter import Arbiter, VERDICT_STOP, Verdict
 from sfpilot.config import DEFAULT_CONFIG
 from sfpilot.link import Sample
 from sfpilot.monitor import (
@@ -244,7 +244,9 @@ def test_a_wall_within_the_stop_distance_stops_without_asking_jev():
     往復時間に上限の保証は無いので、答えが届くより前に下さねばならない判断は
     コードが下す。
     """
-    stop_at = DEFAULT_CONFIG.forward.stop_distance_m
+    # At a standstill the stopping distance is its floor, the safety margin.
+    # 静止していれば停止距離はその下限、すなわち安全余裕である。
+    stop_at = DEFAULT_CONFIG.forward.safety_margin_m
     monitor = Monitor()
 
     assessment = monitor.update([Sample(t=0.0, tof_front_m=stop_at - 0.05)])
@@ -278,11 +280,17 @@ def test_the_stop_does_not_chatter_at_the_threshold():
     """
     cfg = DEFAULT_CONFIG.forward
     monitor = Monitor()
-    monitor.update([Sample(t=0.0, tof_front_m=cfg.stop_distance_m - 0.05)])
+    # Stationary throughout, so the stopping distance stays at its floor and
+    # this test is about the hysteresis alone rather than about the speed.
+    # 全体を通して静止させる。停止距離を下限に固定し、この試験が速度ではなく
+    # ヒステリシスだけを対象とするようにするためである。
+    stop_at = cfg.safety_margin_m
+    release_at = stop_at + cfg.release_margin_m
+    monitor.update([Sample(t=0.0, tof_front_m=stop_at - 0.05)])
 
     # Just above the stop distance, but not yet past the release distance.
     # 停止距離のすぐ上。ただし解除距離にはまだ達していない。
-    between = (cfg.stop_distance_m + cfg.release_distance_m) / 2.0
+    between = (stop_at + release_at) / 2.0
     held = monitor.update([Sample(t=0.1, tof_front_m=between)])
     assert held.safety_action == SAFETY_STOP, (
         "the stop was released while the wall was still within the release "
@@ -290,7 +298,7 @@ def test_the_stop_does_not_chatter_at_the_threshold():
 
     # Clear of the release distance: the craft may move again.
     # 解除距離を超えた: 再び動いてよい。
-    cleared = monitor.update([Sample(t=0.2, tof_front_m=cfg.release_distance_m + 0.3)])
+    cleared = monitor.update([Sample(t=0.2, tof_front_m=release_at + 0.3)])
     assert cleared.safety_action == SAFETY_NONE
 
 
@@ -307,7 +315,7 @@ def test_the_arbiter_carries_an_obstacle_stop_through_as_a_stop():
     """
     monitor = Monitor()
     assessment = monitor.update(
-        [Sample(t=0.0, tof_front_m=DEFAULT_CONFIG.forward.stop_distance_m - 0.1)])
+        [Sample(t=0.0, tof_front_m=DEFAULT_CONFIG.forward.safety_margin_m - 0.1)])
 
     verdict = Arbiter().decide(
         assessment, judgement=None, asked_signature="x",
@@ -315,6 +323,282 @@ def test_the_arbiter_carries_an_obstacle_stop_through_as_a_stop():
 
     assert verdict.action == VERDICT_STOP
     assert verdict.source == "monitor"
+
+
+# =============================================================================
+# (d) The stopping distance grows with the closing speed
+#     停止距離が接近速度とともに伸びること
+#
+# The defect this replaced: a fixed 0.5 m threshold let the craft through the
+# wall in 3 of 8 measured approaches, because `stop` restores position hold
+# and does not brake -- so the room a stop needs depends on the speed it is
+# issued at (jev-autopilot §4.9.7).
+#
+# 置き換えた欠陥: 固定の 0.5m というしきい値は、実測 8 回の接近のうち 3 回で機体を
+# 壁の向こうへ通した。`stop` が戻すのは位置保持であって制動ではなく、したがって停止に
+# 要る余地は、それが送られた時点の速度に依存するからである（4.9.7 節）。
+# =============================================================================
+
+def test_the_stopping_distance_grows_with_the_closing_speed():
+    """A faster approach must be stopped from further out.
+
+    This is the whole correction. Under the old fixed threshold these two
+    speeds were stopped at the same distance, and the fast one went through
+    the wall.
+    速い接近ほど、遠くから止め始めねばならないこと。
+
+    これが訂正の全体である。旧来の固定しきい値では、この 2 つの速度は同じ距離で
+    止められており、速いほうは壁を通り越した。
+    """
+    monitor = Monitor()
+
+    slow = monitor.stop_distance({"vel_n": 0.1, "vel_e": 0.0, "yaw": 0.0})
+    fast = monitor.stop_distance({"vel_n": 0.4, "vel_e": 0.0, "yaw": 0.0})
+
+    assert fast > slow, (
+        f"a 0.4 m/s approach was given no more room ({fast:.2f} m) than a "
+        f"0.1 m/s one ({slow:.2f} m) — this is the fixed-threshold defect")
+
+
+def test_a_standstill_still_keeps_the_safety_margin():
+    """With no closing speed the distance is the margin, never zero.
+    接近速度が無ければ距離は安全余裕であって、0 にはならないこと。"""
+    monitor = Monitor()
+
+    at_rest = monitor.stop_distance({"vel_n": 0.0, "vel_e": 0.0, "yaw": 0.0})
+
+    assert at_rest == pytest.approx(DEFAULT_CONFIG.forward.safety_margin_m)
+
+
+def test_the_stopping_distance_is_capped_at_what_the_sensor_can_see():
+    """However fast the craft closes, the distance stays reportable.
+
+    A threshold beyond the forward part's range is a threshold that never
+    fires, because no reading can ever be below it.
+    どれだけ速く詰めても、距離は報告可能な範囲に留まること。
+
+    前方の部品の射程を超えたしきい値とは、決して発火しないしきい値のことである。
+    どの読み値もそれを下回れないからである。
+    """
+    monitor = Monitor()
+
+    absurd = monitor.stop_distance({"vel_n": 50.0, "vel_e": 0.0, "yaw": 0.0})
+
+    assert absurd == pytest.approx(DEFAULT_CONFIG.forward.stop_distance_max_m)
+
+
+def test_travelling_sideways_is_not_closing_on_the_wall_ahead():
+    """Only the component along the nose closes the forward distance.
+
+    A craft sliding sideways past a wall is not approaching it, and braking
+    for it would stop a flight that was never in danger. The forward sensor
+    looks along the nose, so that is the only direction that consumes the
+    distance it reports.
+    機首方向の成分だけが前方距離を詰めること。
+
+    壁の脇を横滑りしている機体は、その壁へ近づいてはいない。それに対して制動すれば、
+    危険でなかった飛行を止めることになる。前方センサは機首方向を見ているので、その
+    報告する距離を費やすのはその向きだけである。
+    """
+    monitor = Monitor()
+
+    # Facing north, travelling due east at a speed that would otherwise
+    # demand a large stopping distance.
+    # 北を向き、真東へ進む。大きさだけ見れば大きな停止距離を要求する速度である。
+    sideways = monitor.stop_distance({"vel_n": 0.0, "vel_e": 0.5, "yaw": 0.0})
+
+    assert sideways == pytest.approx(DEFAULT_CONFIG.forward.safety_margin_m), (
+        "a craft travelling parallel to the wall was treated as closing on it")
+
+
+def test_retreating_from_a_wall_does_not_shrink_the_stopping_distance():
+    """A negative closing speed is not a licence to get closer.
+
+    Reversing away from a wall must not reduce the room the rule keeps
+    below the safety margin, which is what an unclamped projection would do.
+    負の接近速度が「もっと近づいてよい」にならないこと。
+
+    壁から後退することで、規則が保つ余地が安全余裕より小さくなってはならない。
+    射影を下側でクランプしなければ、まさにそうなる。
+    """
+    monitor = Monitor()
+
+    reversing = monitor.stop_distance({"vel_n": -0.4, "vel_e": 0.0, "yaw": 0.0})
+
+    assert reversing == pytest.approx(DEFAULT_CONFIG.forward.safety_margin_m)
+
+
+def test_the_measured_approach_is_stopped_before_it_reaches_the_wall():
+    """Against the recorded flight, the new rule fires with room to spare.
+
+    The fixture is the measured approach of §4.9.7: it crosses the OLD fixed
+    0.5 m threshold at 0.214 m/s and then coasts 0.417 m, which left only
+    0.083 m of the 0.5 m. The rule must now fire while the wall is still far
+    enough away that the same coast does not reach it.
+    記録した飛行に対し、新しい規則が余裕を残して発火すること。
+
+    fixture は 4.9.7 節の実測の接近である。旧来の固定しきい値 0.5m を 0.214m/s で
+    通過し、その後 0.417m 惰走した ―― 0.5m のうち残りは 0.083m しかなかった。規則は
+    今や、同じ惰走が届かない程度に壁が遠いうちに発火せねばならない。
+    """
+    samples = _load("wall_approach_states.jsonl")
+    monitor = Monitor()
+
+    fired_at = None
+    for sample in samples:
+        assessment = monitor.update([sample])
+        if assessment.safety_action == SAFETY_STOP and fired_at is None:
+            fired_at = sample.get("tof_front_m")
+
+    assert fired_at is not None, "the approach never triggered a stop"
+    # The coast measured on this very flight, from the moment the old
+    # threshold was crossed. The new rule must leave at least this much.
+    # まさにこの飛行で実測した惰走。旧しきい値の通過時点から測ったものである。
+    # 新しい規則は、少なくともこれだけを残さねばならない。
+    measured_coast_m = 0.417
+    assert fired_at > measured_coast_m, (
+        f"the stop fired at {fired_at:.3f} m, inside the {measured_coast_m} m "
+        f"this same flight was measured to coast — the wall would be reached")
+
+
+# =============================================================================
+# (e) Backing away when the stop did not work / 停止が効かなかったときの後退
+# =============================================================================
+
+def _closing_samples(start_m: float, step_m: float, count: int,
+                     speed: float = 0.2) -> list:
+    """A craft closing steadily on a wall, one sample per 0.1 s.
+    壁へ一定の割合で詰めていく機体。0.1 秒ごとに 1 サンプル。"""
+    return [Sample(t=index * 0.1, tof_front_m=start_m - index * step_m,
+                   vel_n=speed, vel_e=0.0, yaw=0.0)
+            for index in range(count)]
+
+
+def test_a_stop_that_opens_no_distance_becomes_a_retreat():
+    """Still closing after the grace period escalates the stop to a retreat.
+
+    `stop` is not braking, so a craft carrying speed keeps closing after it.
+    When position hold has had its time and the gap is still shrinking, the
+    only move left that increases the distance is backwards.
+    猶予の後もなお詰まっていれば、停止が後退へ格上げされること。
+
+    `stop` は制動ではないので、速度を持った機体は停止後も詰め続ける。位置保持に
+    時間を与えてもなお隙間が縮んでいるなら、距離を増やす手段として残っているのは
+    後退だけである。
+    """
+    from sfpilot.monitor import SAFETY_BACK
+
+    grace = DEFAULT_CONFIG.forward.backoff_grace_s
+    monitor = Monitor()
+    # Start inside the stop band and keep closing right through the grace.
+    # 停止帯域の内側から始め、猶予を通り越してなお詰め続ける。
+    count = int(grace / 0.1) + 5
+    actions = [monitor.update([s]).safety_action
+               for s in _closing_samples(0.45, 0.01, count)]
+
+    assert SAFETY_BACK in actions, (
+        "a craft that kept closing after its stop was never told to back off")
+    # The stop must come FIRST: a retreat is the escalation of a stop that
+    # did not work, never the opening move.
+    # 停止が**先**であること。後退は効かなかった停止の格上げであり、最初の一手では
+    # ない。
+    assert actions.index(SAFETY_STOP) < actions.index(SAFETY_BACK)
+
+
+def test_a_stop_that_holds_the_distance_never_becomes_a_retreat():
+    """A craft that stopped where it was told is left alone.
+
+    Retreating from an obstacle that is no longer being approached would
+    trade a known wall ahead for whatever is behind, which the craft cannot
+    see at all.
+    指示どおり止まった機体は、そのままにされること。
+
+    もはや近づいていない障害物から後退することは、既知の前方の壁を、まったく
+    見えていない後方の何かと取り替えることである。
+    """
+    from sfpilot.monitor import SAFETY_BACK
+
+    grace = DEFAULT_CONFIG.forward.backoff_grace_s
+    monitor = Monitor()
+    # Inside the stop band, but holding its distance: it stopped.
+    # 停止帯域の内側だが、距離を保っている。止まったということである。
+    held = [Sample(t=index * 0.1, tof_front_m=0.45, vel_n=0.0, vel_e=0.0, yaw=0.0)
+            for index in range(int(grace / 0.1) + 5)]
+    actions = [monitor.update([s]).safety_action for s in held]
+
+    assert SAFETY_BACK not in actions, (
+        "a craft that had already stopped was told to back away anyway")
+    assert SAFETY_STOP in actions
+
+
+def test_sensor_noise_alone_does_not_trigger_a_retreat():
+    """A change under the noise floor is not "still closing".
+
+    A stationary craft's reading jitters, and retreating on that would have
+    the craft reverse away from a wall it is not approaching.
+    雑音の下限に満たない変化は「まだ詰まっている」ではないこと。
+
+    静止した機体の読み値は揺らぐ。それで後退すれば、近づいてもいない壁から機体が
+    後退することになる。
+    """
+    from sfpilot.monitor import SAFETY_BACK
+
+    cfg = DEFAULT_CONFIG.forward
+    monitor = Monitor()
+    # Closing by less, in total, than the noise threshold allows.
+    # 合計でも、雑音のしきい値が許す量より小さくしか詰まらない。
+    count = int(cfg.backoff_grace_s / 0.1) + 5
+    creep = (cfg.backoff_closing_m * 0.5) / count
+    actions = [monitor.update([s]).safety_action
+               for s in _closing_samples(0.45, creep, count, speed=0.0)]
+
+    assert SAFETY_BACK not in actions
+
+
+def test_the_retreat_is_sent_once_and_not_stacked():
+    """One `back` goes out per retreat, however many cycles it spans.
+
+    `back` is a blocking move the vehicle answers on arrival, so re-sending
+    it every 50Hz cycle would queue dozens of retreats and fly the craft
+    backwards into whatever is behind it.
+    1 回の後退につき `back` は 1 度だけ送られること。何周期にまたがっても同じである。
+
+    `back` は機体が到達時に応答するブロックする移動なので、50Hz の周期ごとに送り
+    直せば後退が何十個も積まれ、機体は後方の何かへ向かって飛ぶことになる。
+    """
+    from sfpilot.arbiter import VERDICT_BACK
+    from sfpilot.executor import Executor
+
+    class _Link:
+        def __init__(self):
+            self.commands = []
+
+        def send_command(self, line):
+            self.commands.append(line)
+
+        def send_rc(self, *rc):
+            self.commands.append("rc")
+
+        def priority(self, line):
+            self.commands.append(line)
+
+    link = _Link()
+    executor = Executor(link, DEFAULT_CONFIG)
+    retreat = Verdict(action=VERDICT_BACK, reason="still closing", source="monitor")
+
+    for _ in range(10):
+        executor.apply(retreat)
+        executor.tick()
+
+    backs = [c for c in link.commands if c.startswith("back")]
+    assert len(backs) == 1, f"the retreat was sent {len(backs)} times: {backs}"
+    # A `stop` precedes it: the interrupted move's position target is still
+    # pulling the craft on, and a new target set alongside it would not undo
+    # that.
+    # その前に `stop` が来ること。割り込まれた移動の位置目標がなお機体を引いており、
+    # それを残したまま新しい目標を置いても、引きは解けないからである。
+    assert "stop" in link.commands
+    assert link.commands.index("stop") < link.commands.index(backs[0])
 
 
 # =============================================================================

@@ -14,6 +14,7 @@ from sfpilot.judge import (
     ACT_HOLD,
     ACT_LAND,
     FakeJudge,
+    MOVE_EXPLORE,
     MOVE_LAND,
     MOVE_NEXT,
     MOVE_REDO,
@@ -65,6 +66,7 @@ def test_the_question_set_matches_the_design():
     assert set(QUESTIONS[Q_SAFETY]["criteria"]) == {ACT_CONTINUE, ACT_HOLD, ACT_LAND}
     assert set(QUESTIONS[Q_NEXT_MOVE]["criteria"]) == {
         MOVE_NEXT, ACT_HOLD, MOVE_REDO, MOVE_SKIP, MOVE_RETURN, MOVE_LAND,
+        MOVE_EXPLORE,
     }
     assert QUESTIONS[Q_ABNORMAL]["type"] == "noul"
 

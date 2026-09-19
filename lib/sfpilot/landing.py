@@ -63,6 +63,7 @@ monitor.py.
 からは到達できない（monitor.py 参照）。
 """
 
+import math
 import time
 
 from .config import DEFAULT_CONFIG
@@ -75,6 +76,7 @@ from .config import DEFAULT_CONFIG
 # 着陸した」は別の飛行である。
 STAGE_AWAIT_MOVE = "await_move"     # waiting for a running move to answer / 実行中の移動の応答待ち
 STAGE_STOP = "stop"                 # commanding the hover / その場の保持を指令
+STAGE_BACK_OFF = "back_off"         # retreating from a wall before descending / 降下前に壁から離れる
 STAGE_SETTLE = "settle"             # waiting for the craft to slow / 減速待ち
 STAGE_LAND = "land"                 # the landing itself / 着陸そのもの
 
@@ -97,9 +99,27 @@ class LandingApproach:
     """
 
     def __init__(self, link, config=DEFAULT_CONFIG, speed_probe=None,
-                 urgent: bool = False, reason: str = "", clock=None):
+                 urgent: bool = False, reason: str = "", clock=None,
+                 forward_probe=None):
         self.link = link
         self.cfg = config.landing
+        self.forward = config.forward
+        self.instruction = config.instruction
+        # Reads the forward distance [m], or None when it is not known. A
+        # descent next to a wall is the one case this approach cannot settle
+        # its way out of: the firmware holds no horizontal position during a
+        # descent, so the craft drifts forward for the whole of it with
+        # nothing opposing it (see the module docstring). Measured in the
+        # 13-flight SILS campaign of 2026-09-19: with the craft stopped 0.28-
+        # 0.43 m clear of the wall at cruise, the descent alone carried it to
+        # within 0.02-0.27 m, accelerating to 0.26 m/s on the way down.
+        # 前方距離 [m] を読む。分からなければ None。壁の脇での降下は、この手順が
+        # 静定では抜け出せない唯一の場合である。ファームは降下中に水平位置を
+        # 一切保持しないので、機体は降下のあいだずっと、妨げるものなく前へ流れる
+        # （本モジュールの docstring 参照）。2026-09-19 の SILS 13 回の実測: 巡航
+        # 高度では壁から 0.28〜0.43m 離れて止まっていた機体が、降下だけで 0.02〜
+        # 0.27m まで詰め、降下中に 0.26m/s まで加速した。
+        self.forward_probe = forward_probe
         # Where "now" comes from. Injectable so a test can reach a ceiling
         # measured in seconds without spending them: a loop of `step()`
         # calls runs in microseconds and would never expire anything.
@@ -123,6 +143,9 @@ class LandingApproach:
         # 達したかどうか。
         self.timed_out = False
         self.settled = False
+        # How far the craft was moved back before descending, for the trace.
+        # 降下の前に後退させた距離。記録用。
+        self.backed_off_cm = 0.0
         self.elapsed_s = 0.0
         self._started = None
         self._stage_started = None
@@ -160,6 +183,9 @@ class LandingApproach:
         if self.stage == STAGE_AWAIT_MOVE:
             self._advance_await_move(now)
             return False
+        if self.stage == STAGE_BACK_OFF:
+            self._advance_back_off(now)
+            return False
         if self.stage == STAGE_SETTLE:
             self._advance_settle(now)
         return self.landed
@@ -193,12 +219,91 @@ class LandingApproach:
             self._enter_stop(now)
 
     def _enter_stop(self, now: float) -> None:
-        """Command the hover that re-captures the present position.
-        現在位置を捕捉し直す保持を指令する。"""
+        """Command the hover, then retreat from a wall if there is one.
+        保持を指令し、壁があればそこから離れる。"""
         self.link.priority("stop")
-        self.stage = STAGE_SETTLE
         self._stage_started = now
         self._slow_since = None
+        retreat_cm = self._retreat_needed_cm()
+        is_clear = retreat_cm <= 0.0
+        if is_clear:
+            self.stage = STAGE_SETTLE
+            return
+        self.backed_off_cm = retreat_cm
+        self.link.send_command(f"back {round(retreat_cm)}")
+        self.stage = STAGE_BACK_OFF
+
+    def _retreat_needed_cm(self) -> float:
+        """How far to back off before descending, or 0 to descend here.
+
+        The descent itself is the hazard. The firmware holds no horizontal
+        position while descending, so whatever the craft drifts during it is
+        unopposed -- and it drifts FORWARD, towards the wall it just stopped
+        in front of. Settling cannot fix that, because the drift begins
+        after the settling ends.
+
+        So the craft is moved back far enough that the measured descent
+        drift does not reach the wall. `backoff_step_cm` is one hop's worth
+        and the shortfall is made up in whole hops, bounded by the vehicle's
+        own move limits.
+
+        An urgent landing does not back off: a battery in the danger band or
+        a diverged estimate is a worse problem than a wall the craft has
+        already stopped in front of, and the retreat costs seconds it may
+        not have. It is also never needed where there is no reading.
+
+        降下の前にどれだけ下がるか。0 ならその場で降りてよい。
+
+        危険なのは降下そのものである。ファームは降下中に水平位置を保持しないので、
+        その間の流れは一切妨げられない —— そしてその流れは**前向き**、つまり今しがた
+        手前で止まったその壁へ向かう。静定では直らない。流れが始まるのは静定が
+        終わった後だからである。
+
+        そこで、実測した降下中の流れが壁に届かないところまで機体を後ろへ動かす。
+        1 回の跳躍ぶんが `backoff_step_cm` であり、不足分は跳躍の整数倍で補う。
+        上限は機体自身の移動の制限に従う。
+
+        緊急の着陸では下がらない。電池の危険域や推定の発散は、既に手前で止まって
+        いる壁より悪い問題であり、後退にはその余裕が無いかもしれない。読み値が
+        無いときも当然ながら不要である。
+        """
+        if self.urgent or self.forward_probe is None:
+            return 0.0
+        ahead_m = self.forward_probe()
+        if ahead_m is None:
+            return 0.0
+        # Keep the safety margin clear even after the descent has drifted
+        # its measured worst. The drift is bounded by the same coast model
+        # the stop rule uses, at the speed the descent reaches.
+        # 降下が実測上の最悪の流れを起こした後も、安全余裕が残るようにする。流れは、
+        # 停止則が使うのと同じ惰走の模型で、降下が到達する速度に対して抑える。
+        wanted_m = self.forward.safety_margin_m + self.forward.descent_drift_m
+        shortfall_m = wanted_m - ahead_m
+        if shortfall_m <= 0.0:
+            return 0.0
+        step_cm = self.forward.backoff_step_cm
+        hops = math.ceil(shortfall_m * 100.0 / step_cm)
+        return min(hops * step_cm, self.instruction.move_max_cm)
+
+    def _advance_back_off(self, now: float) -> None:
+        """Wait for the retreat to finish, then settle as usual.
+
+        Bounded like every other wait here: a retreat whose reply never
+        arrives must not leave the craft hovering next to the wall it was
+        trying to get away from.
+
+        後退の完了を待ち、その後は通常どおり静定へ進む。
+
+        ここの他の待ちと同じく上限を設ける。応答が返らない後退が、離れようとした
+        当の壁の脇に機体を浮かせたままにしてはならない。
+        """
+        answered = _reply_count(self.link) > self._replies_at_start
+        waited_s = now - self._stage_started
+        is_overdue = waited_s >= self.cfg.move_reply_wait_s
+        if answered or is_overdue:
+            self.stage = STAGE_SETTLE
+            self._stage_started = now
+            self._slow_since = None
 
     def _advance_settle(self, now: float) -> None:
         """Wait for the measured speed to stay low, or for the ceiling.
@@ -239,6 +344,7 @@ class LandingApproach:
             "urgent": self.urgent,
             "reason": self.reason,
             "settled": self.settled,
+            "backed_off_cm": self.backed_off_cm,
             "timed_out": self.timed_out,
             "waited_s": round(self.elapsed_s, 2),
             "ceiling_s": self.settle_ceiling_s,

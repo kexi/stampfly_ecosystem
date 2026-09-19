@@ -602,10 +602,10 @@ class SilsConfig:
     #
     # The wall stands 1.0 m north of the takeoff point because that is inside
     # the forward part's reliable band (Plant tof_front_max_m = 2.0 m) while
-    # leaving room to approach it: the craft starts stopping at
-    # ForwardConfig.stop_distance_m, so a wall closer than that would already
-    # be inside the stop band when the flight begins and nothing would be
-    # tested. Width 2.0 m (±1.0 m either side) so a small heading error during
+    # leaving room to approach it: the craft starts stopping at the distance
+    # `Monitor.stop_distance` computes, so a wall closer than that would
+    # already be inside the stop band when the flight begins and nothing would
+    # be tested. Width 2.0 m (±1.0 m either side) so a small heading error during
     # the approach does not let the beam slip past the end of the segment —
     # that would read as "the wall vanished" rather than as an approach.
     #
@@ -614,8 +614,8 @@ class SilsConfig:
     #
     # 壁を離陸点の北 1.0m に置くのは、そこが前方の信頼帯域（Plant の
     # tof_front_max_m = 2.0m）の内側でありながら、近づく余地を残すからである。機体は
-    # ForwardConfig.stop_distance_m で止まり始めるので、それより近い壁は飛行開始時点で
-    # 既に停止帯域の中にあり、何も試験されない。幅 2.0m（左右 ±1.0m）にするのは、接近中の
+    # `Monitor.stop_distance` が算出する距離で止まり始めるので、それより近い壁は飛行
+    # 開始時点で既に停止帯域の中にあり、何も試験されない。幅 2.0m（左右 ±1.0m）にするのは、接近中の
     # わずかな方位の誤差でビームが線分の端から外れないようにするためである ―― 外れれば
     # 「壁が消えた」と読めてしまい、接近としては読めない。
     wall_distance_m: float = 1.0
@@ -637,35 +637,158 @@ class ForwardConfig:
     """Forward-distance thresholds: the immediate stop rule and the words.
     前方距離のしきい値: 即時停止則と、区分の語。
 
-    Every number here is a distance in metres from the forward sensor, and the
-    bands are ordered: stop_distance_m < wall_near_m < somewhat_near_m. The
-    Monitor classifies into words with these, and the immediate rule fires on
-    the first of them WITHOUT waiting for Jev.
+    Most numbers here are distances in metres from the forward sensor, banded
+    as wall_near_m < somewhat_near_m. The Monitor classifies into words with
+    these, and the immediate rule fires WITHOUT waiting for Jev.
 
-    ここの数値はすべて前方センサからの距離 [m] であり、帯域は
-    stop_distance_m < wall_near_m < somewhat_near_m の順に並ぶ。Monitor はこれらで
-    語に区分し、即時則は最初のしきい値で Jev を待たずに発火する。
+    The distance the immediate rule fires at is NOT among them: it is computed
+    per cycle from the closing speed (`Monitor.stop_distance`), because a fixed
+    threshold cannot be right at two different speeds. What is stored here are
+    the two terms it is built from, `safety_margin_m` and `coast_per_speed_s`,
+    both measured. The history of that change is worth keeping in view: a fixed
+    0.5 m threshold let the craft through the wall in 3 of 8 measured approaches
+    (§4.9.7), not because the stop was late -- it was issued on the very cycle
+    the classification changed -- but because `stop` restores position hold and
+    does not brake, so the distance a stop needs depends on the speed it is
+    issued at.
+
+    ここの数値の多くは前方センサからの距離 [m] であり、
+    wall_near_m < somewhat_near_m の順に並ぶ。Monitor はこれらで語に区分し、即時則は
+    Jev を待たずに発火する。
+
+    ただし**即時則が発火する距離はこの中に無い**。接近速度から周期ごとに計算する
+    （`Monitor.stop_distance`）。固定のしきい値は、速度が違えば両方で正しくあり得ない
+    からである。ここに置くのは、それを組み立てる 2 項 `safety_margin_m` と
+    `coast_per_speed_s` であり、どちらも実測値である。この変更の経緯は見えるところに
+    残しておく価値がある: 固定の 0.5m というしきい値は、実測した 8 回の接近のうち
+    3 回で機体を壁の向こうへ通した（4.9.7 節）。停止が遅かったからではない ―― 区分が
+    変わったまさにその周期に送られている ―― `stop` が戻すのは位置保持であって制動では
+    なく、したがって停止に要る距離は、それが送られた時点の速度に依存するからである。
     """
 
-    # Stop here. Chosen from what the craft can actually do, not from comfort:
-    # the envelope allows 0.5 m/s (EnvelopeConfig.speed_max_mps) and SILS
-    # measures roughly 0.4 m of travel between a `stop` being sent and the
-    # craft being still, so a 0.5 m trigger leaves the stop finishing at about
-    # 0.1 m from the wall rather than through it.
-    # ここで止まる。心地よさではなく機体に実際にできることから決めた: 飛行領域は 0.5m/s を
-    # 許し（EnvelopeConfig.speed_max_mps）、SILS では `stop` の送信から静止までおよそ
-    # 0.4m 進む。したがって 0.5m で引くと、停止は壁を突き抜けるのではなく壁の手前
-    # 約 0.1m で終わる。
-    stop_distance_m: float = 0.5
+    # The floor under the stopping distance: how much room to keep even when
+    # the craft is barely moving. The stopping distance itself is
+    # `safety_margin_m + coast_per_speed_s * closing_speed` (see below), so
+    # this is what the rule reduces to at a standstill.
+    #
+    # 0.5 m is kept from the old fixed threshold deliberately. It was never
+    # wrong as a MINIMUM -- the slowest measured approach (0.129 m/s) coasted
+    # only 0.086 m and stopped 0.414 m clear -- it was wrong as the WHOLE rule,
+    # because it did not grow with speed. Keeping it as the floor preserves the
+    # behaviour that was already adequate at low speed and adds to it above.
+    #
+    # 停止距離の下限。ほとんど動いていないときでも空けておく余地である。停止距離
+    # 自体は `safety_margin_m + coast_per_speed_s * 接近速度` なので（下記）、これは
+    # 静止時に規則が帰着する値である。
+    #
+    # 0.5m を旧来の固定しきい値から意図して引き継ぐ。**下限**としては誤っていなかった
+    # ためである —— 実測で最も遅い接近（0.129m/s）の惰走は 0.086m にすぎず、0.414m の
+    # 余裕を残して止まっている。誤っていたのは、これを**規則の全体**にしたこと、つまり
+    # 速度とともに伸びなかったことである。下限として残せば、低速で既に十分だった挙動は
+    # そのままに、その上へ積み増すことになる。
+    safety_margin_m: float = 0.5
 
-    # Hysteresis: once stopped, the reading must come back out past this
-    # before "wall near" is withdrawn. Without a gap the classification
-    # chatters at the boundary, and a chattering stop rule is a craft that
-    # alternately brakes and accelerates at a wall.
-    # ヒステリシス: 一度止まったら、読み値がここまで戻らない限り「壁が近い」を
-    # 取り下げない。差を設けないと区分は境界でばたつき、ばたつく停止則とは、壁の前で
-    # 制動と加速を交互に繰り返す機体のことである。
-    release_distance_m: float = 0.7
+    # The coast coefficient [s]: how much extra room one metre per second of
+    # closing speed needs. Stopping distance = margin + this * closing speed.
+    #
+    # MEASURED, over the 8 SILS approaches of 2026-09-19 (truth.csv, recorded
+    # in docs/plans/jev-autopilot.md §4.9.7). Each run gives a closing speed at
+    # the moment the threshold was crossed and the distance travelled after it:
+    #
+    #     0.129 m/s -> 0.086 m      0.219 m/s -> 0.747 m
+    #     0.155 m/s -> 0.390 m      0.236 m/s -> 0.920 m
+    #     0.172 m/s -> 0.446 m      0.240 m/s -> 0.961 m
+    #     0.181 m/s -> 0.355 m      0.347 m/s -> 0.167 m
+    #
+    # 4.0 s is the UPPER ENVELOPE of coast/speed over those points, not a
+    # least-squares fit. That choice is the whole point, so it is worth saying
+    # why: a least-squares line (coast = 0.84*v + 0.33, rms 0.31 m) sits
+    # THROUGH the data, so by construction it under-predicts about half the
+    # runs -- and an under-predicted stopping distance is a wall strike. The
+    # envelope passes at or above all 8 (the binding point is 0.240 m/s ->
+    # 0.961 m, giving 0.961/0.240 = 4.00), so every approach that has actually
+    # been measured would have been stopped clear of the wall.
+    #
+    # Why not a*v**2 (a drag-like law, which a coasting airframe suggests):
+    # fitted through the same points it is WORSE, under-predicting 6 of the 8
+    # against the linear form's 3 (rms 0.41 m vs 0.31 m). The reason is visible
+    # in the fixture: the coast is not a free glide decaying smoothly to rest.
+    # In wall_approach_states.jsonl the speed falls 0.214 -> 0.132 m/s and then
+    # RE-ACCELERATES to 0.185 m/s, because `stop` restores position hold while
+    # the blocking `forward` move's own position target is still pulling the
+    # craft on. What is being modelled is therefore a control interaction, not
+    # aerodynamic drag, and a drag law has no claim on it. The linear envelope
+    # is used because it bounds the measurements, not because it explains them.
+    #
+    # The scatter is wide (coast/speed runs 0.48-4.00 over the 8) for that same
+    # reason, which is why the envelope rather than the centre is the only safe
+    # reading of this data. Re-measure and revisit this figure if the way a
+    # move is ended changes.
+    #
+    # 惰走係数 [s]。接近速度 1m/s あたり、どれだけ余分に空けるか。
+    # 停止距離 = 余裕 + これ × 接近速度。
+    #
+    # **実測値である。** 2026-09-19 の SILS 接近 8 回（truth.csv。
+    # docs/plans/jev-autopilot.md 4.9.7 節に記録）による。各実行は、しきい値を
+    # 通過した時点の接近速度と、その後に進んだ距離を与える（上表）。
+    #
+    # 4.0s は、それらの点に対する coast/速度 の**上側の覆い**であって、最小二乗の
+    # あてはめではない。この選択こそが要点なので、理由を述べる: 最小二乗の直線
+    #（coast = 0.84v + 0.33、rms 0.31m）はデータの**真ん中**を通るので、構造上
+    # ほぼ半数の実行を過小に見積もる —— そして停止距離の過小見積もりとは、壁への
+    # 衝突のことである。この覆いは 8 点すべてを下回らない（拘束点は 0.240m/s → 0.961m で、
+    # 0.961/0.240 = 4.00）ので、これまでに実測されたどの接近も壁の手前で止まっていた
+    # ことになる。
+    #
+    # a*v² にしない理由（惰走する機体からは、抗力に似た法則が示唆される）: 同じ点に
+    # あてはめると、むしろ**悪い**。線形形の 3 件に対し 8 件中 6 件を過小に見積もる
+    #（rms 0.41m 対 0.31m）。理由は fixture に見えている。惰走は、滑らかに静止へ
+    # 減衰する自由滑走ではない。wall_approach_states.jsonl では速度が 0.214 →
+    # 0.132m/s と落ちた後、0.185m/s へ**再加速**する。`stop` が戻すのは位置保持で
+    # ある一方、ブロックする `forward` の移動が持つ位置目標が、なお機体を前へ
+    # 引いているためである。したがってここで模型化しているのは制御の相互作用で
+    # あって空力抗力ではなく、抗力の法則にはこれを説明する資格が無い。線形の覆いを
+    # 使うのは、それが実測を**覆う**からであって、説明するからではない。
+    #
+    # ばらつきが大きいこと（8 点で coast/速度 は 0.48〜4.00）も理由は同じであり、
+    # だからこそ中心ではなくこの覆いだけが、このデータの安全な読み方である。移動の
+    # 終わらせ方を変えたときは、測り直してこの値を見直すこと。
+    coast_per_speed_s: float = 4.0
+
+    # The ceiling on the stopping distance [m]. Without one the rule scales
+    # past anything the forward part can actually see: at the envelope's
+    # 0.5 m/s ceiling the distance would be 2.5 m, which is beyond the Plant's
+    # own reliable band (tof_front_max_m = 2.0 m). A rule that fires on a
+    # distance the sensor cannot report is a rule that never fires, so it is
+    # clamped here and the SPEED is limited instead (`EnvelopeConfig`).
+    # 停止距離の上限 [m]。無ければ、前方の部品に実際に見える範囲を超えて伸びる。
+    # 飛行領域の上限 0.5m/s では 2.5m になり、Plant 自身の信頼帯域
+    #（tof_front_max_m = 2.0m）の外である。センサが報告できない距離で発火する規則
+    # とは、発火しない規則のことなので、ここで頭打ちにし、代わりに**速度**のほうを
+    # 制限する（`EnvelopeConfig`）。
+    stop_distance_max_m: float = 1.8
+
+    # Hysteresis: once stopped, the reading must come back out past the
+    # stopping distance PLUS this before "wall near" is withdrawn. Without a
+    # gap the classification chatters at the boundary, and a chattering stop
+    # rule is a craft that alternately brakes and accelerates at a wall.
+    #
+    # Expressed as a margin ON TOP of the stopping distance rather than as an
+    # absolute distance, because the stopping distance now moves with speed: a
+    # fixed 0.7 m release sat above the old fixed 0.5 m stop, but would sit
+    # BELOW the stopping distance at any closing speed past about 0.05 m/s,
+    # which inverts the hysteresis -- the craft would release the stop while
+    # still inside the band that caused it.
+    #
+    # ヒステリシス: 一度止まったら、読み値が「停止距離＋この余裕」まで戻らない限り
+    #「壁が近い」を取り下げない。差を設けないと区分は境界でばたつき、ばたつく停止則
+    # とは、壁の前で制動と加速を交互に繰り返す機体のことである。
+    #
+    # 絶対距離ではなく停止距離への**上乗せ**で表すのは、停止距離が速度とともに動く
+    # ようになったためである。固定の 0.7m は旧来の固定 0.5m の上にはあったが、接近
+    # 速度が約 0.05m/s を超えれば停止距離を**下回る**。それはヒステリシスの反転で
+    # あり、機体は停止の原因となった帯域の中にいるまま停止を解除してしまう。
+    release_margin_m: float = 0.2
 
     # The word bands above the stop threshold.
     # 停止しきい値より上の、語の帯域。
@@ -684,6 +807,232 @@ class ForwardConfig:
     # 数個の取りこぼしで壁が消えない程度に長く、古い壁が旋回を越えて残らない程度に短い。
     invalid_grace_s: float = 2.0
 
+    # -- backing away when a stop was not enough / 停止で足りないときの後退 --
+    #
+    # `stop` is not braking, so a craft that crossed the threshold fast keeps
+    # closing for a while after it (the whole reason the figures above exist).
+    # If it is STILL closing once position hold has had time to take effect,
+    # the stop did not do its job and the only move left that increases the
+    # distance is to go backwards.
+    #
+    # `stop` は制動ではないので、速く進入した機体はその後もしばらく詰め続ける
+    #（上の数値が存在する理由そのものである）。位置保持が効くだけの時間が経っても
+    # なお詰まり続けているなら、停止は仕事をしなかったのであり、距離を増やす手段と
+    # して残っているのは後退だけである。
+
+    # How long to let position hold work before judging that it did not. The
+    # measured re-acceleration in wall_approach_states.jsonl plays out over
+    # about 1.5 s, so a shorter window would call a stop failed while it was
+    # still taking effect; a longer one spends the distance it is protecting.
+    # 位置保持が効くのを待つ時間。効かなかったと判ずる前に、これだけ待つ。
+    # wall_approach_states.jsonl で実測した再加速はおよそ 1.5 秒かけて起きるので、
+    # これより短い窓は、まだ効いている最中の停止を「失敗」と呼んでしまう。長ければ、
+    # 守ろうとしている当の距離を費やすことになる。
+    backoff_grace_s: float = 1.5
+
+    # How much closer it must have got during that window to count as still
+    # closing. Above the forward part's own resolution, so sensor noise on a
+    # craft that is actually stationary never triggers a retreat.
+    # その窓のあいだにどれだけ詰まれば「まだ詰まっている」とみなすか。前方の部品
+    # 自身の分解能より大きくし、実際には静止している機体のセンサ雑音が後退を
+    # 引き起こさないようにする。
+    backoff_closing_m: float = 0.05
+
+    # How far one retreat moves the craft [cm]. One `back`, not a continuous
+    # retreat: the craft is next to something it can only see one bearing of,
+    # and reversing indefinitely trades a known obstacle ahead for an unknown
+    # one behind. A single hop buys room for the next cycle to judge again.
+    # 1 回の後退で動く距離 [cm]。連続後退ではなく `back` 1 回である。機体は、
+    # 1 方位しか見えない何かの脇にいるのであり、無制限に後退することは、既知の
+    # 前方の障害物を未知の後方の障害物と取り替えることである。1 回の後退は、次の
+    # 周期が改めて判断するための余地を買う。
+    backoff_step_cm: float = 20.0
+
+    # How far the craft drifts FORWARD during a descent, with nothing
+    # opposing it [m]. Used to decide how far to back off before landing
+    # near a wall (`landing.LandingApproach._retreat_needed_cm`).
+    #
+    # This is not the stop rule's coast: it is a separate mechanism with a
+    # separate cause. The firmware deliberately holds NO horizontal position
+    # while descending (LandingConfig explains why), so a descent that
+    # begins facing a wall travels towards it for the whole descent.
+    #
+    # MEASURED over the 13-flight SILS campaign of 2026-09-19: the craft was
+    # stopped 0.28-0.43 m clear of the wall at cruise altitude by the stop
+    # rule, and the descent alone then carried it to within 0.02-0.27 m,
+    # accelerating to 0.26 m/s on the way down. The worst case was 0.72 m of
+    # forward travel between the start of the descent and touchdown, and
+    # this figure is set just above it.
+    #
+    # 降下中に機体が、妨げられることなく**前へ**流れる距離 [m]。壁の近くで着陸
+    # する際、どれだけ下がるかの判断に使う
+    #（`landing.LandingApproach._retreat_needed_cm`）。
+    #
+    # これは停止則の惰走とは**別物**であり、原因も別である。ファームは降下中、
+    # 水平位置を意図して一切保持しない（理由は LandingConfig にある）ので、壁を
+    # 向いて始まった降下は、降下のあいだずっとそちらへ進む。
+    #
+    # **実測値である。** 2026-09-19 の SILS 13 回による: 停止則によって巡航高度では
+    # 壁から 0.28〜0.43m 離れて止まっていた機体が、降下だけで 0.02〜0.27m まで詰め、
+    # 降下中に 0.26m/s まで加速した。最悪の場合、降下の開始から接地までの前進は
+    # 0.72m であり、この値はそのすぐ上に置いてある。
+    descent_drift_m: float = 0.75
+
+
+@dataclass(frozen=True)
+class ExploreConfig:
+    """Sweeping the forward distance around a turn, to choose a heading.
+
+    **This is off by default and must stay off until the release condition
+    below is met.** Every number here is implemented, tested against
+    fixtures and reachable, but the manoeuvre it describes cannot be flown:
+    in SILS today the aircraft FALLS OUT OF THE AIR when it yaws at all.
+
+    The measurement (docs/plans/jev-autopilot.md §4.9.1): from a 0.5 m
+    hover, `cw 90`, `cw 45` and `cw 30` each reach the ground in about 1.3 s
+    with a 4.7-5.3 G impact and a disarm, and an `rc` yaw rate as low as
+    0.1 rad/s sinks just the same. A level `rc` and a plain hover hold
+    altitude to within 2 cm, so this is specific to the yaw axis. The cause
+    is the mixer clamping each motor's duty independently and never
+    redistributing what it cut off the top, which loses mean lift
+    (simulation-policy.md backlog #12); three candidate fixes were measured
+    and none was adopted (§4.10).
+
+    **Release condition: a `cw 90` from a 0.5 m hover completes with no
+    fall, no impact detection and no disarm.** Climbing first so the ground
+    is out of reach does NOT count -- that hides the fall rather than
+    fixing it, and this package's rule is not to fly around a defect it can
+    see (§4.3). When that condition is met, set `enabled = True` here and
+    fly `sf pilot explore --sils --scene dead_end` to completion.
+
+    旋回しながら前方距離を掃き、進む方位を選ぶための設定。
+
+    **既定では無効であり、下記の解除条件が満たされるまで無効のままにする。**
+    ここの数値はすべて実装・fixture で試験済みで到達可能だが、記述している
+    操作そのものが**飛ばせない**。現状の SILS では、機体はヨー回転しただけで
+    落下する。
+
+    実測（docs/plans/jev-autopilot.md §4.9.1）: 0.5m のホバリングから `cw 90`・
+    `cw 45`・`cw 30` はいずれも約 1.3 秒で接地し、4.7〜5.3G の衝撃と解除に至る。
+    `rc` のヨー速度を 0.1 rad/s まで落としても同じように沈下する。水平の `rc` と
+    素のホバリングは高度を 2cm 以内に保つので、これはヨー軸に固有である。原因は、
+    ミキサーが各モータの duty を独立に切り詰め、上側で切り落とした分を再配分し
+    ないことで、平均揚力が失われる（simulation-policy.md 改修バックログ #12）。
+    是正案 3 件は実測済みで、いずれも不採用である（§4.10）。
+
+    **解除条件: 高度 0.5m のホバリングからの `cw 90` が、落下・衝撃検出・解除の
+    いずれも起こさずに完了すること。** 先に上昇して地面に届かなくする回避は
+    条件に**含めない** —— それは落下を隠すのであって直すことではなく、見えている
+    欠陥を迂回して飛ばないのが本パッケージの方針である（§4.3）。条件が満たされた
+    ら、ここの `enabled` を True にし、`sf pilot explore --sils --scene dead_end`
+    を完走させる。
+    """
+
+    # The one switch. Everything else here is inert while this is False.
+    # 唯一の切り替え。これが False の間、他の値はすべて働かない。
+    enabled: bool = False
+
+    # Why it is off, shown to the operator verbatim when a sweep is asked
+    # for. Kept here rather than in the CLI so that whoever flips the switch
+    # reads the reason in the same place as the switch.
+    # 無効である理由。掃引を求められたとき、そのまま操作者に表示する。切り替えと
+    # 同じ場所で理由を読めるよう、CLI ではなくここに置く。
+    disabled_reason: str = (
+        "ヨー回転による探索は実装済みだが無効にしてある。現状の SILS では、高度 "
+        "0.5m から `cw 90`・`cw 45`・`cw 30` のいずれを送っても機体が約 1.3 秒で "
+        "接地し、衝撃検出と解除に至る（jev-autopilot.md §4.9.1 の実測）。原因は "
+        "ミキサーの独立クランプによる揚力損失で（simulation-policy.md 改修バック"
+        "ログ #12）、是正案 3 件はいずれも不採用（§4.10）。解除条件は「高度 0.5m "
+        "のホバリングからの `cw 90` が、落下・衝撃検出・解除のいずれも起こさずに"
+        "完了すること」であり、高度を上げて地面に届かなくする回避は含めない。"
+        "満たされたら config.py の ExploreConfig.enabled を True にすること。"
+        " / Exploration by yawing is implemented but disabled: in SILS today "
+        "the aircraft reaches the ground about 1.3 s after any yaw command "
+        "from a 0.5 m hover. See docs/plans/jev-autopilot.md §4.11."
+    )
+
+    # How far the craft turns between readings [deg], and how many readings
+    # make one sweep. 45 deg x 8 closes the circle exactly, which is what
+    # makes "the direction it started facing" the last bearing rather than a
+    # bearing the sweep never visited.
+    # 読み取りの間に機体が回る角度 [度] と、1 回の掃引を構成する読み取り数。
+    # 45 度 × 8 で円がちょうど閉じる。これにより「出発時に向いていた方位」が、
+    # 掃引が訪れなかった方位ではなく最後の方位になる。
+    step_deg: float = 45.0
+    bearings: int = 8
+
+    # How long to let the craft settle after a turn before believing the
+    # forward reading. A turn leaves the airframe rotating and swinging, and
+    # a distance read during that is a distance to whatever the beam swept
+    # past, not to what lies along the new bearing.
+    # 旋回の後、前方の読み値を信じる前に機体を静定させる時間。旋回の直後は機体が
+    # まだ回り、振れている。その間に読んだ距離は、新しい方位の先にあるものまでの
+    # 距離ではなく、ビームが通り過ぎた何かまでの距離である。
+    settle_s: float = 1.5
+
+    # How many readings to take at each bearing, and how long to wait
+    # between them. Several rather than one because the forward part
+    # reports an invalid reading intermittently (§4.8.6), and one invalid
+    # sample must not be able to call an open corridor "cannot measure".
+    # 各方位で取る読み取りの数と、その間隔。1 回ではなく複数にするのは、前方の
+    # 部品が断続的に無効を返すためであり（§4.8.6）、無効なサンプル 1 つで、開けた
+    # 通路を「測定不能」と呼べてしまわないようにするためである。
+    samples_per_bearing: int = 5
+    sample_interval_s: float = 0.1
+
+    # How many of those readings must be valid before the bearing is
+    # classified from them at all. Below this the bearing is "cannot be
+    # measured", which is never read as open (monitor.py's FORWARD_UNKNOWN
+    # note: an invalid reading means empty space OR a surface too close).
+    # その読み取りのうち、方位を区分するのに最低限必要な有効な数。これに満たない
+    # 方位は「測定不能」であり、決して「開けている」とは読まない（monitor.py の
+    # FORWARD_UNKNOWN の注記 —— 無効は「空間」と「近すぎる面」の両方を意味する）。
+    min_valid_samples: int = 2
+
+    # How long a sweep's result stays current [s]. A sweep describes where
+    # the walls were when it was taken; after the craft has moved, that is
+    # history. The word for it reaches Jev (`surroundings.measured`) rather
+    # than the sweep being silently discarded, because "the last look was a
+    # while ago" is a reason for caution the model can weigh.
+    # 掃引の結果が最新とみなされる時間 [s]。掃引が述べるのは「それを取った時点で
+    # 壁がどこにあったか」であり、機体が動いた後ではそれは履歴である。黙って捨てず、
+    # その旨の語を Jev へ渡す（`surroundings.measured`）。「最後に見たのは少し前だ」
+    # は、モデルが重み付けできる警戒の理由だからである。
+    freshness_s: float = 20.0
+
+    # Whether to turn with the blocking `cw`/`ccw` verbs or with an `rc` yaw
+    # rate. `cw` is the default because it is the vehicle's own move to a
+    # yaw TARGET and it answers when it arrives, so the sweep knows the
+    # craft is actually pointing where it thinks. An `rc` rate would have to
+    # be integrated on this side, which is dead reckoning over a link with
+    # no delivery guarantee.
+    #
+    # Both fall over today for the same reason (§4.9.1 measured both), so
+    # this chooses between two manoeuvres that are equally unflyable; it
+    # exists so that whoever lifts the restriction can try the other one
+    # without editing the sweep.
+    #
+    # 旋回に、ブロックする `cw`/`ccw` を使うか、`rc` のヨー速度を使うか。既定を
+    # `cw` にするのは、それが機体自身の「ヨー**目標**への移動」であり、到達時に
+    # 応答するからである。掃引は、機体が実際に思ったほうを向いていると分かる。
+    # `rc` の速度ならこちら側で積分することになり、到達の保証が無いリンクの上での
+    # 推測航法になる。
+    #
+    # 現状はどちらも同じ理由で破綻するので（§4.9.1 は両方を実測）、これは等しく
+    # 飛ばせない 2 つの操作のどちらを選ぶかでしかない。制限を解く人が、掃引に手を
+    # 触れずにもう一方を試せるようにするために置いてある。
+    turn_with_rc: bool = False
+
+    # The yaw rate used when `turn_with_rc` is set [rad/s], and the `rc`
+    # unit it is sent in. The vehicle's fourth `rc` channel is -100..100
+    # mapping to +/- its own yaw rate ceiling, so the rate is converted here
+    # rather than the sweep carrying a stick figure.
+    # `turn_with_rc` のときに使うヨー速度 [rad/s] と、それを送る `rc` の単位。
+    # 機体の `rc` 第 4 チャンネルは -100〜100 で、機体自身のヨー速度上限に対応する。
+    # そこで変換はここで行い、掃引がスティックの数値を持たないようにする。
+    rc_yaw_rate_rad_s: float = 0.3
+    rc_yaw_rate_max_rad_s: float = 1.0
+
 
 @dataclass(frozen=True)
 class PilotConfig:
@@ -699,6 +1048,7 @@ class PilotConfig:
     mission: MissionConfig = field(default_factory=MissionConfig)
     sils: SilsConfig = field(default_factory=SilsConfig)
     forward: ForwardConfig = field(default_factory=ForwardConfig)
+    explore: ExploreConfig = field(default_factory=ExploreConfig)
 
     monitor_hz: float = MONITOR_HZ
     executor_rc_hz: float = EXECUTOR_RC_HZ

@@ -311,7 +311,8 @@ def build_plan(instruction: str, judgement, on_ground: bool = True,
 
     numbers = extract_numbers(instruction, config)
     plan.spoken_numbers = numbers
-    steps = _attach_amounts(verbs, numbers, judgement, config)
+    steps = _attach_amounts(verbs, numbers, judgement, config,
+                            instruction=instruction)
     steps = _add_takeoff_and_landing(steps, on_ground, auto_land, config)
     steps = _resolve_return_home(steps, config)
 
@@ -392,7 +393,8 @@ def _unsure_refusal(unsure: list, config) -> str:
     )
 
 
-def _attach_amounts(verbs: list, numbers: list, judgement, config) -> list:
+def _attach_amounts(verbs: list, numbers: list, judgement, config,
+                    instruction: str = "") -> list:
     """Give every move its amount: what was said, else what Jev sized it as.
 
     A figure the operator actually said outranks the model's size band
@@ -406,7 +408,7 @@ def _attach_amounts(verbs: list, numbers: list, judgement, config) -> list:
     粗い 4 区分から選んでいるのは、まさに数値を扱わせないためであり、数値が
     ある場所で区分が足せるものは無い。
     """
-    spoken = _match_numbers_to_verbs(verbs, numbers)
+    spoken = _match_numbers_to_verbs(verbs, numbers, instruction)
     steps = []
     for index, verb, confidence in verbs:
         if verb in _AMOUNTLESS:
@@ -424,7 +426,39 @@ def _attach_amounts(verbs: list, numbers: list, judgement, config) -> list:
     return steps
 
 
-def _match_numbers_to_verbs(verbs: list, numbers: list) -> dict:
+# The words a sentence uses to name each move, for deciding WHICH move a
+# spoken figure belongs to. Only the moves that can carry a figure are
+# listed: a `takeoff` or a `land` never takes one (`_AMOUNTLESS`).
+#
+# These are cues, not a parser. They answer one narrow question -- "does
+# this sentence mention this move at all?" -- and the answer is only ever
+# used to withhold a figure from a move the operator never named. Reading
+# the sentence itself remains Jev's job; nothing here decides what a move
+# IS, only which of Jev's moves a number the operator said can attach to.
+#
+# 各動作を文が名指しするときの語。話された数値が**どの**動作のものかを決める
+# ために使う。数値を持ちうる動作だけを並べる（`takeoff`・`land` は持たない。
+# `_AMOUNTLESS` 参照）。
+#
+# これは手がかりであってパーサではない。答えるのは「この文はこの動作に言及して
+# いるか」という 1 点だけで、その答えは「操作者が名指ししていない動作に数値を
+# 渡さない」ためにしか使わない。文を読むこと自体は従来どおり Jev の仕事であり、
+# ここで動作が**何であるか**は決めない。決めるのは、操作者が言った数値が Jev の
+# どの動作に付きうるかだけである。
+_MOVE_CUES = {
+    STEP_UP: r"上が|上へ|上に|あが|昇|のぼ",
+    STEP_DOWN: r"下が|下へ|下に|さが|降り|おり",
+    STEP_FORWARD: r"前|進ん|すす|まえ",
+    STEP_BACK: r"後ろ|後方|うしろ|下がって|バック|戻",
+    STEP_LEFT: r"左|ひだり",
+    STEP_RIGHT: r"右|みぎ",
+    STEP_TURN_RIGHT: r"右|時計|回|まわ|向",
+    STEP_TURN_LEFT: r"左|反時計|回|まわ|向",
+}
+
+
+def _match_numbers_to_verbs(verbs: list, numbers: list,
+                            instruction: str = "") -> dict:
     """Decide which spoken figure belongs to which move.
 
     Matching is by unit and then by order: degrees can only belong to a
@@ -434,24 +468,115 @@ def _match_numbers_to_verbs(verbs: list, numbers: list) -> dict:
     70 to the only travel that follows it and the 90 to the only turn --
     and it needs no arithmetic from the model.
 
+    Order alone is not enough when there are FEWER figures than moves of
+    that unit, because it then hands each figure to the EARLIEST move
+    regardless of where the figure sits in the sentence. Measured
+    2026-09-19: "前に80cm進んで" was read by Jev as `up` then `forward` (a
+    climb it added, plus the travel the operator asked for), and the single
+    80 cm went to the `up` -- so the aircraft flew `up 80` and then
+    `forward 50`, the default band, having been told 80 cm and forward.
+
+    So a move the sentence never NAMES is passed over: a figure is only
+    offered to moves whose own words appear in the instruction. "前に80cm
+    進んで" names a forward travel twice ("前", "進ん") and a climb not at
+    all, so the 80 reaches the `forward`. Where the sentence names every
+    move -- "1m上がって前に70cm進んで" -- nothing is withheld and the pairing
+    is the order it always was.
+
+    Why not match on the figure's own position in the text: that would need
+    each MOVE to have a position too, and a move is Jev's answer to "what is
+    action number 3?", which carries no position at all. The cue words are
+    the only place the sentence and the move list meet.
+
     どの数値がどの動作のものかを決める。
 
     単位で分け、次に順序で対応させる。度は旋回にしか、cm は移動にしか属し
     えないので、2 つの列を別々に、どちらも言われた順で突き合わせる。文はその
     ように組み立てられており（「上がって前に70cm進んで90度回って」なら 70 は
     後続の唯一の移動へ、90 は唯一の旋回へ）、モデルの計算を要しない。
+
+    ただし、その単位の動作より数値の**ほうが少ない**場合、順序だけでは足りない。
+    数値が文中のどこにあるかに関わらず、**最も早い**動作へ渡してしまうためである。
+    2026-09-19 実測:「前に80cm進んで」を Jev は `up` → `forward`（自分で足した
+    上昇と、操作者が求めた移動）と読み、唯一の 80cm が `up` へ渡った。その結果、
+    「前に 80cm」と言われた機体が `up 80` を飛び、続けて既定の区分である
+    `forward 50` を飛んだ。
+
+    そこで、文が**名指ししていない**動作は飛ばす。数値を差し出す相手は、自身の語が
+    指示に現れる動作だけである。「前に80cm進んで」は前進を 2 度名指しし（「前」
+    「進ん」）、上昇は 1 度も名指ししないので、80 は `forward` に届く。
+    「1m上がって前に70cm進んで」のように全ての動作が名指しされている文では
+    何も飛ばさず、対応付けは従来どおりの順序になる。
+
+    数値自身の文中位置で対応させない理由: それには**動作**の側にも位置が要るが、
+    動作は「3 番目の動作は何か」への Jev の答えであって、位置をまったく持たない。
+    文と動作の列が出会う場所は、この手がかりの語だけである。
     """
-    travel_verbs = [i for i, verb, _ in verbs if verb in _TRAVEL_BODY_AXIS]
-    turn_verbs = [i for i, verb, _ in verbs if verb in _TURN_SIGN]
+    travel_verbs = _named_in(
+        [(i, verb) for i, verb, _ in verbs if verb in _TRAVEL_BODY_AXIS],
+        instruction,
+    )
+    turn_verbs = _named_in(
+        [(i, verb) for i, verb, _ in verbs if verb in _TURN_SIGN],
+        instruction,
+    )
     distances = [n for n in numbers if n.unit == _UNIT_CM]
     angles = [n for n in numbers if n.unit == _UNIT_DEG]
 
     matched: dict = {}
-    for step_index, number in zip(travel_verbs, distances):
+    for step_index, number in zip(_trim(travel_verbs, distances), distances):
         matched[step_index] = number
-    for step_index, number in zip(turn_verbs, angles):
+    for step_index, number in zip(_trim(turn_verbs, angles), angles):
         matched[step_index] = number
     return matched
+
+
+def _named_in(indexed_verbs: list, instruction: str) -> list:
+    """Each move paired with whether the instruction names it in words.
+    各動作と、指示がそれを言葉で名指ししているかの組。"""
+    return [
+        (index, _mentions(instruction, verb))
+        for index, verb in indexed_verbs
+    ]
+
+
+def _mentions(instruction: str, verb: str) -> bool:
+    """Whether the instruction contains a word naming this move.
+    指示に、この動作を名指しする語が含まれるか。"""
+    cue = _MOVE_CUES.get(verb)
+    if cue is None:
+        return False
+    return re.search(cue, instruction) is not None
+
+
+def _trim(named_verbs: list, numbers: list) -> list:
+    """The move indices a figure may attach to, in order.
+
+    With a figure for every move, all of them qualify and the order is the
+    one it always was. With fewer figures than moves, the ones the sentence
+    never named are dropped first, so a figure cannot land on a move the
+    operator did not mention -- and if that still leaves too many (or the
+    cues matched nothing), the original order is kept rather than guessed
+    at, because withholding a figure from a move the operator DID name
+    would be the same error in the other direction.
+
+    数値が付きうる動作の番号を順に返す。
+
+    動作の数だけ数値があれば全てが対象で、順序は従来どおりである。数値のほうが
+    少なければ、文が名指ししていないものから外す。操作者が言及していない動作に
+    数値が着地しないようにするためである。それでもなお多い場合（あるいは手がかりが
+    1 つも一致しない場合）は、推測せず元の順序を保つ。操作者が**名指しした**動作
+    から数値を取り上げることは、逆向きの同じ誤りだからである。
+    """
+    all_indices = [index for index, _ in named_verbs]
+    has_enough_numbers = len(numbers) >= len(all_indices)
+    if has_enough_numbers:
+        return all_indices
+    named = [index for index, is_named in named_verbs if is_named]
+    is_still_too_many = len(named) < len(numbers)
+    if is_still_too_many:
+        return all_indices
+    return named
 
 
 def _named_amount(index: int, verb: str, judgement, config) -> tuple:

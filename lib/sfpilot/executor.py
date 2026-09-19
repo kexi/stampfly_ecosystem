@@ -37,7 +37,9 @@ LandingConfig 参照）ため、機体が動いているうちに送った `land
 静定しない着陸になってしまうからである。
 """
 
-from .arbiter import VERDICT_CONTINUE, VERDICT_HOVER, VERDICT_LAND, VERDICT_STOP
+from .arbiter import (
+    VERDICT_BACK, VERDICT_CONTINUE, VERDICT_HOVER, VERDICT_LAND, VERDICT_STOP,
+)
 from .config import EnvelopeConfig, DEFAULT_CONFIG
 from .landing import LandingApproach
 
@@ -55,7 +57,8 @@ class Executor:
     """Send the commands one verdict implies.
     1 つの判定が意味する指令を送る。"""
 
-    def __init__(self, link, config=DEFAULT_CONFIG, speed_probe=None, clock=None):
+    def __init__(self, link, config=DEFAULT_CONFIG, speed_probe=None, clock=None,
+                 forward_probe=None):
         self.link = link
         self.cfg = config
         # Handed to each landing approach. Injectable for the same reason it
@@ -67,6 +70,13 @@ class Executor:
         self.envelope: EnvelopeConfig = config.envelope
         self.last_rc = RC_HOVER
         self.landing = False          # a landing is under way / 着陸手順に入った
+        # True while a retreat that has been sent is still being flown, so
+        # the next cycles wait for it instead of stacking another on top.
+        # Cleared by the first verdict that is not a retreat (`apply`).
+        # 送信済みの後退がまだ飛ばされている間 True。次以降の周期が、上へさらに
+        # 積むのではなく、それを待つようにするため。後退以外の判定が来た時点で
+        # 解除する（`apply`）。
+        self.backing_off = False
         self.commands: list = []      # what was sent, for the trace / 記録用
         # The approach that is settling the craft before `land` goes out,
         # or None once it has. `landing` turns True when the approach
@@ -85,6 +95,14 @@ class Executor:
         # 静定待ちのために機体の水平速度 [m/s] を読む。無ければ待ちは早く終われず
         # 上限まで走る。遅くはなるが、誤りにはならない。
         self.speed_probe = speed_probe
+        # Reads the forward distance for the landing approach, which backs
+        # away from a wall before descending: the firmware holds no
+        # horizontal position during a descent, so a landing started facing
+        # a wall drifts into it (landing.py).
+        # 着陸前手順が使う前方距離の読み取り。手順は降下の前に壁から離れる。
+        # ファームは降下中に水平位置を保持しないので、壁を向いたまま始めた着陸は
+        # そちらへ流れていくからである（landing.py）。
+        self.forward_probe = forward_probe
         # When another layer is driving the vehicle (`sf pilot say` walking
         # an instruction's steps), the routine hovering `rc` must not go
         # out: `rc` publishes a VELOCITY guidance target (api_task.cpp
@@ -112,10 +130,21 @@ class Executor:
         # 2 度目の `land` は既に走っている手順を最初からやり直させる。
         if self.landing:
             return self._advance_landing()
+        # Any verdict other than a retreat ends the one in progress: the
+        # situation has moved on, and a latch left set would swallow the
+        # next retreat as "already backing off".
+        # 後退以外の判定は、進行中の後退を終わらせる。状況が変わったということで
+        # あり、ラッチを立てたままにすると、次の後退が「すでに後退中」として
+        # 飲み込まれてしまう。
+        is_retreat = verdict.action == VERDICT_BACK
+        if not is_retreat:
+            self.backing_off = False
         if verdict.action == VERDICT_LAND:
             return self._land(verdict)
         if verdict.action == VERDICT_STOP:
             return self._stop()
+        if verdict.action == VERDICT_BACK:
+            return self._back()
         if verdict.action == VERDICT_HOVER:
             return self._rc(RC_HOVER)
         if verdict.action == VERDICT_CONTINUE:
@@ -133,8 +162,15 @@ class Executor:
         would fight the vehicle's own descent controller.
         現在の `rc` を再送する。20Hz で呼ばれる。着陸開始後は何もしない —
         静定中の `rc` は速度目標を publish し直してそれを無に帰し、降下中の `rc`
-        は機体側の降下制御と競合するため。"""
-        if self.landing:
+        は機体側の降下制御と競合するため。
+
+        Silent during a retreat too, and for the same reason: `rc` publishes
+        a velocity target that would replace the retreat's position target
+        and cancel the move away from the wall.
+        後退中も同様に何もしない。理由も同じで、`rc` は速度目標を publish し、
+        後退の位置目標を置き換えて、壁から離れる移動を打ち消してしまう。
+        """
+        if self.landing or self.backing_off:
             return ""
         return self._rc(self.last_rc)
 
@@ -172,7 +208,7 @@ class Executor:
         self.approach = LandingApproach(
             self.link, self.cfg, speed_probe=self.speed_probe,
             urgent=_is_urgent(verdict), reason=getattr(verdict, "reason", ""),
-            clock=self.clock,
+            clock=self.clock, forward_probe=self.forward_probe,
         )
         self.approach.start()
         return self._advance_landing()
@@ -190,6 +226,63 @@ class Executor:
         self.last_landing_summary = self.approach.summary()
         self.approach = None
         return "land"
+
+    def _back(self) -> str:
+        """Retreat one step from an obstacle the stop did not open up.
+
+        A `stop` goes out first and on the same cycle, because the retreat
+        is a MOVE and the vehicle is very likely still holding the position
+        target of the move that carried it in. Sending `back` without
+        cancelling that first would set a new target while the old one is
+        still being pursued, which is how the craft came to be here.
+
+        Sent once per retreat, not every cycle: `back` is a blocking move
+        the vehicle answers when it arrives, so re-sending it each 50Hz
+        cycle would queue dozens of retreats and fly the craft backwards
+        into whatever is behind it -- which it cannot see at all. The latch
+        clears when the situation stops calling for a retreat, so a wall
+        that is still closing after one hop gets another.
+
+        停止では距離が開かなかった障害物から、1 段だけ後退する。
+
+        同じ周期でまず `stop` を送る。後退は**移動**であり、機体はここまで運んできた
+        移動の位置目標をなお保持している可能性が高いからである。それを取り消さずに
+        `back` を送れば、古い目標をなお追いかけている最中に新しい目標を置くことに
+        なる ―― そもそも機体がここに至った経緯がそれである。
+
+        送るのは 1 回の後退につき 1 度であり、毎周期ではない。`back` は機体が到達時に
+        応答するブロックする移動なので、50Hz の周期ごとに送り直せば後退が何十個も
+        積まれ、機体は「まったく見えていない」後方の何かへ向かって飛ぶことになる。
+        ラッチは、状況が後退を求めなくなった時点で解ける。1 段下がってもなお壁が
+        詰まってくるなら、もう 1 段下がることになる。
+        """
+        if self.backing_off:
+            return self._advance_backoff()
+        self.backing_off = True
+        self.link.priority("stop")
+        self.last_rc = RC_HOVER
+        step_cm = round(self.cfg.forward.backoff_step_cm)
+        line = f"back {step_cm}"
+        self.link.send_command(line)
+        self.commands.append(line)
+        return line
+
+    def _advance_backoff(self) -> str:
+        """Hold still while a retreat already sent is being flown.
+
+        Nothing is sent. An `rc` here would replace the retreat's position
+        target with a velocity one and cancel the move (the same reason
+        `hold_commands_silently` exists), and a second `back` would stack
+        another retreat on top of the one in progress.
+
+        送信済みの後退が飛ばされている間、何もせず待つ。
+
+        何も送らない。ここで `rc` を送れば、後退の位置目標を速度目標で置き換えて
+        移動を打ち消すことになり（`hold_commands_silently` が存在するのと同じ
+        理由）、2 度目の `back` は進行中の後退の上にもう 1 つ後退を積む。
+        """
+        self.commands.append("(backing off)")
+        return "back"
 
     def _stop(self) -> str:
         # `stop` goes on the priority path: it must overtake anything the

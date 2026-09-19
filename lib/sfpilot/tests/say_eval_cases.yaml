@@ -54,6 +54,19 @@ cases:
     expect_steps: ["takeoff", "up 100", "forward 70", "land"]
     note: コードが抜き出した数値が Jev の量の区分に優先する / spoken figures override the bands
 
+  - instruction: "前に80cm進んで"
+    expect_steps: ["takeoff", "forward 80", "land"]
+    note: |
+      数値が 1 つで、Jev が動作を 2 つ（上昇＋前進）読むことがある事例。
+      2026-09-19 実測では `up 80` + `forward 50` になった —— 唯一の 80cm が、
+      文が名指ししていない上昇へ順序だけで渡っていた。文が名指しするのは前進
+      だけなので、80cm は前進のものである。組み立て側の固定は
+      `test_instruction.py::test_a_figure_goes_to_the_move_the_sentence_names_beside_it`。
+      One figure, while Jev may read two actions (a climb it adds, plus the
+      travel). Measured 2026-09-19 as `up 80` + `forward 50`: pairing by
+      order alone gave the only 80 cm to a climb the sentence never names.
+      The sentence names the travel, so the 80 cm is the travel's.
+
   - instruction: "90度右に回ってから50cm前に進んで"
     expect_steps: ["takeoff", "cw 90", "forward 50", "land"]
     note: 度は旋回へ、cm は移動へ単位で割り当てられる / degrees to the turn, cm to the travel

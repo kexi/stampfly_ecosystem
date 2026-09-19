@@ -237,6 +237,36 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     _add_web_arguments(mission_parser)
     mission_parser.set_defaults(func=run_mission)
 
+    explore_parser = subs.add_parser(
+        "explore",
+        help="Turn on the spot to measure every direction, then choose one "
+             "(--sils required; DISABLED — see docs/plans/jev-autopilot.md §4.11)",
+    )
+    explore_parser.add_argument(
+        "--sils", action="store_true",
+        help="Fly the SILS emulator. Required to fly: real hardware is not "
+             "supported yet （実機は未対応）",
+    )
+    explore_parser.add_argument(
+        "--scene", default="dead_end", choices=list(scene_names()),
+        help="Which situation to sweep in (default: dead_end, the one with "
+             "walls to find) （場面）",
+    )
+    explore_parser.add_argument(
+        "--fake", action="store_true",
+        help="Use the rule-based FakeJudge (no API key, no network)",
+    )
+    explore_parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Do not ask for confirmation before flying",
+    )
+    explore_parser.add_argument(
+        "--duration", type=float, default=RUN_DEFAULT_DURATION_S,
+        help=f"Ceiling on the flight in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
+    )
+    _add_web_arguments(explore_parser)
+    explore_parser.set_defaults(func=run_explore)
+
 
 # =============================================================================
 # sf pilot bench
@@ -803,6 +833,18 @@ class _LiveFeed:
             self._status.note_decision(_status_row(row))
         self._status.phase = self._phase
         self._status.publish_throttled(now)
+
+    def sweep(self, sweep_result, sample) -> None:
+        """Send one look around to the page, as a fan of sectors.
+        見回し 1 回を、扇形の集まりとしてページへ送る。"""
+        if self.bus is None:
+            return
+        from sfpilot.events import EVENT_SWEEP, sweep_payload
+
+        payload = sweep_payload(sweep_result, sample)
+        if not payload:
+            return
+        self.bus.publish(EVENT_SWEEP, payload)
 
     def phase(self, label: str) -> None:
         """Announce a change of flight phase. / 飛行フェーズの変化を伝える。"""
@@ -1446,6 +1488,14 @@ def _leg_points(mission) -> list:
     return points
 
 
+def _has_explore_leg(mission) -> bool:
+    """Whether this route asks the aircraft to look around at some point.
+    この経路が、どこかで機体に見回しを求めるか。"""
+    from sfpilot.mission import STEP_EXPLORE
+
+    return any(leg.step.verb == STEP_EXPLORE for leg in mission.legs)
+
+
 def _make_mission_announcer(live):
     """Report each leg on the terminal and, if open, on the page.
     各区間を端末に表示し、ページが開いていればそちらにも伝える。"""
@@ -1463,6 +1513,18 @@ def _fly_mission(request, mission, args, config) -> int:
 
     if args.fake:
         judge = MissionFakeJudge()
+        # A route containing an `explore` leg is also asked which way to
+        # go, and `MissionFakeJudge` has no rule for that question. The
+        # bearing judge answers both, so a keyless rehearsal of such a
+        # route exercises the whole path rather than holding at the sweep.
+        # `explore` 区間を含む経路は「どちらへ進むか」も問われるが、
+        # `MissionFakeJudge` はその質問の規則を持たない。方位の judge は両方に
+        # 答えるので、そうした経路のキー無しの予行が、掃引で止まらずに経路全体を
+        # 動かせる。
+        if _has_explore_leg(mission):
+            from sfpilot.judge import ExploreFakeJudge
+
+            judge = ExploreFakeJudge()
     else:
         try:
             judge = JevJudge(config)
@@ -1487,7 +1549,7 @@ def _fly_mission(request, mission, args, config) -> int:
         outcome = fly_in_sils(request, mission, judge, config, trace=trace,
                               on_event=_make_mission_announcer(live),
                               recording=recording, on_cycle=live.sample,
-                              on_decisions=live.watch)
+                              on_decisions=live.watch, on_sweep=live.sweep)
     except SilsUnavailable as exc:
         console.error(str(exc))
         return 1
@@ -1507,7 +1569,96 @@ def _fly_mission(request, mission, args, config) -> int:
     return 0 if outcome.completed else 1
 
 
+# =============================================================================
+# sf pilot explore
+# =============================================================================
+def run_explore(args: argparse.Namespace) -> int:
+    """Sweep the forward distance around a turn, then choose a way.
+
+    Refused before anything is launched while `ExploreConfig.enabled` is
+    False, which is the default and, today, the only correct setting: in
+    SILS the aircraft falls out of the air when it yaws at all
+    (docs/plans/jev-autopilot.md §4.9.1, §4.11). Refusing HERE rather than
+    inside the sweep is what makes the refusal cost nothing -- no
+    emulator, no takeoff, and so nothing to land.
+
+    Exit code 1, because the operator asked for a sweep and did not get
+    one. A zero would report success for a flight that never happened.
+
+    旋回しながら前方距離を掃き、進む方向を選ぶ。
+
+    `ExploreConfig.enabled` が False の間は、何も起動する前に拒否する。False が
+    既定であり、今日のところ唯一正しい設定である。SILS では、機体はヨー回転した
+    だけで落下する（docs/plans/jev-autopilot.md §4.9.1・§4.11）。掃引の内側では
+    なく**ここで**拒否することが、その拒否の代償を無くす —— エミュレータも離陸も
+    無く、したがって着陸すべきものも無い。
+
+    終了コードは 1 とする。操作者は掃引を求め、それを得られなかったからである。
+    0 を返せば、起きていない飛行を成功として報告することになる。
+    """
+    from sfpilot.config import DEFAULT_CONFIG
+
+    config = DEFAULT_CONFIG
+    if not config.explore.enabled:
+        console.error(
+            "探索（ヨー回転による掃引）は無効になっているため実行しません "
+            "/ exploration is disabled, so nothing was flown"
+        )
+        console.info(config.explore.disabled_reason)
+        return 1
+
+    if not args.sils:
+        console.error(
+            "`sf pilot explore` currently supports --sils only — flying real "
+            "hardware is P5 in docs/plans/jev-autopilot.md and is deliberately "
+            "not wired up （実機は未対応です）"
+        )
+        return 1
+    if not _confirmed(args):
+        return 1
+    return _fly_explore(args, config)
+
+
+def _fly_explore(args, config) -> int:
+    """Fly the pocket route, whose `explore` leg takes the sweep.
+
+    The sweep is not staged separately from a mission: an `explore` leg
+    already is one (`mission.STEP_EXPLORE`), and giving this command its
+    own copy of "take off, sweep, land" would be a second path through the
+    same manoeuvre, to drift apart from the first.
+
+    掃引のための段取りをミッションとは別に組まない。`explore` 区間が既にそれで
+    あり（`mission.STEP_EXPLORE`）、このコマンドに「離陸し、掃引し、着陸する」の
+    写しを持たせれば、同じ操作を通る経路が 2 本になり、いずれ食い違っていく。
+    """
+    from sfpilot.mission import MissionError
+    from sfpilot.mission_run import MissionRequest, describe_mission, prepare
+
+    try:
+        mission = prepare(EXPLORE_MISSION, config)
+    except MissionError as exc:
+        console.error(str(exc))
+        return 1
+
+    print()
+    for line in describe_mission(mission):
+        print(line)
+    print()
+
+    request = MissionRequest(mission_path=EXPLORE_MISSION, scene=args.scene,
+                             duration_s=config.mission.time_limit_s,
+                             fake=args.fake)
+    return _fly_mission(request, mission, args, config)
+
+
+# The route `sf pilot explore` flies. Named rather than spelled at the call
+# site so the command and the shipped file cannot come apart.
+# `sf pilot explore` が飛ばす経路。呼び出し箇所に直接書かず名前にして、コマンドと
+# 同梱ファイルが離れないようにする。
+EXPLORE_MISSION = "explore_pocket"
+
+
 def run(args: argparse.Namespace) -> int:
     """Fallback when no subcommand ran / サブコマンドが無い場合"""
-    console.error("usage: sf pilot {bench|replay|run|say|mission}")
+    console.error("usage: sf pilot {bench|replay|run|say|mission|explore}")
     return 1
