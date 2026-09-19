@@ -835,7 +835,7 @@ v2 は当初、この累計の差（＝前回**送信**からの変位）を `in
 
 ### 前方 ToF の供給経路（R11 の契約を実装）
 
-前方 ToF は 2026-09-19 に駆動を開始した（jev-autopilot P2b）。**実機未確認**である。かつて R11 に従って先に決めた 4 段階の契約を、そのまま実装したものである。
+前方 ToF は 2026-09-19 に駆動を開始した（jev-autopilot P2b）。同日、実機で確認済みである（`docs/plans/jev-autopilot.md` §4.8）。かつて R11 に従って先に決めた 4 段階の契約を、そのまま実装したものである。
 
 | 段階 | 内容 | 実装 |
 |------|------|------|
@@ -1124,20 +1124,59 @@ The subtraction lives in **one place**, `flow_delta(prev_total16, cur_total16)` 
 
 `TELEM_VERSION` was not raised to 3 despite the change of meaning, because **v2 itself was born on the `feat/jev-autopilot` branch on 2026-09-19 and was corrected on the same day on the same branch: no released firmware ever sent the old meaning.** Raising it would make every receiver carry a decode path for a packet that exists nowhere. Before making the change, the repository was checked for other consumers assuming the v2 difference; the only readers of `flow_dx_sum` were `sf telemetry`, `telemetry_web` and their tests, all of which were updated with it.
 
-### Forward-ToF reserved slot and its future supply contract (R11)
+### How the forward ToF is supplied (the R11 contract, now implemented)
 
-The forward ToF **exists in hardware but is not driven by the current firmware**: `TofTask` holds its XSHUT low, keeping it in reset. Both VL53L3CX parts boot at I2C address 0x29, so re-addressing the bottom sensor while the front one is awake would reach both and interleave their ranging data.
+The forward ToF started being driven on 2026-09-19 (jev-autopilot P2b), and was confirmed on hardware the same day (`docs/plans/jev-autopilot.md` §4.8). It implements, unchanged, the four-step contract that had been fixed in advance under R11.
 
-The slot is reserved now and the supply contract is fixed per R11. **Implementation comes later.**
+| Step | Content | Implementation |
+|------|---------|----------------|
+| 1 | `TofTask` performs an XSHUT-staggered two-sensor bring-up | `tasks/tof_task.cpp::startTofSensors()` |
+| 2 | A dedicated topic `sensor_tof_front`. **It shares no variable and no topic with the bottom sensor.** Bottom and front once updated the same timestamp variable, and on battery power the front sensor initialised successfully and made the rate appear doubled (`docs/architecture/udp-telemetry-design.md` §2, "one data source = one variable") | `sf_core/include/topics.hpp` |
+| 3 | `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp` added to `SensorSnapshot`, mirrored by `ImuTask` | `sf_core/include/data_types.hpp`, `tasks/imu_task.cpp` (`tof_front_status` added alongside) |
+| 4 | Telemetry reads them from `sensor_snapshot` and fills bit1 and `tof_front` | `sf_telemetry/telemetry.cpp` |
 
-| Step | Content |
-|------|---------|
-| 1 | Implement the XSHUT-staggered two-sensor bring-up in `TofTask` |
-| 2 | Add a dedicated topic `sensor_tof_front`. **It must not share a variable or topic with the bottom sensor.** Bottom and front once updated the same timestamp variable, and on battery power the front sensor initialised successfully and made the rate appear doubled (`docs/architecture/udp-telemetry-design.md` §2, "one data source = one variable") |
-| 3 | Add `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp` to `SensorSnapshot`, mirrored by `ImuTask` |
-| 4 | Telemetry reads them from `sensor_snapshot` and fills bit1 and `tof_front` |
+#### Bring-up order (there is only one possible order)
 
-**This change does not perform steps 1–3** (neither the topic nor `SensorSnapshot` is modified). Current firmware always leaves bit1 clear and writes `kTelemTofFrontUnavailable` (-1.0) into `tof_front`, matching the value `ws::tof_front()` returns.
+Both VL53L3CX parts boot at I2C address 0x29. Re-addressing the bottom sensor while the front one is awake would reach **both** and interleave their ranging data. Hence the order is forced.
+
+| Stage | Action | Why in that order |
+|-------|--------|-------------------|
+| 1 | Front XSHUT = LOW (held in reset) | Leaves exactly one part answering at 0x29 |
+| 2 | Initialise the bottom sensor, move it to 0x30, through to `startRanging()` | **Exactly the previous procedure.** The bottom sensor is the only vertical observation the altitude estimate has, and its behaviour is not changed |
+| 3 | From then on, one stage per cycle in whatever time the cycle has left (`FrontBringUp`): `Wake` raises the front XSHUT → the next cycle's `Probe` calls `isPresentAt()` (a single model-id read) → only if the part is real, `init()` → 0x31 → `startRanging()` | The bottom sensor has already moved to its own address, so only the front part answers at 0x29. **This is deliberately not done all at once during setup**: with no front part fitted, the driver polls for boot completion for up to 500 ms before failing (`VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS`), which would leave the bottom sensor unread for about 15 cycles. Probing for presence first settles "not there" in a few ms, and the boot wait is absorbed into a sleep the cycle was going to take anyway, so **`last_wake` is never touched and the bottom sensor's 30 Hz phase does not move at all** (safety requirement 2) |
+
+If stage 3 fails, the front XSHUT goes back LOW and the task continues with `sensor_present(FrontToF) = false` (Optional, per R4). **Handling of a bottom-sensor failure is unchanged from before.**
+
+#### Design measures that keep the bottom sensor undisturbed
+
+The bottom ToF is the only vertical observation the altitude estimate has (the barometer is not fused by default) and is Critical (`hardware_init.md` §5). The front sensor is merely Optional. The design therefore guarantees the following.
+
+| Requirement | Means |
+|-------------|-------|
+| A front failure does not reach the bottom sensor | Topic, `SensorSnapshot` field, timestamp and `SensorId` are all separate. The front failure path returns XSHUT to LOW and ends there, touching no bottom-sensor state |
+| The bottom 30 Hz is not delayed by the front sensor | Within a cycle the bottom sensor is read **first and unconditionally**. The front one is read afterwards, only when the cycle has time to spare (`cycle_still_on_schedule`). With no time to spare, one front sample is dropped |
+| The front reading never enters the estimator | `ImuTask` **only mirrors** `sensor_tof_front`; it passes it to neither `g_estimator` nor `g_takeoff_landing`. The front reading observes an obstacle, not the vehicle's state, and the state vector does not model it |
+| It can be switched off at once if hardware misbehaves | Parameter `tof.front.enable` (default 1), read once by `TofTask` before the bring-up. `param set tof.front.enable 0; param save` takes effect **after a restart** (an address assignment cannot be surrendered at run time, so there is no live reload) |
+
+#### Estimated I2C bus occupancy
+
+How much of the bottom sensor's 33 ms period two sensors' reads take. The bus runs at 400 kHz and one byte is about 9 clocks (8 bits + ACK) = 22.5 µs.
+
+| Operation | Transfer | Time |
+|-----------|----------|------|
+| `isDataReady` (`GetMeasurementDataReady`) | About a 2-byte read (register address 2 + data 1; roughly 6 bytes including start/stop) | about 0.14 ms |
+| `getDistance` (`GetMultiRangingData`, `DEVICERESULTSLEVEL_FULL`) | The result block in one transaction: registers 0x0088–0x010E, **134 bytes** (covering system 44 + core 33 + debug 56), plus 2 for the address | about 3.1 ms |
+| `clearInterruptAndStartMeasurement` | A few bytes written | about 0.1 ms |
+| **Per sensor** | | **about 3.3 ms** |
+| **Both sensors** | | **about 6.6 ms (about 20% of the 33 ms period)** |
+
+The remaining 27 ms covers the other tasks on the same bus (BMP280 at 50 Hz, BMM150 at 25 Hz, INA3221 at 10 Hz — each a few tens of bytes per read) and the margin. **Adding the front sensor leaves bus occupancy at about a fifth of the period**, which does not threaten the bottom sensor's 30 Hz. Note that `getDistance` only runs on a cycle that has a new sample, so the figures above are worst cases.
+
+The `cycle_still_on_schedule` skip is kept even so, to **drop a front sample rather than delay the bottom sensor's next read** if clock stretching or a retrying part makes the bus unexpectedly slow.
+
+#### The Data Stream (400 Hz log) is out of scope here
+
+Carrying the forward ToF in the Data Stream is **not done here**. Telemetry at 50 Hz is enough for the purpose (monitoring, and supplying `sf pilot`), and changing the wire format is separate work that should be verified on its own. `lib/sflog` already defines a `tof_front` stream at wire id **0x47**, which is what to use when the time comes. **0x49 must not be used** (`data_stream_wire.hpp:68-79`).
 
 ### Related files
 

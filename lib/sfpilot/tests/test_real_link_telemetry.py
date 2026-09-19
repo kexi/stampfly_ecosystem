@@ -27,7 +27,7 @@ from sfcli.commands.telemetry import (
     FLOAT_NAMES, TELEM_FMT, TELEM_MAGIC, TELEM_SIZE, TELEM_SIZE_V2,
     TELEM_V2_FMT, TELEM_VERSION_V2, VALID_BITS,
 )
-from sfpilot.link import TELEM_PORT, RealLink
+from sfpilot.link import RealLink
 
 # A hovering craft, 0.8 m up, sliding slowly north-east.
 # 0.8m でホバリングし、北東へゆっくり流れている機体。
@@ -86,37 +86,69 @@ def _v2_packet(voltage: float = 3.9, tof: float = 0.79,
     return head + tail
 
 
+def _free_udp_port() -> int:
+    """A UDP port the OS says is free right now. / いま空いている UDP ポート。
+
+    The port is chosen by binding :0 and reading back what the OS picked, then
+    closing that probe. A real vehicle broadcasts to :5005 and nothing else, so
+    a port chosen this way carries only what this test sends into it.
+    :0 で bind して OS が選んだ番号を読み取り、その調べ用ソケットを閉じて得る。
+    実機が放送するのは :5005 だけなので、こうして選んだポートには本試験が
+    送ったものしか流れてこない。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.bind(("", 0))
+        return probe.getsockname()[1]
+
+
 @pytest.fixture
 def link():
-    """A RealLink whose :5005 socket is bound, or the test is skipped.
+    """A RealLink listening on a port of this test's own, or the test is skipped.
 
-    Skipped rather than failed when the port is taken: another session or
-    a djitellopy script legitimately holds it, and that is not a defect in
-    this code.
-    :5005 を bind できた RealLink。取れなければ試験を飛ばす。
+    NOT :5005, deliberately. Nothing else holds that port, so binding it
+    succeeds even with a vehicle on the same network -- and the vehicle's own
+    50Hz broadcast is then delivered here alongside the synthetic packets
+    below, which made two to five of these tests fail at random whenever the
+    Mac was on the craft's WiFi (measured 2026-09-19: 140-byte packets from
+    192.168.10.1 arriving throughout the run). The port is the only thing
+    that separates the two streams.
 
-    ポートが使用中のときは失敗ではなく skip とする。別のセッションや
-    djitellopy のスクリプトが正当に握っている場合があり、本コードの不具合では
-    ないためである。
+    本試験専用のポートで受ける RealLink。取れなければ試験を飛ばす。
+
+    :5005 は**あえて**使わない。そのポートは他の誰も握っていないので、同じ網に
+    機体が居ても bind は成功し、機体自身の 50Hz 放送が下の合成パケットと混ざって
+    ここへ届く。そのため Mac が機体の WiFi につながっていると、本ファイルの試験が
+    実行のたびに 2〜5 件、無作為に落ちていた（2026-09-19 実測: 192.168.10.1 からの
+    140 バイトのパケットが実行中ずっと届いていた）。2 つの流れを分けられるのは
+    ポートだけである。
+
+    Skipped rather than failed when the ports cannot be bound: another session
+    or a djitellopy script legitimately holds :8890, and that is not a defect
+    in this code.
+    ポートを bind できないときは失敗ではなく skip とする。別のセッションや
+    djitellopy のスクリプトが :8890 を正当に握っている場合があり、本コードの
+    不具合ではないためである。
     """
+    port = _free_udp_port()
     try:
-        real_link = RealLink("127.0.0.1")
+        real_link = RealLink("127.0.0.1", telem_port=port)
     except OSError as exc:
         pytest.skip(f"cannot bind the telemetry ports: {exc}")
     if real_link._telem_sock is None:
         real_link.close()
-        pytest.skip(f"UDP:{TELEM_PORT} is already in use")
+        pytest.skip(f"UDP:{port} is already in use")
     yield real_link
     real_link.close()
 
 
 def _deliver(link, packets, timeout_s: float = 2.0) -> list:
-    """Send packets to :5005 and return what read_samples() makes of them.
-    パケットを :5005 へ送り、read_samples() の結果を返す。"""
+    """Send packets to the link's own port and return what read_samples() makes
+    of them.
+    パケットをリンク自身のポートへ送り、read_samples() の結果を返す。"""
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         for packet in packets:
-            sender.sendto(packet, ("127.0.0.1", TELEM_PORT))
+            sender.sendto(packet, ("127.0.0.1", link.telem_port))
     finally:
         sender.close()
 
@@ -269,12 +301,12 @@ def test_a_v1_packet_carries_no_flow_key(link):
 
 
 def test_a_packet_that_is_not_telemetry_is_ignored(link):
-    """Stray datagrams on :5005 do not become Samples.
-    :5005 に紛れ込んだ datagram が Sample にならないこと。"""
+    """Stray datagrams on the telemetry port do not become Samples.
+    テレメトリのポートに紛れ込んだ datagram が Sample にならないこと。"""
     sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sender.sendto(b"not a telemetry packet at all", ("127.0.0.1", TELEM_PORT))
-        sender.sendto(b"\x00" * TELEM_SIZE, ("127.0.0.1", TELEM_PORT))  # bad magic
+        sender.sendto(b"not a telemetry packet at all", ("127.0.0.1", link.telem_port))
+        sender.sendto(b"\x00" * TELEM_SIZE, ("127.0.0.1", link.telem_port))  # bad magic
     finally:
         sender.close()
 

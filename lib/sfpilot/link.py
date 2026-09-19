@@ -204,7 +204,30 @@ def parse_state_line(text: str) -> dict:
 # 支えられない。
 # =============================================================================
 class RealLink:
-    def __init__(self, host: str):
+    def __init__(self, host: str, telem_port: int = TELEM_PORT):
+        """Talk to the vehicle at `host`, listening for telemetry on `telem_port`.
+
+        `telem_port` exists for the tests. A real flight always leaves it at
+        :5005, which is where the firmware broadcasts. A test cannot: nothing
+        else holds :5005, so the bind SUCCEEDS even with a vehicle on the same
+        network, and that vehicle's own 50Hz broadcast is then delivered into
+        the test's socket alongside the synthetic packets the test sent itself.
+        Giving the test its own port is what separates the two streams.
+        Narrowing the bind to 127.0.0.1 would NOT: the vehicle broadcasts to
+        255.255.255.255, which the host delivers to a socket bound to the
+        matching port on the interface that received it.
+
+        `host` の機体と通信し、テレメトリは `telem_port` で受ける。
+
+        `telem_port` は試験のためにある。実際の飛行では常に :5005 のままでよく、
+        ファームが放送するのがそのポートである。試験はそうはいかない。:5005 は
+        他の誰も握っていないので、同じ網に機体が居ても bind は**成功**し、その機体
+        自身の 50Hz 放送が、試験が自分で送った合成パケットと混ざって同じソケットへ
+        届く。2 つの流れを分けるのは、試験に専用のポートを与えることである。
+        bind を 127.0.0.1 に絞っても分けられない。機体が放送する宛先は
+        255.255.255.255 であり、それを受け取ったネットワークインタフェースで同じ
+        ポートに bind したソケットへ配送されるためである。
+        """
         self.host = host
         # Command socket: bound to an ephemeral local port. The firmware
         # replies to whatever (ip, port) the command datagram arrived FROM
@@ -251,6 +274,8 @@ class RealLink:
                 f"djitellopy / sf blocks を終了してください)"
             )
 
+        self.telem_port = telem_port
+
         # Telemetry socket (UDP:5005, 50Hz). Bound separately from :8890 and
         # allowed to fail: `sf blocks` never needed it, and firmware older
         # than the v2 packet still flies -- losing it costs the fast sample
@@ -262,7 +287,7 @@ class RealLink:
         # read_samples() は起動を拒まず 10Hz 状態文字列へ退く。
         self._telem_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self._telem_sock.bind(("", TELEM_PORT))
+            self._telem_sock.bind(("", telem_port))
         except OSError:
             self._telem_sock.close()
             self._telem_sock = None
