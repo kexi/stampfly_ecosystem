@@ -75,13 +75,21 @@ public:
     /// 上限に本基板の電源立ち上がり分の余裕を足した値で、init() が従来待ってきた量でもある。
     static constexpr uint32_t BOOT_TIME_MS = 4;
 
-    /// IDENTIFICATION__MODEL_ID register, and the values a genuine VL53L3CX
-    /// reports there. The driver's own DataInit accepts 0xEB and 0xEC.
-    /// IDENTIFICATION__MODEL_ID レジスタと、本物の VL53L3CX が返す値。ドライバ自身の
-    /// DataInit も 0xEB / 0xEC を受け入れる。
+    /// IDENTIFICATION__MODEL_ID register and the value a VL53L3CX reports there.
+    /// 0xEA is the model id of ST's VL53L1-generation die, which the VL53L3CX
+    /// shares (module type 0xAA at 0x0110). Why not 0xEB/0xEC: those are what the
+    /// bundled driver's IsL4() (vl53lx_api.c) tests for, i.e. the VL53L4CX, a
+    /// different part. An earlier version of this probe took them for the
+    /// VL53L3CX and, on the real vehicle (2026-09-19), turned away a front
+    /// sensor that had ACKed at 0x29. A mismatch is logged with the value read.
+    /// IDENTIFICATION__MODEL_ID レジスタと、VL53L3CX がそこで返す値。0xEA は ST の
+    /// VL53L1 世代のダイの model id で、VL53L3CX も同じ値を返す（0x0110 の module type
+    /// は 0xAA）。0xEB/0xEC にしない理由: それは同梱ドライバの IsL4()（vl53lx_api.c）が
+    /// 調べる値、つまり別の部品 VL53L4CX のものである。この在否確認の以前の版はそれを
+    /// VL53L3CX の値と取り違え、実機（2026-09-19）で 0x29 に ACK を返した前方センサーを
+    /// 拒否した。不一致のときは読めた値をログに出す。
     static constexpr uint16_t MODEL_ID_REG = 0x010F;
-    static constexpr uint8_t  MODEL_ID_A   = 0xEB;
-    static constexpr uint8_t  MODEL_ID_B   = 0xEC;
+    static constexpr uint8_t  MODEL_ID     = 0xEA;
 
     /**
      * @brief Cheaply test whether a VL53L3CX is actually present at `addr`.

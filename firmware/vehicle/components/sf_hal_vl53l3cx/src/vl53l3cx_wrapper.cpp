@@ -139,10 +139,14 @@ bool VL53L3CXWrapper::isPresentAt(i2c_master_bus_handle_t i2c_bus, uint8_t addr)
         ESP_LOGD(TAG, "probe at 0x%02X: no answer (%s)", addr, esp_err_to_name(ret));
         return false;
     }
-    const bool is_vl53l3cx = (model_id == MODEL_ID_A) || (model_id == MODEL_ID_B);
+    const bool is_vl53l3cx = (model_id == MODEL_ID);
     if (!is_vl53l3cx) {
-        ESP_LOGD(TAG, "probe at 0x%02X: model id 0x%02X is not a VL53L3CX",
-                 addr, model_id);
+        // WARN, not DEBUG: something answered but was turned away. Without the
+        // value in the log a wrong expectation here is invisible on hardware.
+        // DEBUG ではなく WARN: 何かが応答したのに拒否した場合である。読めた値が
+        // ログに無いと、ここの期待値の誤りは実機で見えない。
+        ESP_LOGW(TAG, "probe at 0x%02X: model id 0x%02X is not a VL53L3CX (want 0x%02X)",
+                 addr, model_id, MODEL_ID);
     }
     return is_vl53l3cx;
 }

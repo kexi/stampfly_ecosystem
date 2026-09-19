@@ -673,7 +673,7 @@ SILS でもこれは `stab_flight` の `att_rmse` と決定論性 SHA256 のず�
 
 | 段 | 内容 |
 |----|------|
-| 安価な在否確認を先に | `VL53L3CXWrapper::isPresentAt()` を新設。`IDENTIFICATION__MODEL_ID`（0x010F）を**レジスタ 1 本だけ**読み、VL53L3CX の model id（0xEB/0xEC）が返ったときだけ本物と判定する。NACK・不一致なら**ドライバの重い `init()` を呼ばずに**即 XSHUT=LOW へ戻して `sensor_present(FrontToF)=false`。I2C タイムアウト 10ms が最悪時間を抑える。素の ACK ではなく model id を読むのは、既定で ACK を返すバスと本物を区別するためである |
+| 安価な在否確認を先に | `VL53L3CXWrapper::isPresentAt()` を新設。`IDENTIFICATION__MODEL_ID`（0x010F）を**レジスタ 1 本だけ**読み、VL53L3CX の model id（0xEA。当初 0xEB/0xEC としたのは誤りで、それは VL53L4CX の値。実機確認で判明し修正）が返ったときだけ本物と判定する。NACK・不一致なら**ドライバの重い `init()` を呼ばずに**即 XSHUT=LOW へ戻して `sensor_present(FrontToF)=false`。I2C タイムアウト 10ms が最悪時間を抑える。素の ACK ではなく model id を読むのは、既定で ACK を返すバスと本物を区別するためである |
 | 起動を周期に分散 | 起動を `FrontBringUp{Wake→Probe→Done}` の 3 状態にし、**1 周期に 1 段だけ**進める。`Wake` は XSHUT を上げるだけ（GPIO 書き込み 1 回）で、**起動待ちは「どのみち眠る予定だった周期のスリープ」に吸収させる** — 専用の `vTaskDelay` を持たない。`Probe` は次の周期に走るので、部品は 33ms（`BOOT_TIME_MS`=4ms を十分上回る）の起動時間を得ている。どの段も底面を読んだ後の余り時間で、`cycle_still_on_schedule` の下で走り、**`last_wake` に一切触れない** |
 
 HAL 側（`isPresentAt()`）は待たず XSHUT にも触れない設計にした。待ちと XSHUT は呼び出し側の周期に属する関心事であり、HAL に持たせると周期を持たない呼び出し側から使えなくなるためである。
