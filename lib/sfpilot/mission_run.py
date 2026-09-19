@@ -61,7 +61,7 @@ def prepare(path: str, config=DEFAULT_CONFIG):
     何かを起動する前にミッションを読み込み、検査する。
 
     飛ばすことと分けてあるのは、`--dry-run` と実行前の確認の双方が、検査済みの
-    経路を見られるようにするためである。包絡による拒否は、機体が地上にあるうちに
+    経路を見られるようにするためである。飛行領域による拒否は、機体が地上にあるうちに
     操作者へ届く必要がある。`instruction.check_envelope` と同じ規則である。
     """
     return load_mission(resolve_mission_path(path), config)

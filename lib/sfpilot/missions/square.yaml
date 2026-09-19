@@ -31,7 +31,7 @@
 # -- a 20 cm side would be almost entirely tolerance, and "as planned"
 # would stop meaning anything.
 #
-# 一辺を 0.6m にした理由: 4 辺で離陸点から 0.85m の角に達し、包絡の半径 2m の
+# 一辺を 0.6m にした理由: 4 辺で離陸点から 0.85m の角に達し、飛行領域の半径 2m の
 # 十分内側に収まる。かつ、機体の到達許容 0.15m が各辺に占める割合が小さくなる
 # 長さでもある — 一辺 20cm ではほとんどが許容誤差になり、「目標どおり」が何も
 # 意味しなくなる。

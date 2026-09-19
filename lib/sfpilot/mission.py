@@ -36,7 +36,7 @@ lives in code where it cannot be argued with.
 
 4 つの上限はコードだけが持ち、どの答えもそれを覆さない: 区間あたりのやり直し
 回数、ミッション全体の時間、電池が「残り少ない」ときに進むことの禁止、そして
-包絡である。電池が少ないときに Jev が `next_step` を選ぶこと自体は誤りではない
+飛行領域である。電池が少ないときに Jev が `next_step` を選ぶこと自体は誤りではない
 （見えているのは「残り少ない」という語だけで、電池計ではない）。それでも機体は
 次の区間を飛んではならないので、却下はコード側に置き、議論の余地を無くす。
 """
@@ -115,7 +115,7 @@ class Leg:
     経路の 1 区間: 1 つの動作と、それを呼ぶ名前。
 
     動作には専用の型を作らず `instruction.Step` を再利用する。区間と指示の手順が
-    まったく同じコードで飛び、まったく同じ包絡で検査されるようにするためである。
+    まったく同じコードで飛び、まったく同じ飛行領域で検査されるようにするためである。
     `sf pilot say` の手順として飛べない経路は、ミッションとしても飛ばせない。
     """
 
@@ -152,7 +152,7 @@ class Leg:
 @dataclass
 class Mission:
     """A whole route, already checked against the envelope.
-    経路一式。包絡の検査は済んでいる。"""
+    経路一式。飛行領域の検査は済んでいる。"""
 
     name: str = ""
     purpose: str = ""
@@ -220,7 +220,7 @@ def load_mission(path, config=DEFAULT_CONFIG) -> Mission:
 
     ミッションファイルを読み、飛べないものはこの時点で拒否する。
 
-    違反する区間に達してからではなく読み込み時に包絡を検査するのは、
+    違反する区間に達してからではなく読み込み時に飛行領域を検査するのは、
     `sf pilot say` と同じ規則である。範囲を出る経路は、機体がまだ地上にあり、
     どの区間が問題かを伝えられる操作者がそこにいるうちに拒否すべきである。
     """
@@ -231,7 +231,7 @@ def load_mission(path, config=DEFAULT_CONFIG) -> Mission:
 
     breach = _envelope_breach(legs, config)
     if breach:
-        raise MissionError(f"{path}: 包絡の事前検査で拒否した — {breach}")
+        raise MissionError(f"{path}: 飛行領域の事前検査で拒否した — {breach}")
 
     return Mission(
         name=str(data.get("name") or Path(path).stem),

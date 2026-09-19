@@ -20,7 +20,7 @@ labour it fixes, and that every module here obeys:
     しきい値・時間を渡さない。
   - 言葉の判断は **Jev**（Judge）。あらかじめ列挙した有限の行動からのみ選ぶ。
   - 実行の可否は**コード**（Arbiter）。Jev の答えは提案であり、期限超過・
-    鮮度切れ・低確信・包絡外の提案はすべて「その場で待機」に置き換える。
+    鮮度切れ・低確信・飛行領域外の提案はすべて「その場で待機」に置き換える。
 
 Import policy: this package's core (config / monitor / summarizer /
 arbiter / trace) is standard-library only, so pytest runs without an API

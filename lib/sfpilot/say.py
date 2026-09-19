@@ -402,6 +402,13 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
         cycle_start = time.monotonic()
         pilot.step()
         link.hold_sticks_neutral()
+        # Drive the scene on the same cycle as everything else. A scene that
+        # places obstacles needs a cycle to place them on, and the first one
+        # is the earliest at which the Plant is certainly attached.
+        # 他の全てと同じ周期で場面を駆動する。障害物を置く場面には置くための周期が
+        # 要り、最初の周期が Plant の接続を確実に待てる最も早い時点である。
+        if scene is not None and scene.drive is not None:
+            scene.drive(link, cycle_start - started, config.mission.time_limit_s)
         if on_cycle is not None:
             on_cycle(pilot.monitor.latest_sample, cycle_start)
         _report_progress(runner, outcome, on_step)

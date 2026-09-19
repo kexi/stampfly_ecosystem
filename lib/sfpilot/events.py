@@ -131,8 +131,16 @@ def sample_payload(sample, phase: str = None) -> dict:
     if not sample:
         return {}
     payload = {"t": round(sample.get("t", 0.0), 3)}
+    # `tof_front_m` is absent from most samples, and its absence is meaningful
+    # (nothing measured ahead), so the loop's "skip a missing value" rule
+    # carries it: the page then draws the forward ray only when there is a
+    # reading to draw, rather than drawing a ray of length zero.
+    # `tof_front_m` は多くのサンプルに無く、その不在には意味がある（前方に測れた
+    # ものが無い）。この繰り返しの「無い値は写さない」規則がそれをそのまま運ぶので、
+    # ページは長さ 0 の線ではなく「描くべき読み値があるときだけ」前方の線を描く。
     for key in ("altitude_m", "pos_n", "pos_e", "vel_n", "vel_e", "vel_d",
-                "roll", "pitch", "yaw", "battery_pct", "battery_v", "tof_m"):
+                "roll", "pitch", "yaw", "battery_pct", "battery_v", "tof_m",
+                "tof_front_m"):
         value = sample.get(key)
         if value is not None:
             payload[key] = round(float(value), 4)

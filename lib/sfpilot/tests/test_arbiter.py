@@ -22,7 +22,7 @@ SIG = "flight.altitude=on target"
 
 def _healthy_assessment(**numeric):
     """An assessment with no immediate safety rule firing, inside the envelope.
-    即時安全則が働かず、包絡内にある評価。"""
+    即時安全則が働かず、飛行領域内にある評価。"""
     values = {"altitude_m": 0.8, "pos_n": 0.0, "pos_e": 0.0}
     values.update(numeric)
     return Assessment(safety_action=SAFETY_NONE, numeric=values)
@@ -50,7 +50,7 @@ def _decide(arbiter, judgement, asked=SIG, current=SIG, now=0.0, assessment=None
 
 def test_confident_answer_is_accepted():
     """A fast, confident, in-envelope answer is carried out as given.
-    速く・確信度が高く・包絡内の答えはそのまま実行されること。"""
+    速く・確信度が高く・飛行領域内の答えはそのまま実行されること。"""
     verdict = _decide(Arbiter(), _confident_continue())
     assert verdict.action == "continue"
     assert verdict.source == "judge"
@@ -104,14 +104,14 @@ def test_continue_land_tie_becomes_hover():
 
 def test_outside_envelope_becomes_hover():
     """A "continue" proposed while outside the altitude envelope is refused.
-    高度が包絡外のときの「継続」は却下されること。"""
+    高度が飛行領域外のときの「継続」は却下されること。"""
     too_high = DEFAULT_CONFIG.envelope.altitude_max_m + 0.1
     verdict = _decide(
         Arbiter(), _confident_continue(),
         assessment=_healthy_assessment(altitude_m=too_high),
     )
     assert verdict.action == VERDICT_HOVER
-    assert "包絡外" in verdict.reason
+    assert "飛行領域外" in verdict.reason
 
 
 def test_outside_radius_becomes_hover():
@@ -123,7 +123,7 @@ def test_outside_radius_becomes_hover():
         assessment=_healthy_assessment(pos_n=far, pos_e=0.0),
     )
     assert verdict.action == VERDICT_HOVER
-    assert "包絡外" in verdict.reason
+    assert "飛行領域外" in verdict.reason
 
 
 def test_api_error_becomes_hover():

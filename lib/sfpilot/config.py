@@ -1,6 +1,6 @@
 """
 sfpilot.config - every threshold, deadline and envelope in one place.
-sfpilot.config - しきい値・期限・包絡をここ 1 か所に集める。
+sfpilot.config - しきい値・期限・飛行領域をここ 1 か所に集める。
 
 Why a config module rather than constants next to each user: Monitor,
 Arbiter and Executor must agree on the same numbers (a deadline the
@@ -331,7 +331,7 @@ class InstructionConfig:
     # ground: what `takeoff` reaches before the first commanded move. The
     # envelope pre-check walks from here.
     # 地上から始まる指示の起点高度。最初の移動の前に `takeoff` が到達する高度で
-    # ある。包絡の事前検査はここから積算する。
+    # ある。飛行領域の事前検査はここから積算する。
     takeoff_altitude_m: float = 0.5
 
 
@@ -480,7 +480,7 @@ class MissionConfig:
     # A leg's `go` speed [cm/s] when the route says `return_home`. Kept at
     # the envelope's own horizontal ceiling so a mission cannot fly faster
     # than a hand-written instruction may.
-    # 経路が `return_home` と言うときの `go` の速度 [cm/s]。包絡自身の水平上限に
+    # 経路が `return_home` と言うときの `go` の速度 [cm/s]。飛行領域自身の水平上限に
     # 合わせ、ミッションが手書きの指示より速く飛べないようにする。
     return_speed_cm_s: float = 50.0
 
@@ -597,6 +597,93 @@ class SilsConfig:
     # 判断する価値のある状況である。
     drift_wind_n: float = 0.060
 
+    # `wall_ahead` / `dead_end`: obstacle geometry in NED [m], placed through
+    # the emulator's `wall` stdin verb before the flight starts.
+    #
+    # The wall stands 1.0 m north of the takeoff point because that is inside
+    # the forward part's reliable band (Plant tof_front_max_m = 2.0 m) while
+    # leaving room to approach it: the craft starts stopping at
+    # ForwardConfig.stop_distance_m, so a wall closer than that would already
+    # be inside the stop band when the flight begins and nothing would be
+    # tested. Width 2.0 m (±1.0 m either side) so a small heading error during
+    # the approach does not let the beam slip past the end of the segment —
+    # that would read as "the wall vanished" rather than as an approach.
+    #
+    # `wall_ahead` / `dead_end`: 障害物の配置（NED [m]）。飛行開始前にエミュレータの
+    # `wall` で置く。
+    #
+    # 壁を離陸点の北 1.0m に置くのは、そこが前方の信頼帯域（Plant の
+    # tof_front_max_m = 2.0m）の内側でありながら、近づく余地を残すからである。機体は
+    # ForwardConfig.stop_distance_m で止まり始めるので、それより近い壁は飛行開始時点で
+    # 既に停止帯域の中にあり、何も試験されない。幅 2.0m（左右 ±1.0m）にするのは、接近中の
+    # わずかな方位の誤差でビームが線分の端から外れないようにするためである ―― 外れれば
+    # 「壁が消えた」と読めてしまい、接近としては読めない。
+    wall_distance_m: float = 1.0
+    wall_half_width_m: float = 1.0
+
+    # `dead_end`: the same wall ahead, plus one side wall, leaving the OTHER
+    # side open. The side wall runs from beside the craft out to the far wall
+    # so the pocket is closed on three sides. Which side is closed is fixed
+    # (east), not random: a scene that differs between runs cannot be the
+    # basis of a repeatable measurement.
+    # `dead_end`: 同じ正面の壁に加えて片側の壁を置き、「反対側」を開けておく。側壁は
+    # 機体の横から奥の壁まで伸び、袋小路を三方で閉じる。閉じる側（東）は固定であって
+    # 無作為ではない: 実行ごとに変わる場面は、再現できる測定の土台にならない。
+    dead_end_side_m: float = 1.0
+
+
+@dataclass(frozen=True)
+class ForwardConfig:
+    """Forward-distance thresholds: the immediate stop rule and the words.
+    前方距離のしきい値: 即時停止則と、区分の語。
+
+    Every number here is a distance in metres from the forward sensor, and the
+    bands are ordered: stop_distance_m < wall_near_m < somewhat_near_m. The
+    Monitor classifies into words with these, and the immediate rule fires on
+    the first of them WITHOUT waiting for Jev.
+
+    ここの数値はすべて前方センサからの距離 [m] であり、帯域は
+    stop_distance_m < wall_near_m < somewhat_near_m の順に並ぶ。Monitor はこれらで
+    語に区分し、即時則は最初のしきい値で Jev を待たずに発火する。
+    """
+
+    # Stop here. Chosen from what the craft can actually do, not from comfort:
+    # the envelope allows 0.5 m/s (EnvelopeConfig.speed_max_mps) and SILS
+    # measures roughly 0.4 m of travel between a `stop` being sent and the
+    # craft being still, so a 0.5 m trigger leaves the stop finishing at about
+    # 0.1 m from the wall rather than through it.
+    # ここで止まる。心地よさではなく機体に実際にできることから決めた: 飛行領域は 0.5m/s を
+    # 許し（EnvelopeConfig.speed_max_mps）、SILS では `stop` の送信から静止までおよそ
+    # 0.4m 進む。したがって 0.5m で引くと、停止は壁を突き抜けるのではなく壁の手前
+    # 約 0.1m で終わる。
+    stop_distance_m: float = 0.5
+
+    # Hysteresis: once stopped, the reading must come back out past this
+    # before "wall near" is withdrawn. Without a gap the classification
+    # chatters at the boundary, and a chattering stop rule is a craft that
+    # alternately brakes and accelerates at a wall.
+    # ヒステリシス: 一度止まったら、読み値がここまで戻らない限り「壁が近い」を
+    # 取り下げない。差を設けないと区分は境界でばたつき、ばたつく停止則とは、壁の前で
+    # 制動と加速を交互に繰り返す機体のことである。
+    release_distance_m: float = 0.7
+
+    # The word bands above the stop threshold.
+    # 停止しきい値より上の、語の帯域。
+    wall_near_m: float = 0.8
+    somewhat_near_m: float = 1.5
+
+    # How long an invalid forward reading stays "the last thing we saw" before
+    # it becomes "unknown". An invalid reading is genuinely ambiguous -- empty
+    # space and a surface too close both produce it (§4.8.6) -- so the recent
+    # past is the only thing that distinguishes them. Two seconds is about
+    # sixty 30Hz samples: long enough that a handful of dropped readings do
+    # not erase a wall, short enough that a stale wall does not outlive a turn.
+    # 無効な前方の読み値が「最後に見たもの」で居続け、やがて「不明」になるまでの時間。
+    # 無効は本当に曖昧である ―― 空間も、近すぎる面も、どちらも無効を生む（§4.8.6）――
+    # ので、両者を分けられるのは直前の履歴だけである。2 秒は 30Hz の約 60 サンプルで、
+    # 数個の取りこぼしで壁が消えない程度に長く、古い壁が旋回を越えて残らない程度に短い。
+    invalid_grace_s: float = 2.0
+
 
 @dataclass(frozen=True)
 class PilotConfig:
@@ -611,6 +698,7 @@ class PilotConfig:
     landing: LandingConfig = field(default_factory=LandingConfig)
     mission: MissionConfig = field(default_factory=MissionConfig)
     sils: SilsConfig = field(default_factory=SilsConfig)
+    forward: ForwardConfig = field(default_factory=ForwardConfig)
 
     monitor_hz: float = MONITOR_HZ
     executor_rc_hz: float = EXECUTOR_RC_HZ

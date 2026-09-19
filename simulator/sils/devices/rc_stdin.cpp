@@ -150,6 +150,24 @@ void process_line(const std::string& raw_line, int64_t now_us)
         }
         sils_board_set_wind(static_cast<float>(fx), static_cast<float>(fy),
                             static_cast<float>(fz));
+    } else if (cmd == "wall") {
+        // Place a vertical wall for the forward ToF, as a segment in NED [m]:
+        // "wall <n0> <e0> <n1> <e1>". A scene sends these once before the flight
+        // starts. Unlike `wind` there is no "remove" form — an obstacle that can
+        // vanish mid-flight would be a physical impossibility the pilot layer
+        // could never be expected to handle.
+        // 前方 ToF が見る垂直な壁を NED [m] の線分として置く。場面は飛行開始前に
+        // 1 度送る。`wind` と違い「取り除く」形は無い ―― 飛行中に消える障害物は
+        // 物理的にありえず、操縦層に対処を期待できるものではない。
+        double n0 = 0.0, e0 = 0.0, n1 = 0.0, e1 = 0.0;
+        if (!(iss >> n0 >> e0 >> n1 >> e1)) {
+            std::fprintf(stderr,
+                "[rc_stdin] bad 'wall' line (need 'wall <n0> <e0> <n1> <e1>'): %s\n",
+                line.c_str());
+            return;
+        }
+        sils_board_add_wall(static_cast<float>(n0), static_cast<float>(e0),
+                            static_cast<float>(n1), static_cast<float>(e1));
     } else if (cmd == "vbatt") {
         double volts = 0.0;
         if (!(iss >> volts)) {
@@ -162,7 +180,8 @@ void process_line(const std::string& raw_line, int64_t now_us)
         g_quit_requested = true;
     } else {
         std::fprintf(stderr,
-                     "[rc_stdin] unknown command '%s' (want: rc/arm/land/api/wind/vbatt/quit)\n",
+                     "[rc_stdin] unknown command '%s' "
+                     "(want: rc/arm/land/api/wind/wall/vbatt/quit)\n",
                      cmd.c_str());
     }
 }
@@ -195,7 +214,8 @@ void sils_rc_stdin_init(void)
     g_fd = real_stdin;
     std::printf("[rc_stdin] SILS_EMU_RC_STDIN enabled — reading "
                 "'rc <roll> <pitch> <yaw> <throttle>' / 'arm' / 'land' / "
-                "'api <command>' / 'wind <fx> <fy> <fz>' / 'vbatt <volts>' / 'quit' from stdin\n");
+                "'api <command>' / 'wind <fx> <fy> <fz>' / 'wall <n0> <e0> <n1> <e1>' / "
+                "'vbatt <volts>' / 'quit' from stdin\n");
 }
 
 void sils_rc_stdin_tick(int64_t now_us)

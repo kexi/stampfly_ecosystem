@@ -345,6 +345,7 @@ if(SILS_BUILD_EMU)
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/vl53_platform_glue.c  # missing fw platform fn
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/virtual_board.cpp     # E1: BMI270 + motors → Plant
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/vl53_device.cpp       # E2: VL53L3CX ToF chip model
+    ${CMAKE_CURRENT_SOURCE_DIR}/devices/vl53_front_device.cpp # forward ToF (XSHUT-gated, SILS_EMU_FRONT_TOF)
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/pmw3901_device.cpp    # PMW3901 optical-flow chip model
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/espnow_hub.cpp        # shared ESP-NOW hub (comm.cpp uses it)
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/emu_record.cpp        # recorder (passive; hub records frames)
@@ -449,6 +450,7 @@ if(SILS_BUILD_EMU)
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/vl53_platform_glue.c  # missing fw platform fn
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/virtual_board.cpp     # E1: BMI270 + motors → Plant
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/vl53_device.cpp       # E2: VL53L3CX ToF chip model
+    ${CMAKE_CURRENT_SOURCE_DIR}/devices/vl53_front_device.cpp # forward ToF (XSHUT-gated, SILS_EMU_FRONT_TOF)
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/pmw3901_device.cpp    # PMW3901 optical-flow chip model
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/espnow_hub.cpp        # shared ESP-NOW hub (comm.cpp uses it)
     ${CMAKE_CURRENT_SOURCE_DIR}/devices/emu_record.cpp        # recorder (passive; hub records frames)

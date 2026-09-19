@@ -152,10 +152,11 @@ h1{font-size:15px;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:8px;align-item
     <div><span class="k muted">roll/pitch [deg]</span><span class="v" id="rAtt">--</span></div>
     <div><span class="k muted">battery [%]</span><span class="v" id="rBatt">--</span></div>
     <div><span class="k muted">ToF [m]</span><span class="v" id="rTof">--</span></div>
+    <div><span class="k muted">前方 / front [m]</span><span class="v" id="rFront">--</span></div>
    </div>
   </div>
   <div class="card" id="mapWrap">
-   <div class="muted">上から見た図 / horizontal track — 離陸点・包絡 2m・経路</div>
+   <div class="muted">上から見た図 / horizontal track — 離陸点・飛行領域 2m・経路</div>
    <canvas id="map" width="520" height="520"></canvas>
   </div>
  </div>
@@ -175,7 +176,14 @@ import { mountStampFly3D } from "/asset/stampfly3d.js";
 
 const R2D = 180 / Math.PI;
 const MAX_DECISIONS = 120;          // keep the DOM small / DOM を小さく保つ
-const ENVELOPE_R_M = 2.0;           // config.py's horizontal envelope / 水平包絡
+const ENVELOPE_R_M = 2.0;           // config.py's horizontal envelope / 水平飛行領域
+// ForwardConfig.stop_distance_m. Mirrored here only to colour the forward ray
+// at the same boundary the code stops at; the decision itself is made in
+// Python, and this page never decides anything.
+// ForwardConfig.stop_distance_m。ここに写すのは、コードが止まるのと同じ境界で
+// 前方の線の色を変えるためだけである。判断そのものは Python 側にあり、この
+// ページは何も決めない。
+const FORWARD_STOP_M = 0.5;
 const $ = (id) => document.getElementById(id);
 const fmt = (x, d = 2) => (x >= 0 ? "+" : "") + x.toFixed(d);
 
@@ -188,6 +196,14 @@ const view = mountStampFly3D({ canvas: $("scene"), wrap: $("canvasWrap") });
 // やすいためである。
 const track = [];
 let missionLegs = [], currentLeg = -1;
+// The newest forward reading and the heading it was taken on, or null when
+// the sensor measured nothing. Only the LATEST is kept: a forward distance
+// describes where the craft is now, and a trail of old rays would draw
+// obstacles at positions the craft has already left.
+// 最新の前方の読み値と、それを取った機首方位。測れなかったときは null。最新の
+// 1 本だけを保つ: 前方距離は「今どこに居るか」を語るものであり、古い線を並べると、
+// 機体が既に離れた位置に障害物を描くことになる。
+let forwardHit = null;   // {n, e, yaw, metres}
 
 function drawMap() {
   const cv = $("map"), ctx = cv.getContext("2d");
@@ -212,7 +228,7 @@ function drawMap() {
   // Scale so the envelope always fits, growing if the craft leaves it.
   // A margin is reserved so the envelope's own label is not drawn off the
   // right edge -- the circle may reach the border, its text must not.
-  // 包絡が常に収まる倍率。機体が外へ出れば広げる。包絡の凡例が右端の外に
+  // 飛行領域が常に収まる倍率。機体が外へ出れば広げる。飛行領域の凡例が右端の外に
   // 描かれないよう余白を確保する（円は端に達してよいが、その文字は不可）。
   const margin = 54 * ratio;
   let reach = ENVELOPE_R_M * 1.15;
@@ -232,7 +248,7 @@ function drawMap() {
   ctx.fillStyle = muted;
   ctx.font = `${11 * ratio}px ui-monospace,monospace`;
   ctx.textAlign = "left";
-  ctx.fillText(`包絡 ${ENVELOPE_R_M} m`,
+  ctx.fillText(`飛行領域 ${ENVELOPE_R_M} m`,
                cx + ENVELOPE_R_M * scale + 4 * ratio, cy - 4 * ratio);
   ctx.fillText("N", cx + 4 * ratio, 12 * ratio);
 
@@ -254,6 +270,42 @@ function drawMap() {
     track.forEach((p, i) => (i ? ctx.lineTo(X(p[1]), Y(p[0])) : ctx.moveTo(X(p[1]), Y(p[0]))));
     ctx.stroke();
   }
+  // The forward distance, as a ray from the craft along its heading ending
+  // at what the sensor found. Drawn before the craft marker so the marker
+  // sits on top of the line's origin rather than under it.
+  //
+  // Why a ray and not a number: the reading only means something together
+  // with where the craft is pointing, and the picture carries both at once.
+  // The colour follows the same threshold the stop rule uses, so what the
+  // watcher sees turn red is exactly what stops the aircraft.
+  //
+  // 前方距離を、機体から機首方位に沿って伸び、センサが見つけた点で終わる線として
+  // 描く。機体の印より先に描き、印が線の起点の上に来るようにする。
+  //
+  // 数値ではなく線にする理由: 読み値は機体がどちらを向いているかと合わせて初めて
+  // 意味を持ち、図はその両方を一度に運ぶ。色は停止則と同じしきい値に従うので、
+  // 見ている人が赤くなるのを見たそのものが、機体を止めるものである。
+  if (forwardHit) {
+    const hn = forwardHit.n + Math.cos(forwardHit.yaw) * forwardHit.metres;
+    const he = forwardHit.e + Math.sin(forwardHit.yaw) * forwardHit.metres;
+    const isNear = forwardHit.metres <= FORWARD_STOP_M;
+    ctx.strokeStyle = isNear ? style.getPropertyValue("--bad").trim() || "#e55"
+                             : muted;
+    ctx.lineWidth = 2 * ratio;
+    ctx.beginPath();
+    ctx.moveTo(X(forwardHit.e), Y(forwardHit.n));
+    ctx.lineTo(X(he), Y(hn));
+    ctx.stroke();
+    // A tick across the end marks the surface itself, so the line reads as
+    // "something is here" rather than as a direction of travel.
+    // 終端の横棒が面そのものを表す。線が「進む向き」ではなく「ここに何かがある」と
+    // 読めるようにするためである。
+    const tick = 7 * ratio;
+    ctx.beginPath();
+    ctx.arc(X(he), Y(hn), tick / 2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   // Takeoff point, then the craft where it is now.
   // 離陸点、続いて現在位置。
   ctx.fillStyle = ok;
@@ -413,9 +465,19 @@ es.onmessage = (raw) => {
       : `${fmt(ev.roll * R2D, 0)} ${fmt(ev.pitch * R2D, 0)}`;
     $("rBatt").textContent = ev.battery_pct === undefined ? "--" : ev.battery_pct.toFixed(0);
     $("rTof").textContent  = ev.tof_m === undefined ? "--" : ev.tof_m.toFixed(2);
+    $("rFront").textContent = ev.tof_front_m === undefined
+      ? "--" : ev.tof_front_m.toFixed(2);
     if (ev.pos_n !== undefined && ev.pos_e !== undefined) {
       track.push([ev.pos_n, ev.pos_e]);
       if (track.length > 4000) track.shift();
+      // A missing reading clears the ray rather than leaving the last one
+      // drawn: a stale obstacle on the picture is worse than none, because
+      // it looks exactly like a measured one.
+      // 読み値が無いときは線を消す。直前の線を残さない: 図に残った古い障害物は、
+      // 実測したものとまったく同じに見えるぶん、何も無いより悪い。
+      forwardHit = ev.tof_front_m === undefined ? null : {
+        n: ev.pos_n, e: ev.pos_e, yaw: ev.yaw ?? 0, metres: ev.tof_front_m,
+      };
       drawMap();
     }
     return;

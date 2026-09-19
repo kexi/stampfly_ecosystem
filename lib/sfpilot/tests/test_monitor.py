@@ -143,7 +143,7 @@ def test_low_battery_alone_does_not_land():
 
 def test_altitude_far_outside_the_envelope_stops_immediately():
     """An altitude well beyond the envelope stops without waiting.
-    包絡を大きく外れた高度は、待たずに停止すること。"""
+    飛行領域を大きく外れた高度は、待たずに停止すること。"""
     way_high = (DEFAULT_CONFIG.envelope.altitude_max_m
                 + DEFAULT_CONFIG.monitor.altitude_deviation_m + 0.5)
     assessment = Monitor().update(_stream(3, altitude_m=way_high))

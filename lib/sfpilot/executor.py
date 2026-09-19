@@ -202,7 +202,7 @@ class Executor:
 
     def _clamp(self, velocity):
         """Velocity in m/s -> `rc` integers, limited by the envelope.
-        速度 [m/s] を包絡で制限した `rc` の整数に変換する。"""
+        速度 [m/s] を飛行領域で制限した `rc` の整数に変換する。"""
         north, east, up, yaw_rate = velocity
         horizontal_max = self.envelope.speed_max_mps
         vertical_max = self.envelope.climb_rate_max_mps

@@ -10,7 +10,7 @@ right move for a given sentence is a different question, measured against
 the live model by `sf pilot say --eval`.
 
 API キーも通信も不要。答えは FakeJudge が与える。それがこの分割の要点で
-ある — 組み立て規則・数値・包絡の検査はすべてコードなので、厳密に固定できる。
+ある — 組み立て規則・数値・飛行領域の検査はすべてコードなので、厳密に固定できる。
 ある文に対して Jev が正しい動作を選ぶかどうかは別の問いであり、
 `sf pilot say --eval` が実際のモデルに対して測る。
 """
@@ -355,7 +355,7 @@ def test_an_instruction_with_no_flying_in_it_is_refused():
 
 
 # =============================================================================
-# The envelope, checked before anything moves / 動く前の包絡検査
+# The envelope, checked before anything moves / 動く前の飛行領域検査
 # =============================================================================
 
 def test_a_plan_that_would_climb_out_of_the_envelope_is_refused():
@@ -492,7 +492,7 @@ def test_the_walk_that_computes_home_is_the_walk_that_checks_the_envelope():
 
     帰還する計画は、実際に到達した位置から測られること。
 
-    包絡の積算が `return_home` を無視すると、100cm 出て・戻って・また出る計画が
+    飛行領域の積算が `return_home` を無視すると、100cm 出て・戻って・また出る計画が
     「200cm 出た」と測られ、誤って拒否されてしまう。
     """
     plan = _plan(

@@ -1,0 +1,65 @@
+# yaw_cw90_low.scn — minimal deterministic reproduction of the cw-90 fall
+#                     AT THE DEFAULT 0.5 m TAKE-OFF ALTITUDE
+#                     既定の 0.5m 離陸高度での cw 90 落下の、最小の決定論的再現
+#
+# REFERENCE ONLY — NO .expect / 参照用シナリオ — 合否判定は付けない
+#   This file has NO .expect on purpose. It reproduces a defect that is still
+#   open (simulation-policy.md backlog #12), so gating on it would add a
+#   permanent FAIL to `sf sils regression`. It is registered in TEST_MATRIX.md
+#   section 5 as a reference scenario and is skipped by the regression run.
+#   本ファイルには `.expect` を意図的に付けていない。未解決の不具合
+#   （simulation-policy.md 改修バックログ #12）を再現するものなので、合否判定を
+#   付けると `sf sils regression` に恒久的な FAIL が増える。TEST_MATRIX.md 5 節に
+#   「参照用・判定なし」として登録してあり、再確認試験からは除外される。
+#
+# PURPOSE / 目的
+#   Isolate the PURE-YAW half of the fall documented in
+#   docs/plans/jev-autopilot.md section 4.3: "cw 90 right after take-off"
+#   makes the vehicle touch the ground. Holding the 90 deg turn requires a
+#   sustained differential yaw torque; the mixer scales it by 0.25/kappa
+#   (~61 N per N*m), so a yaw torque at the cap asks one motor for 74% of its
+#   hover share on top of hover — duty 1.05, above the rail. The excess is
+#   clipped per motor and not redistributed, so mean lift is lost and the craft
+#   sags ~0.6-0.7 m. From 0.5 m that reaches the ground.
+#   docs/plans/jev-autopilot.md 4.3 節の落下のうち「純ヨー」側だけを切り出す。
+#   90 度旋回の保持には差動ヨートルクの維持が要り、ミキサーが 0.25/kappa
+#   （約 61 N/N·m）倍に拡大するため、上限いっぱいのヨートルクは 1 モータに
+#   ホバー分担の 74% の上積み（duty 1.05、上限超過）を要求する。超過分はモータ毎に
+#   切り落とされ再配分されないので平均揚力が失われ、約 0.6-0.7m 沈下する。
+#   0.5m 起点では地面に届く。
+#
+# DELIBERATELY UNLIKE api_flight.scn / api_flight.scn との意図的な違い
+#   api_flight.scn inserts "up 70" BEFORE its "cw 90" precisely to survive this
+#   sag. This file REMOVES that climb.
+#   api_flight.scn はこの沈下を生き延びるために旋回前へ "up 70" を挟んでいる。
+#   本ファイルはその登坂を外す。
+#
+# MANOEUVRE WINDOW / 操作の窓
+#   The turn begins at the "cw 90" line (t=18 s). Absolute times are annotated
+#   per line (deterministic: virtual clock, noise off by default).
+#   旋回は "cw 90" 行（t=18 秒）から始まる。各行に絶対時刻を注記した。
+#
+# MEASURED BASELINE (2026-09-19, HEAD 8a956654, window 18-28 s)
+# 実測の基準値（2026-09-19、HEAD 8a956654、窓 18-28 秒）
+#   alt_min 0.006749 m (t=19.18 s, i.e. touchdown) / alt_max 0.5141 m
+#   duty_max 1.0000 / frac_duty_upper 0.9195 / frac_torque_cap 0.6419
+#   Impact detected 5.1G -> emergency DISARM -> "error rotate timeout"
+#   Smaller turns do not avoid it: section 4.9.1 of docs/plans/jev-autopilot.md
+#   measured the same fall for cw 45 and cw 30, and for a yaw-rate stick command
+#   as low as 0.1 rad/s.
+#   旋回角を小さくしても回避できない。docs/plans/jev-autopilot.md 4.9.1 節は
+#   cw 45・cw 30、およびヨー速度指令 0.1 rad/s でも同じ落下を実測している。
+#
+# Run / 実行:
+#   sf sils scenario simulator/sils/scenarios/yaw_cw90_low.scn \
+#       --target vehicle --duration 36000000
+#
+#  <t>  ch  <thr> <roll> <pitch> <yaw> <arm> <hold_ms> <rate_hz> <alt> <acro> <pos>
+   0    rc   2048  2048   2048    2048  0     6000      50                       # A: boot at rest — still calibration completes (t=0-6)
+   +    api  "command"                                                           # B: enter SDK mode (t=6)
+   +    api  "takeoff"                                                           # C: take off -> POS_HOLD hover at the 0.5 m default — NO "up" (t=6)
+   +    rc   2048  2048   2048    2048  0     12000     50                       # D: neutral RC while the auto-takeoff climbs and settles (t=6-18)
+   +    api  "cw 90"                                                             # E: PURE YAW: 90 deg clockwise at 0.5 m — the fall starts here (t=18)
+   +    rc   2048  2048   2048    2048  0     10000     50                       # F: neutral RC through the turn (t=18-28)
+   +    api  "land"                                                              # G: autonomous landing (t=28)
+   +    rc   2048  2048   2048    2048  0     6000      50                       # H: neutral RC through touchdown (t=28-34)

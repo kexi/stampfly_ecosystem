@@ -72,6 +72,17 @@ vehicle の飛行を SILS（物理真値）で検証するシナリオスイー�
 1. **ESKF 姿勢の latch**: 墜落で姿勢推定が真値から大きく外れると accel-attitude χ² 判定（カイ二乗判定）が補正自体を棄却し続け自己復帰しない。設置時（IDLE_HELD→IDLE_GROUND、機体が level・静止と既知）に ESKF を Reset して姿勢を level へ再初期化することで解決。
 2. **モード未伝播**: 接地時の飛行モード STABILIZE リセットが `StateManager::mode_` を変えるだけで制御器に伝わらず（制御器は `ControllerCmd::ModeChange` 経由でのみモードを知る）、ALT/POS 飛行後の再離陸が古いホバー推力モードのまま上昇しない。リセット時に onModeChange を作動させて解決。
 
+### 参照用シナリオ（判定なし、`.expect` を持たない）
+
+**`.expect` を持たない `.scn` は `sf sils regression` の対象外である**（`lib/sfcli/commands/sils.py:2183` が `.expect` のあるものだけを集める）。下表は合否を判定せず、**未解決の不具合を手元で再現して数値を見るため**に置いてあるシナリオである。判定を付けないのは意図的で、付ければ再確認試験に恒久的な FAIL が増えるためである。
+
+| シナリオ | 何を再現するか | 依存先 |
+|----------|---------------|--------|
+| `yaw_crossaxis` | 軸をまたぐ移動（`forward 60` → `right 60`）での落下。既定 0.5m 離陸高度のまま旋回するので沈下が地面に届く。実測の基準値（2026-09-19, HEAD 8a956654, 窓 26-34 秒）: `alt_min` 0.006078m（接地）・`duty_max` 1.0000・duty 上限張り付き率 0.8156・トルク上限張り付き率 0.8156 | `docs/architecture/simulation-policy.md` 改修バックログ **#12** |
+| `yaw_cw90_low` | 既定 0.5m 離陸高度での `cw 90`（純ヨー）での落下。実測の基準値（同上、窓 18-28 秒）: `alt_min` 0.006749m（接地）・`duty_max` 1.0000・duty 上限張り付き率 0.9195・トルク上限張り付き率 0.6419 | 同上 |
+
+どちらも `api_flight` が旋回前に `up 70` で登って避けている現象そのものを、**登坂を外して**露出させたものである。`api_flight` が PASS していても本現象は直っていない。経緯と 3 案の実測は `docs/plans/jev-autopilot.md` 4.10 節を参照。
+
 ## 3. 実行方法
 
 ```bash
@@ -79,6 +90,10 @@ source setup_env.sh
 sf sils build vehicle
 sf sils scenario simulator/sils/scenarios/pos_flight.scn --target vehicle          # 合否判定
 sf sils scenario simulator/sils/scenarios/pos_flight.scn --target vehicle --video  # ＋レビュー動画
+
+# 参照用（判定なし）。--duration は各ファイル先頭の注記に従う
+sf sils scenario simulator/sils/scenarios/yaw_crossaxis.scn --target vehicle --duration 40000000
+sf sils scenario simulator/sils/scenarios/yaw_cw90_low.scn  --target vehicle --duration 36000000
 ```
 
 `metric` メトリクス名一覧（`lib/sfcli/commands/sils.py` `_traj_metric`）:
@@ -130,6 +145,22 @@ Per layer, isolate each axis first (`<layer>_<axis>.scn`), then a combined capst
 **Note 1 (ACRO G4):** ACRO rate doublets saturate the motors briefly BY DESIGN
 (broadband excitation, roadmap §3.1.3), so duty is intentionally not gated.
 
+### Reference scenarios (no verdict, no `.expect`)
+
+**A `.scn` with no `.expect` is outside `sf sils regression`** (`lib/sfcli/commands/sils.py:2183`
+collects only scenarios that have one). The two below carry no pass/fail criteria on purpose:
+they exist to reproduce an open defect locally and read its numbers. Gating on them would add a
+permanent FAIL to the regression run.
+
+| Scenario | What it reproduces | Depends on |
+|----------|--------------------|------------|
+| `yaw_crossaxis` | The fall during a cross-axis move (`forward 60` → `right 60`), turning at the default 0.5 m take-off altitude so the sag reaches the ground. Measured baseline (2026-09-19, HEAD 8a956654, window 26-34 s): `alt_min` 0.006078 m (touchdown), `duty_max` 1.0000, fraction of samples pinned at the duty rail 0.8156, fraction at the torque cap 0.8156 | `docs/architecture/simulation-policy.md` backlog **#12** |
+| `yaw_cw90_low` | The fall during `cw 90` (pure yaw) at the default 0.5 m take-off altitude. Measured baseline (same run, window 18-28 s): `alt_min` 0.006749 m (touchdown), `duty_max` 1.0000, duty-rail fraction 0.9195, torque-cap fraction 0.6419 | Same |
+
+Both expose, by removing the climb, exactly what `api_flight` avoids with its `up 70` before the
+turn — `api_flight` passing does not mean this is fixed. See `docs/plans/jev-autopilot.md` §4.10
+for the history and the measurements of the three candidate fixes.
+
 ## 3. How to run
 
 ```bash
@@ -137,6 +168,10 @@ source setup_env.sh
 sf sils build vehicle
 sf sils scenario simulator/sils/scenarios/pos_flight.scn --target vehicle
 sf sils scenario simulator/sils/scenarios/pos_flight.scn --target vehicle --video
+
+# Reference only (no verdict); --duration per the header of each file
+sf sils scenario simulator/sils/scenarios/yaw_crossaxis.scn --target vehicle --duration 40000000
+sf sils scenario simulator/sils/scenarios/yaw_cw90_low.scn  --target vehicle --duration 36000000
 ```
 
 ## 4. Coverage status (2026-06-06)

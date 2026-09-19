@@ -172,6 +172,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Use the deterministic FakeJudge (no API key, no network)",
     )
     say_parser.add_argument(
+        "--scene", default="nominal", choices=list(scene_names()),
+        help="The situation to fly the instruction in (default: nominal). "
+             "`wall_ahead` puts a wall in the path （場面）",
+    )
+    say_parser.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
         help="Translate and check the instruction; fly nothing",
     )
@@ -1129,6 +1134,10 @@ def _fly_instruction(args, config, plan, judge, trace, recording, bus=None):
     )
     from sfpilot.link import SilsLink
     from sfpilot.say import fly_plan
+    from sfpilot.scenes import get_scene
+
+    scene = get_scene(getattr(args, "scene", "nominal"), config)
+    console.info(f"Scene: {scene.name} — {scene.description}")
 
     total_s = (config.sils.boot_settle_s + args.duration
                + config.sils.land_grace_s + 10.0)
@@ -1139,7 +1148,8 @@ def _fly_instruction(args, config, plan, judge, trace, recording, bus=None):
     # 自身の推定とは独立に操作者が確かめる手段が `truth.csv` だからである。
     recording.prepare()
     env = realtime_emu_env(recording.bundle_dir,
-                           flightlog_dir=recording.flightlog_dir, extra_env={})
+                           flightlog_dir=recording.flightlog_dir,
+                           extra_env=scene.env)
     try:
         proc = launch_realtime_emu(total_s + 10.0, env, scenario_path=None)
     except RealtimeEmuUnavailable as exc:
@@ -1160,6 +1170,7 @@ def _fly_instruction(args, config, plan, judge, trace, recording, bus=None):
         console.info("Flying the steps （手順を実行します）...")
         live.phase("手順を実行中 / flying the steps")
         outcome = fly_plan(link, judge, plan, config, trace=trace,
+                           scene=scene,
                            on_step=_make_step_announcer(live),
                            on_cycle=live.sample, on_decisions=live.watch)
         return outcome
@@ -1169,7 +1180,7 @@ def _fly_instruction(args, config, plan, judge, trace, recording, bus=None):
         # After the process is gone, never before (see `_fly_sils`).
         # プロセスの終了後に行う（`_fly_sils` 参照）。
         recording.finalize(
-            notes=f"sf pilot say: {plan.instruction}",
+            notes=f"sf pilot say (scene={scene.name}): {plan.instruction}",
             decisions=outcome.decision_rows if outcome else (),
         )
 
@@ -1387,7 +1398,7 @@ def run_mission(args: argparse.Namespace) -> int:
 # `move_min_cm`/`move_max_cm`). The top view draws metres, like every other
 # position on the page.
 # Step の amount は機体自身の単位であり、移動では**センチメートル**である
-#（`instruction.Step.describe` は "cm" を付け、包絡も `move_min_cm`・
+#（`instruction.Step.describe` は "cm" を付け、飛行領域も `move_min_cm`・
 # `move_max_cm` である）。上から見た図は、ページ上の他の位置と同じくメートルで
 # 描く。
 CM_PER_M = 100.0

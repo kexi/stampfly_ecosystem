@@ -26,7 +26,7 @@ model was not confident about: an instruction that was not understood is
 not a flight worth attempting.
 
 飛ばさないものを決めることは、飛ばすものを決めるのと同じだけ重要である。
-何かが動く前に、手順の列を離陸点から机上で積算し、各手順の到達位置を包絡
+何かが動く前に、手順の列を離陸点から机上で積算し、各手順の到達位置を飛行領域
 （`config.EnvelopeConfig`）と照合する。範囲を出る計画は、問題の手順を名指しして
 報告し、何も送らない。モデルの確信度が低かった手順も同じ扱いである — 理解
 できなかった指示は、試みる価値のある飛行ではない。
@@ -289,7 +289,7 @@ def build_plan(instruction: str, judgement, on_ground: bool = True,
     指示 1 つと答え一式から Plan を作る。
 
     順序には意味があり、設計のとおりである: 動作を読む → 量を当てる →
-    離陸と着陸を補う → `return_home` を計算する → 最後に包絡を検査する。
+    離陸と着陸を補う → `return_home` を計算する → 最後に飛行領域を検査する。
     検査は、この関数が足した手順も含めて「実際に飛ぶ列」を見る必要がある。
     """
     plan = Plan(instruction=instruction, latency_ms=getattr(judgement, "latency_ms", 0.0))
@@ -660,7 +660,7 @@ class _GoStep(Step):
 
 
 # =============================================================================
-# The envelope, checked before anything moves / 動く前に検査する包絡
+# The envelope, checked before anything moves / 動く前に検査する飛行領域
 # =============================================================================
 
 def check_envelope(steps: list, config=DEFAULT_CONFIG) -> str:
@@ -674,7 +674,7 @@ def check_envelope(steps: list, config=DEFAULT_CONFIG) -> str:
 
     計画を積算し、拒否の理由を返す。飛べるなら "" を返す。
 
-    机上で拒否することに意味がある。Arbiter の包絡照合（arbiter.py）は、既に
+    机上で拒否することに意味がある。Arbiter の飛行領域照合（arbiter.py）は、既に
     始まった飛行を 1 周期ずつ守る。こちらは、そもそも範囲に収まらない指示を、
     機体がまだ地上にあり、どの手順が問題かを伝えられる操作者がまだそこにいる
     うちに拒否する。

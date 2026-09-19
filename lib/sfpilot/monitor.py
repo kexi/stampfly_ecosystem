@@ -17,7 +17,7 @@ altitude far outside the envelope, a diverged position estimate. These
 rules, and only these, may command `land`/`stop` without the Judge.
 
 Monitor は即時安全則も担う。500ms の判断を待てない状況があるため:
-電池の危険域、包絡を大きく外れた高度、発散した位置推定。この規則だけが
+電池の危険域、飛行領域を大きく外れた高度、発散した位置推定。この規則だけが
 Judge を介さず `land`/`stop` を出せる。
 """
 
@@ -66,6 +66,27 @@ BATTERY_TREND_SHARP = "急に低下"
 #（地上・上昇中）が保つ高度は、以後の飛行を判定する基準にはならない。
 FLIGHT_STATE_FLYING = "FLYING"
 
+# The forward-clearance classifications.
+#
+# "測定不能" (cannot measure) is deliberately NOT a synonym for "開けている"
+# (open). The forward part reports an invalid reading both when nothing is
+# ahead and when a surface is too close to resolve (§4.8.6 measured both),
+# so treating an absent reading as clearance would fly the craft INTO the
+# one case it cannot see. Unknown is its own word, and the immediate rule
+# below never clears a stop on it.
+#
+# 前方の空きの区分。
+#
+# 「測定不能」は「開けている」の言い換えでは「ない」。前方の部品は、前に何も
+# 無いときも、面が近すぎて復元できないときも無効を返す（§4.8.6 で両方を実測）。
+# したがって無い読み値を「開けている」と扱うことは、見えていない方の場合へ機体を
+# 突っ込ませることになる。「不明」は独立した語であり、下の即時則がそれで停止を
+# 解除することはない。
+FORWARD_OPEN = "開けている"
+FORWARD_SOMEWHAT_NEAR = "やや近い"
+FORWARD_WALL_NEAR = "壁が近い"
+FORWARD_UNKNOWN = "測定不能"
+
 
 @dataclass
 class Assessment:
@@ -79,6 +100,7 @@ class Assessment:
     attitude: str = "不明"
     position_estimate: str = "不明"
     ground_distance_sensor: str = "不明"
+    forward_clearance: str = "不明"
     battery_level: str = "不明"
     battery_trend: str = "不明"
 
@@ -89,7 +111,7 @@ class Assessment:
 
     # Kept for the Arbiter's envelope check and for the trace. Never sent
     # to Jev -- these are the numbers the words above were derived from.
-    # Arbiter の包絡照合と記録のために保持する。Jev には渡さない — 上の
+    # Arbiter の飛行領域照合と記録のために保持する。Jev には渡さない — 上の
     # 言葉の元になった数値そのものだからである。
     numeric: dict = field(default_factory=dict)
     recent_events: list = field(default_factory=list)
@@ -102,6 +124,19 @@ class Monitor:
     def __init__(self, config=DEFAULT_CONFIG, target_altitude_m: float = None):
         self.cfg: MonitorConfig = config.monitor
         self.envelope: EnvelopeConfig = config.envelope
+        self.forward = config.forward
+        # The last VALID forward reading and when it arrived, so an invalid
+        # one can be read as "the wall is still there, briefly unseen" rather
+        # than as an empty room. `None` until the first valid reading.
+        # 最後に有効だった前方の読み値と、その到着時刻。無効な読み値を「空の部屋」では
+        # なく「壁はまだそこにあり、一時的に見えていない」と読めるようにするため。
+        # 最初の有効な読み値まで `None`。
+        self._forward_last_valid = None      # (t, metres)
+        # True while the stop rule is latched, so the release threshold (not
+        # the stop threshold) governs coming back out of it.
+        # 停止則がラッチされている間 True。抜けるときに効くのは停止しきい値ではなく
+        # 解除しきい値である。
+        self._forward_stopped = False
         # The altitude "on target" is measured against. `None` means nobody
         # has said, and the first settled hover supplies it (`_adopt_target`).
         #
@@ -271,6 +306,18 @@ class Monitor:
             "position_estimate", self._classify_estimate(sample), now)
         assessment.ground_distance_sensor = self._held(
             "ground_distance_sensor", self._classify_tof(sample), now)
+        # Deliberately NOT passed through `_held`. The hold time exists to stop
+        # a band edge chattering, but it does so by reporting the PREVIOUS
+        # classification for up to a second -- and a second of "open" while a
+        # wall is closing is the one second that matters. The forward reading
+        # has its own hysteresis instead (`_classify_forward`), which damps the
+        # boundary without ever delaying the approach of a wall.
+        # ここでは意図して `_held` を通さない。保持時間は境界のばたつきを抑えるための
+        # ものだが、その方法は「直前の区分を最大 1 秒報告し続ける」ことである ―― そして
+        # 壁が迫る間の「開けている」の 1 秒こそ、唯一問題になる 1 秒である。前方の読み値は
+        # 代わりに自前のヒステリシスを持ち（`_classify_forward`）、壁の接近を遅らせること
+        # なく境界を落ち着かせる。
+        assessment.forward_clearance = self._classify_forward(sample, now)
         assessment.battery_level = self._held(
             "battery_level", self._classify_battery(sample), now)
         assessment.battery_trend = self._held(
@@ -450,6 +497,68 @@ class Monitor:
         is_plausible = self.cfg.tof_min_m <= tof <= self.cfg.tof_max_m and _is_finite(tof)
         return "正常" if is_plausible else "当てにならない値"
 
+    def _classify_forward(self, sample: dict, now: float) -> str:
+        """Forward clearance in words, with hysteresis and a grace period.
+
+        An invalid reading does not mean clear space. Within
+        `invalid_grace_s` of the last valid one it keeps reporting what was
+        last seen, because a dropped sample in front of a wall is still a
+        wall; after that it becomes "cannot measure", which is its own word
+        and never an invitation to fly on.
+
+        前方の空きを語で返す。ヒステリシスと猶予つき。
+
+        無効な読み値は「空いている」ではない。最後の有効な読み値から
+        `invalid_grace_s` の間は最後に見たものを報告し続ける ―― 壁の前での
+        1 サンプルの取りこぼしは、依然として壁だからである。それを過ぎれば
+        「測定不能」になる。これは独立した語であって、進んでよいという意味を
+        決して持たない。
+        """
+        forward = sample.get("tof_front_m")
+        is_valid = forward is not None and _is_finite(forward)
+        if is_valid:
+            self._forward_last_valid = (now, forward)
+            return self._forward_word(forward)
+
+        has_recent = self._forward_last_valid is not None
+        if not has_recent:
+            return FORWARD_UNKNOWN
+        seen_at, last = self._forward_last_valid
+        is_stale = (now - seen_at) > self.forward.invalid_grace_s
+        if is_stale:
+            # Nothing believable for a while. Drop the latch too: holding a
+            # stop on a memory this old would freeze the craft indefinitely.
+            # しばらく信じられる値が無い。ラッチも解く: これほど古い記憶で停止を
+            # 保持し続けると、機体は永久に固まる。
+            self._forward_stopped = False
+            return FORWARD_UNKNOWN
+        return self._forward_word(last)
+
+    def _forward_word(self, metres: float) -> str:
+        """Band a forward distance, latching the stop band with hysteresis.
+        前方距離を帯域に落とす。停止帯域はヒステリシス付きでラッチする。"""
+        cfg = self.forward
+        is_within_stop = metres <= cfg.stop_distance_m
+        if is_within_stop:
+            self._forward_stopped = True
+            return FORWARD_WALL_NEAR
+        # Once stopped, stay stopped until the reading clears the RELEASE
+        # distance -- otherwise the classification flips back and forth on a
+        # reading that sits on the threshold, and the craft brakes and
+        # accelerates alternately at a wall.
+        # 一度止まったら、読み値が「解除」距離を超えるまでは止まったままにする ――
+        # さもないと、しきい値上に乗った読み値で区分が行き来し、機体は壁の前で
+        # 制動と加速を交互に繰り返す。
+        is_still_latched = self._forward_stopped and metres < cfg.release_distance_m
+        if is_still_latched:
+            return FORWARD_WALL_NEAR
+        self._forward_stopped = False
+        if metres <= cfg.wall_near_m:
+            return FORWARD_WALL_NEAR
+        if metres <= cfg.somewhat_near_m:
+            return FORWARD_SOMEWHAT_NEAR
+        return FORWARD_OPEN
+
     def _classify_battery(self, sample: dict) -> str:
         battery = sample.get("battery_pct")
         if battery is None:
@@ -546,12 +655,37 @@ class Monitor:
         if is_estimate_diverged:
             return SAFETY_LAND, "位置推定が発散したため即時着陸"
 
+        # An obstacle close ahead stops the craft WITHOUT asking Jev. A round
+        # trip is 230ms at the median and has no guaranteed upper bound
+        # (§4 measurements), and at the envelope's 0.5 m/s that is a tenth of
+        # a metre of travel before an answer could even arrive. Stopping is
+        # also the cheap direction to be wrong in: a needless stop costs a
+        # pause, and the craft holds position and can be asked again next
+        # cycle, while a needless approach costs the airframe.
+        #
+        # This rule STOPS and does not land. Landing is for situations that
+        # get worse by staying up (a dying battery, a diverged estimate); a
+        # wall ahead is not one of them, and descending next to an unknown
+        # obstacle is not obviously safer than holding still away from it.
+        #
+        # 前方の障害物が近ければ、Jev を待たずに停止する。往復は中央値で 230ms、
+        # 上限の保証は無く（§4 の実測）、飛行領域の 0.5m/s では答えが届くより前に 0.1m
+        # 進む。誤る向きとしても停止のほうが安い: 不要な停止の代償は一拍の間であり、
+        # 機体は位置を保って次の周期にまた問える。一方、不要な接近の代償は機体である。
+        #
+        # この規則は「停止」であって着陸ではない。着陸は、飛び続けることで悪化する
+        # 状況（電池の枯渇、推定の発散）のためのものである。前方の壁はそれに当たらず、
+        # 未知の障害物の脇で降下することが、離れて静止することより安全とは言えない。
+        is_obstacle_close = assessment.forward_clearance == FORWARD_WALL_NEAR
+        if is_obstacle_close:
+            return SAFETY_STOP, "前方に障害物が近いため即時停止"
+
         altitude = sample.get("altitude_m")
         if altitude is not None:
             is_far_below = altitude < self.envelope.altitude_min_m - self.cfg.altitude_deviation_m
             is_far_above = altitude > self.envelope.altitude_max_m + self.cfg.altitude_deviation_m
             if is_far_below or is_far_above:
-                return SAFETY_STOP, "高度が包絡を大きく外れたため即時停止"
+                return SAFETY_STOP, "高度が飛行領域を大きく外れたため即時停止"
 
         return SAFETY_NONE, ""
 

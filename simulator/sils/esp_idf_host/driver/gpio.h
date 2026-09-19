@@ -203,11 +203,26 @@ static inline esp_err_t gpio_set_direction(gpio_num_t gpio_num, gpio_mode_t mode
     return ESP_OK;
 }
 
-/* Set output level (0 or 1) / 出力レベル（0 または 1）を設定 */
+/* Set output level (0 or 1) / 出力レベル（0 または 1）を設定
+ *
+ * Forwarded to the virtual board instead of being discarded: an output level is
+ * only inert while nothing is wired to the pin. The front ToF's XSHUT is wired
+ * (jev-autopilot P4b) and its level decides whether that part answers on I2C at
+ * all, so dropping the write here would leave the device model unable to model
+ * the one thing it exists to model. Every other pin is still a no-op — the board
+ * hook dispatches by pin number.
+ *
+ * 破棄せず仮想ボードへ渡す: 出力レベルが無動作でいられるのは、そのピンに何も
+ * つながっていない間だけである。前方 ToF の XSHUT はつながっており（P4b）、その
+ * レベルがその部品を I2C に応答させるか否かを決める。ここで書き込みを捨てると、
+ * デバイスモデルは自身の存在理由そのものを模擬できなくなる。他のピンは従来どおり
+ * 無動作である ―― 振り分けはボード側のフックがピン番号で行う。
+ */
+void sils_board_gpio_set_level(int gpio_num, int level);
+
 static inline esp_err_t gpio_set_level(gpio_num_t gpio_num, uint32_t level)
 {
-    (void)gpio_num;
-    (void)level;
+    sils_board_gpio_set_level((int)gpio_num, (int)level);
     return ESP_OK;
 }
 

@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P2b: 前方 ToF の駆動を実装し、結果と**実機確認の手順書**を 4.7 節に追記。実機未確認）。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P4b: SILS の前方距離の模擬と、回転を要しない即時安全則を実装。**ヨー回転による探索は保留** — 4.9 節）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -27,11 +27,11 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 | P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**。Jev 実走で 3 場面すべて確認済み（下記 4.5）|
 | P3 | `sf pilot say`（自然言語の指示） | **実装済み**。Jev 実走で 7/10 → 原因を特定して修正 → **10/10**（下記 4.5）|
 | P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**。Jev 実走で応答計数の競合を発見して修正し、**全 6 区間が `as planned` で完走**（下記 4.5）|
-| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。**前提は 2 つ**: ①前方 ToF が駆動していること（P2b、実装済み・実機未確認）②**SILS に前方距離の模擬があること**（MuJoCo のレイキャスト等。未着手）。②が無いと、判断の誤りを飛ばす前に見つけられない | 未着手（P2b の実機確認と、SILS の前方距離模擬を待つ）|
+| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。前提 ②**SILS の前方距離の模擬**は実装した（下記 4.9） | **一部実装**（4.9）。前方距離の模擬と、回転を要しない即時安全則までは実装済み。**ヨー回転による探索と方位選択は保留** — 現状の SILS では `cw 30` でも機体が落下するため（4.9.1）。解除条件はバックログ #12 の解消 |
 | P4c | **飛行を見る手段**（`--web` のライブ表示＋飛行後の動画・GUI 再生。4.6 節） | **実装済み** |
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
-**前方 ToF の現状（重要）**: 2026-09-19 に駆動を開始した（P2b、下記 4.7）。`TofTask` が前方をリセット保持したまま底面を 0x30 で起動し、その後で前方を 0x31 へ振り直す。テレメトリ v2 の `tof_front` と有効ビット bit1 はここから供給される。**ただし実機未確認である。** また前方は Optional で**バッテリー電源が要る**（USB 給電のみでは起動せず、bit1 は 0 のまま）。**障害物回避・探索（P4b）にはもう 1 つ前提がある — SILS に前方距離の模擬が無い。** 模擬が無いままでは、判断の誤りを実機で初めて知ることになる。
+**前方 ToF の現状（重要）**: 2026-09-19 に駆動を開始した（P2b、下記 4.7）。`TofTask` が前方をリセット保持したまま底面を 0x30 で起動し、その後で前方を 0x31 へ振り直す。テレメトリ v2 の `tof_front` と有効ビット bit1 はここから供給される。**ただし実機未確認である。** また前方は Optional で**バッテリー電源が要る**（USB 給電のみでは起動せず、bit1 は 0 のまま）。**SILS の前方距離の模擬は 2026-09-19 に実装した（4.9）。** 残る制約はヨー回転であり、現状の SILS では旋回そのもので機体が落下するため、探索は保留している（4.9.1）。
 
 ## 2. 設計を決めた制約
 
@@ -57,7 +57,7 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 │    └ 即時安全則: 電池危険・高度逸脱・推定発散 → Jev を待たず stop/land
 ├─ Summarizer                                     │  数値 → 言葉の状況（JSON、小さく保つ）
 ├─ Judge（Jev、状況が変わったとき＋1Hz の定期）   │  1 リクエストに全質問。FakeJudge と差し替え可
-├─ Arbiter（コードのみ）                          │  期限・鮮度・確信度・行動包絡で採否を決める
+├─ Arbiter（コードのみ）                          │  期限・鮮度・確信度・行動飛行領域で採否を決める
 └─ Executor                                       │  採用した行動を rc / stop / land に変換、20Hz で送り続ける
 ```
 
@@ -99,7 +99,7 @@ Jev が選べるのは**あらかじめ列挙した有限の行動**だけであ
 | 応答到着時点で状況の区分が質問時と変わっていた | 破棄。次の周期で問い直す |
 | Choice の確信度が閾値（既定 0.6）未満 | **待機** |
 | 上位 2 択が `continue` と `land` で拮抗（差 0.15 以内） | **待機** |
-| 行動が包絡の外（高度 0.3〜1.5m、離陸点から半径 2m、速度上限） | 却下して待機 |
+| 行動が飛行領域の外（高度 0.3〜1.5m、離陸点から半径 2m、速度上限） | 却下して待機 |
 | API エラー・通信断 | 再試行はせず待機（次周期で自然に問い直される） |
 | 待機が連続 10 秒 | **着陸** |
 
@@ -240,7 +240,7 @@ Monitor の区分を数えたもの）:
 
 | 対象 | 内容 |
 |------|------|
-| `lib/sfpilot/instruction.py` | 数値の抽出（半角・全角・漢数字、m→cm）、組み立て規則、包絡の事前検査、`return_home` の計算 |
+| `lib/sfpilot/instruction.py` | 数値の抽出（半角・全角・漢数字、m→cm）、組み立て規則、飛行領域の事前検査、`return_home` の計算 |
 | `lib/sfpilot/say.py` | 手順の実行（作業スレッド）と、その間も動き続ける用途①の監視層 |
 | `lib/sfpilot/judge.py` | 手順の質問（`step_N_move` / `step_N_amount`）、`ask_questions()`（ID ではなく本体で問う） |
 | `lib/sfpilot/config.py` | `InstructionConfig`（量の区分・手順数の上限・確信度の関門） |
@@ -308,7 +308,7 @@ cm・度への対応は `config.py` の表が持つ。
 TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml
 ```
 
-組み立て規則・数値の抽出・包絡の検査はコードなので `pytest lib/sfpilot` が
+組み立て規則・数値の抽出・飛行領域の検査はコードなので `pytest lib/sfpilot` が
 キー無しで固定する。この表が測るのは**それ以外**、すなわち「Jev が日本語の指示から
 正しい動作と量を選ぶか」だけである。不一致が出た場合、期待のほうが不当に狭い可能性
 （「ちょっと移動して」に向きの指定は無い）も併記してある。
@@ -319,7 +319,7 @@ TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml
 
 | 対象 | 内容 |
 |------|------|
-| `lib/sfpilot/mission.py` | ミッションの読み込み・包絡の事前検査・区間の到達の区分・飛行ループ・コード側の上限 |
+| `lib/sfpilot/mission.py` | ミッションの読み込み・飛行領域の事前検査・区間の到達の区分・飛行ループ・コード側の上限 |
 | `lib/sfpilot/mission_run.py` | SILS の起動・段取りと、結果の集計表示 |
 | `lib/sfpilot/missions/line.yaml` | **現状 SILS で飛べる**経路（1 軸の往復＋上昇＋帰還＋着陸） |
 | `lib/sfpilot/missions/square.yaml` | 一辺 0.6m の四角形。**現状は飛べない**（下記「見つけた問題」） |
@@ -340,7 +340,7 @@ Jev が答えるのは `next_move` の 1 問（`next_step` / `hold` / `redo_step
 **コード側の上限（Jev の答えに関わらず強制）**: 区間あたりのやり直し 2 回まで、
 ミッション全体の時間上限 180 秒、電池が「残り少ない」になったら進む系の答え
 （`next_step`・`redo_step`・`skip_step`）を `return_home` に置き換える、そして
-読み込み時の包絡検査。いずれも `_MissionFlight._allow` に集め、却下の理由を
+読み込み時の飛行領域検査。いずれも `_MissionFlight._allow` に集め、却下の理由を
 集計と記録に残す。
 
 ### 実測（SILS、`--fake`、`line` 経路）
@@ -589,7 +589,7 @@ sf pilot run --sils --scene drift --fake --web
 |----|------|
 | 上部の帯 | 飛行フェーズ、実行中の手順・区間、判断の件数、待機の連続秒数、Jev の往復時間 p50/p95、期限超過の回数 |
 | 3D 表示 | 機体の姿勢・位置・軌跡。`sf telemetry --web` と**同一**の表示（下記） |
-| 上から見た図 | 水平位置の軌跡、離陸点、包絡の半径 2m、ミッションなら経路と現在の区間 |
+| 上から見た図 | 水平位置の軌跡、離陸点、飛行領域の半径 2m、ミッションなら経路と現在の区間 |
 | 判断の流れ | 1 判断 1 行、新しいものが上。時刻／Jev に渡した状況の語（変わった区分を強調）／`safety_action` 3 択の確率を棒で／`abnormal`／`next_move`／Arbiter の採否と理由／実際に送ったコマンド／往復時間。期限超過と破棄は色と文字で区別する |
 
 **データの出どころは記録と同じ 1 か所である。** `lib/sfpilot/events.py` の `EventBus` を `Trace` が持ち、`Trace.write()` が行を書いた直後に同じ行を配信する。ページと `logs/pilot/*.jsonl` は「1 つの行を 2 通りの体裁で見せたもの」であり、別々に組み立ててはいない（別々ならいずれ食い違い、その食い違いは誰かが見ている飛行でしか表に出ない）。
@@ -822,13 +822,256 @@ v2 のフロー 2 項目は当初「前回送信からの差分」だった。**
   1,000 カウント以上跳ぶことがあった。面に近すぎるとフローは信頼できない。自動操縦が
   フローの生値を使うときは、表面品質と底面 ToF の有効性で門をかけること
 
+## 4.9 P4b の結果（SILS の前方距離と、回転を要しない探索、2026-09-19）
+
+### 要旨
+
+**前方距離の模擬を SILS に実装し、それを使う「前進中の即時安全則」までを入れた。
+ヨー回転による探索と方位選択は、実測に基づき保留した。**
+
+保留は仕様の都合ではない。**現状の SILS では、機体はヨー回転そのもので墜落する。**
+`cw 30` でも `cw 90` と同じように落ちることを実測で確かめた（下表）。探索は回転の上に
+しか成り立たないので、回転が成立しない以上、探索を実装しても試験の証拠が「墜落」に
+なるか、高度を上げる回避で墜落を隠すかのどちらかにしかならない。4.3 節の方針
+（落下を隠す回避を自動操縦に入れない）に従い、実装せずに報告する。
+
+### 4.9.1 ヨー回転の実測（保留の根拠）
+
+0.5m のホバリングから、各指令を送って真値の高度を見た。harness は
+`simulator/tests/test_pilot_sils.py` の `_Emu` + `SilsLink`（スティックは中立保持）。
+
+| 送った指令 | 最低高度 | 到達したヨー角 | 衝撃 | 解除 |
+|---|---|---|---|---|
+| 何も送らない（対照） | **+0.498 m** | — | 0 | なし |
+| `rc 0 0 0 0`（純ホバー） | **+0.490 m** | — | 0 | なし |
+| `rc 25 0 0 0`（水平・東） | **+0.483 m** | — | 0 | なし |
+| `cw 90` | −0.000 m | 0.9° | 4.7 G | **解除** |
+| `cw 45` | −0.000 m | 0.7° | 4.9 G | **解除** |
+| `cw 30` | −0.000 m | 0.5° | 5.3 G | **解除** |
+| `rc 0 0 0 10`（0.1 rad/s） | −0.000 m | 約 0° | 0 | なし（沈下） |
+| `rc 0 0 0 25`（0.25 rad/s） | −0.000 m | 3.7° | 1 | **解除** |
+| `rc 0 0 0 50`（0.5 rad/s） | −0.000 m | 約 0° | 1 | **解除** |
+
+`cw 30` の高度推移（0.5m から 1.3 秒で接地）:
+
+```
+alt=+0.505 yaw= +0.0      alt=+0.482 yaw= +6.4
+alt=+0.265 yaw=+15.2      alt=+0.079 yaw=+24.6
+alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
+```
+
+**4.3 節に対する 3 つの追加事実**:
+
+1. **旋回角を小さくしても回避できない。** 4.3 節は `cw 90` を記録していたが、`cw 45`・
+   `cw 30` も同じように落ちる。理由はファームの実装にある — `cmdRotate`
+   （`api_task.cpp:372`）はヨー「目標」への階段状の変更であり、回頭の速さは角度ではなく
+   制御器の誘導ヨー上限が決める。したがって「45° 刻みなら通るのでは」という筋は、
+   **構造的に成立しない**。
+2. **低いヨー速度指令でも回避できない。** `rc` のヨー速度を 0.1 rad/s まで落としても
+   沈下して接地する。
+3. **落下はヨー軸に固有である。** 純ホバーと水平の `rc` は高度を 2cm 以内で保つ。
+   harness の問題でも `rc` 全般の問題でもなく、4.3 節が突き止めた機構
+   （ヨートルクの飽和 → ミキサーでの拡大 → duty 張り付き → 平均揚力低下）と整合する。
+
+**依存先**: `simulation-policy.md` 改修バックログ **#12**（ファームのヨートルク権限の
+再検討）。「上限の余裕・D 項フィルタ・ミキサーの優先度つき縮小」の 3 案は別の作業で
+実測が完了し、**3 案とも現時点では不採用**となった（下記 4.10 節）。したがって本節の
+保留は続く。
+
+**解除条件（これが満たされたら探索を実装してよい）**: **高度 0.5m のホバリングから
+`cw 90` が、落下・衝撃検出・解除のいずれも起こさずに完了すること。** 高度を上げて
+地面に届かなくする回避は解除条件に含めない（`api_flight.scn` が 0.7m 上昇してから
+旋回するのは、この現象を避けるためであって、直したわけではない）。
+
+**ファームのパラメータ（`rate.yaw.max_torque` 等）には手を触れていない。**
+
+### 4.9.2 実装したもの（前方距離の模擬）
+
+| 層 | 変更 |
+|----|------|
+| Plant | `Plant::tofFront()` — 機体 +X 方向の前方距離。`Plant::addWall()` で実行時に置いた垂直な壁に対するレイ-線分交点として解く。レンジ外・対象なしは `status=255`・値 0・`valid=false`（実機の実測 §4.8.6 と同じ形） |
+| デバイスモデル | `simulator/sils/devices/vl53_front_device.{hpp,cpp}` — 前方 VL53L3CX。XSHUT が LOW の間は**どのアドレスにも応答しない**、HIGH で 0x29、MODEL_ID=0xEA、振り直しで 0x31 |
+| GPIO | ホストの `gpio_set_level()` を `sils_board_gpio_set_level()` へ転送（従来は無動作）。配線されているのは前方 XSHUT（`CONFIG_STAMPFLY_TOF_FRONT_XSHUT_GPIO`＝GPIO9）だけで、他のピンは従来どおり無動作 |
+| stdin | `wall <n0> <e0> <n1> <e1>`（NED [m]）。`wind`/`vbatt` と同じ流儀。`.scn` を経由せず実行時に置ける |
+| STATE 行 | 末尾に `tof_front` と `tof_front_valid` を追記（既存キーは不変） |
+| `SilsLink` | `tof_front_valid=1` のときだけ `Sample["tof_front_m"]` を立てる。無効時はキーごと落とす |
+| 場面 | `wall_ahead`（正面 1.0m に幅 2m の壁）と `dead_end`（正面＋東側。西だけ開）を `scenes.py` に追加。既定 OFF の `SILS_EMU_FRONT_TOF=1` は場面の `env` が与える |
+
+**座標変換は `frames` の外で行っていない。** ビーム方向は真値姿勢 `q_nb` による単位前方
+ベクトルの回転そのもので、壁との交点は NED 水平面の 2 次元で解く。
+
+**`mj_ray` を使わなかった理由（設計からの意図的な逸脱）**: 指示は `mj_ray` を挙げていたが、
+**実行時に足した壁は `mjModel` に存在しない**（生きたモデルへの geom 追加は MuJoCo の
+対応範囲外）。壁を MJCF に書けば全 33 シナリオの正面に立つため、指示自身が
+「既定の世界を変えるので避ける」としていた。垂直な壁・水平なビームという場面の条件では
+2 次元の解析解が厳密なので、そちらを採った。
+
+### 4.9.3 忠実度の位置づけ（`simulation-policy.md` の方針に従う）
+
+| 項目 | 採った値 | 根拠 |
+|---|---|---|
+| 上限レンジ | 2.0 m（`Config::tof_front_max_m`） | 飛行領域の半径 2m の内側で意味を持つ範囲。実機の VL53L3CX の公称はこれより長いが、**長くしても本計画で検証できる状況が増えない**ため、検証できない範囲まで模擬しない |
+| 下限レンジ | 0.05 m | 底面モデルと同じ近接下限（`kTofMinRange`） |
+| レンジ外・対象なし | `status=255`・値 0・無効 | **実機の実測（§4.8.6）に合わせた。** 飽和した定数を valid として返さない — 偽の距離は、無効より危険である |
+| ノイズ | **付けていない** | 底面 ToF の N2 観測ノイズは既定 OFF であり、前方だけノイズを持つと 2 つのセンサの忠実度がちぐはぐになる。ノイズを入れるなら N3 tier（バックログ #6）で両方まとめて扱うのが筋である |
+
+**ノイズ無しは意図した簡略化であり、実機との差である。** 実測値 1.017 m（真値 1.0 m）の
++17mm の偏りは、底面モデルと共有する histogram のサブ bin 分解能に由来するもので、
+ノイズではない。
+
+### 4.9.4 既定では無効 — 基準は動いていない
+
+| 確認 | 結果 |
+|---|---|
+| `sf sils regression`（既定、前方なし） | **28 PASS / 5 KNOWN-FAIL / 1 SKIP**（基準どおり）|
+| `test_determinism_unchanged_without_env_vars` の SHA256 | **基準値のまま**（変化なし）|
+| `test_tof_front_sils.py`（既存 4 件） | 全て PASS |
+| `pytest simulator/tests lib/sfpilot lib/sfcli lib/sflog` | **458 passed / 1 skipped**（`test_real_link_telemetry.py` 除外。基準 約430 に対し本作業の追加分）|
+
+### 4.9.5 前方モデル有効時の底面 ToF タイミング（実測）
+
+**前方を有効にしても、底面 ToF のサンプル時刻は 1 サンプルも動かなかった。**
+
+| 測定 | 結果 |
+|---|---|
+| STATE 行の時刻（前方 OFF と ON、先頭 266 行の対応比較） | **不一致 0 件** |
+| 底面 ToF の値と有効性の列 | **不一致 0 件** |
+
+§4.7 の見積もりは「欠けるのは最悪 1 サンプル」だったが、**実測は 0 サンプル**である。
+理由は、前方の起動が `last_wake` に触れず周期の余り時間で進むという設計
+（§4.7）が、前方が「居る」経路でもそのまま効いているためである。**前方が実際に
+起動して測距する経路を SILS が通るのは今回が初めてであり、その検証になった。**
+
+### 4.9.6 実装したもの（回転を要しない探索）
+
+| 層 | 変更 |
+|----|------|
+| `config.py` | `ForwardConfig` — `stop_distance_m=0.5` / `release_distance_m=0.7`（ヒステリシス）/ `wall_near_m=0.8` / `somewhat_near_m=1.5` / `invalid_grace_s=2.0` |
+| `monitor.py` | 前方の区分（`開けている` / `やや近い` / `壁が近い` / `測定不能`）と、**即時安全則**（`壁が近い` なら Jev を待たず `stop`） |
+| `summarizer.py` | `flight.forward_clearance` を英語（`open` / `somewhat near` / `wall near` / `cannot be measured`）で state に載せる |
+| `pilot_web.html` | 上から見た図に前方距離の線（機首方位に沿って伸び、終端に面の印。停止しきい値以下で赤） |
+| `events.py` | `tof_front_m` をライブ表示へ配信（無い値は配信しない＝線を消す） |
+| `pilot.py`（CLI） | `sf pilot say` に `--scene` を追加（`run`/`mission` と同じ選択肢） |
+
+**`測定不能` を `開けている` と同義に扱っていない。** 実機は「前に何も無い」ときも
+「面が近すぎて復元できない」ときも無効を返す（§4.8.6）ので、無い読み値を空きと読むと、
+**見えていない方の場合へ機体を進める**ことになる。直前の有効値を `invalid_grace_s`
+（2 秒）だけ保持し、それを過ぎたら `測定不能` にする。`測定不能` だけでは停止しない
+（前方センサの無い全飛行が止まってしまうため）が、`開けている` にも決してしない。
+
+### 4.9.7 SILS 実測（`--fake`）
+
+| 場面 | 実測 |
+|---|---|
+| `wall_ahead` で前進 | t=15.65s に区分が `壁が近い` になり、**Monitor 由来**の `stop` が 1 回（理由「前方に障害物が近いため即時停止」）。真値の最大到達 N=**0.668m** ＝ 壁（N=1.0m）の **0.332m 手前**で停止 |
+| `dead_end` で前進 | 同じく Monitor の `stop`（t=14.54s）。**飛行中**の最大到達 N=0.946m ＝ **0.054m 手前**。接地後に地面を滑って N=0.996m まで進んだ |
+
+#### 本物の Jev による実走（2 回）
+
+| 実行 | 結果 |
+|---|---|
+| `say --scene wall_ahead`（`…175531`） | 114 判断、往復 p50 216ms / max 668ms。**Monitor の `stop` で壁の 0.414m 手前に停止。** state の `forward_clearance` は `somewhat near` → `wall near` と推移した |
+| `say --scene dead_end`（`…175620`） | 298 判断、往復 p50 247ms / max 582ms。**Monitor の `stop` で 0.534m 手前に停止** |
+
+**判断層と即時則の関係が実走で確認できた。** どちらの実行でも停止を出したのは
+`source=monitor`（コードの即時則）であり、Jev ではない。これは設計どおりである —
+往復に上限の保証が無い以上、壁の手前で止まる判断を往復の後ろに置くことはできない。
+
+同時に、**Jev の読みは state に対して妥当だった**: `somewhat near` の間は
+`continue`（確信度 0.47〜0.68）を選び、`wall near` になると選択が `continue`(0.60) /
+`hold`(0.27) / `land`(0.13) に割れた。割れた答えは Arbiter が待機として扱う（4.5 節の
+規則）。Jev は「壁が近い」という語を、確信度を下げる理由として正しく読んでいる。
+
+**`dead_end` の余裕が 54mm しかない点は、率直に問題として記録する。** 原因は停止則では
+なく接近速度と降下中の横流れである（`wall_ahead` は直前に `up 80` を含み高度 1.48m から
+0.35m/s で接近、`dead_end` は 0.17m/s だが 0.5m 付近から降下に入った）。降下中に位置保持
+が効かないことは 4.2・4.3 節で報告済みの既知の挙動であり、本作業では直していない。
+**壁の直前で着陸する状況では、停止則だけでは接触を防げない可能性がある。**
+
+### 4.9.8 実装中に見つけた不具合（いずれも本作業で作り込み、直した）
+
+| # | 症状 | 原因 |
+|---|------|------|
+| 1 | 前方が 0x31 で起動するのに、測距値が永久に「対象なし」 | アドレス振り直しの判定を「レジスタ 0x0001 への書き込み」だけで行っていた。ドライバは**同じレジスタから始まる 137 バイトの設定ブロック**も書き、その 3 バイト目は設定データである。それをアドレスと取り違えて部品が 0x00 へ移り、どこにも応答しなくなっていた。**書き込みを識別するのはレジスタ番号ではなく書き込みの「形」**（ちょうど 3 バイト）である |
+| 2 | 1 を直しても、まだ「対象なし」のまま | `sils_vl53` のフレーム/ストリーム計数器を 2 センサで共有していた。gen4 の復号は**フレームをまたいで状態を持つ**（VCSEL 設定の交互使用と、連続フレーム間の位相整合の確認）ため、各部品が他方のトランザクションで計数器を進め、位相整合が破れていた。`Part::{Bottom,Front}` で状態を分離して解決 |
+
+2 はとりわけ教訓的である。**経路上のどの値も個別には正しく見えたまま、結果だけが永久に
+無効**という形で現れた。最初に書いたヘッダのコメントは「状態の共有は安全である」と
+説明していたが、それが誤りだった（該当コメントは実測に合わせて書き直した）。
+
+### 4.9.9 残る問題
+
+| 事項 | 状況 |
+|------|------|
+| ヨー回転での探索・方位選択 | **保留。** 解除条件は 4.9.1 のとおり（バックログ #12 待ち）|
+| `dead_end` の 54mm | 停止則は働いたが余裕が薄い。根治は降下中の位置保持（4.2・4.3 節、ファーム側の判断事項）|
+| 前方モデルのノイズ | 付けていない（4.9.3）。N3 tier で底面と併せて扱うのが筋 |
+| 実機の前方 ToF での本節の確認 | 未実施。本節はすべて SILS の実測である |
+| `sf pilot say` の日本語解釈 | 「前に80cm進んで」が `up 80` + `forward 50` になる事例を観測した。本作業の範囲外（P3 の指示解釈）だが、記録しておく |
+
+## 4.10 ヨー飽和の是正案 3 件の実測と結論（2026-09-19）
+
+### 要旨
+
+4.9.1 節が「保留の根拠」として指した、別ツリーでの 3 案の実測が完了した。**結論は「3 案とも現時点では採用しない」である。** したがって **4.9.1 節の解除条件は満たされず、ヨー回転による探索は引き続き保留する。**
+
+4.9.1 節は「別の作業で 3 案を実測中」と書いていた。本節はその結果であり、4.9 節の保留の判断を**取り消すものではなく、裏づけるもの**である。
+
+### 4.10.1 経緯
+
+`simulation-policy.md` 改修バックログ **#12**（ファームのヨートルク権限の再検討）に対し、3 案を別々の作業ツリーで実装・実測し、審査と 3 観点（再現性・制御理論・実機リスク）の反証にかけた。
+
+| 案 | 内容 | 結果 |
+|---|---|---|
+| A | 上限の余裕則（`rate.yaw.max_torque` を $8.331\times10^{-4}$ へ） | 落下は消えるが `stab_flight` が新規 FAIL。狙った既知失敗は直らず、トルク上限の張り付き率は 0.8156 → 0.9719 に悪化 |
+| B | ヨーレート D 項のフィルタ | **前提が誤り**であることを実装者が実測で示して却下。1 LSB 交番への D 項の寄与は上限の 0.28% にすぎず、飽和の原因ではない |
+| C | ミキサーの優先度つき縮小（`actuator.cpp` のみ） | 落下は消え（`yaw_crossaxis` の最低高度 0.006 → 0.211m、`yaw_cw90_low` 0.007 → 0.194m、`api_flight` 0.359 → 0.946m）、再確認試験の判定も不変。しかし反証で**阻止級の指摘が 4 件** |
+
+**真因**は「ミキサーが各モータの duty を独立に切り詰め、上側で切り落とした分を再配分しないこと」と特定した。ヨーは $0.25/\kappa = 61$ N/(N·m) のレバレッジを持ち、上限いっぱいのヨートルクは 1 モータにホバー分担の 73.6% の上積み（duty 1.0522）を要求するため、上限を超えた分が切り落とされて平均揚力が失われる。
+
+**数値・反証の内訳・オーナーへの判断依頼（選択肢 (a)/(b)/(c)）は `docs/architecture/simulation-policy.md` の「#12 の調査結果」を基準とする。** 本節で重複して持たない。
+
+### 4.10.2 4.9 節の保留が続く理由
+
+4.9.1 節の解除条件は「**高度 0.5m のホバリングから `cw 90` が、落下・衝撃検出・解除のいずれも起こさずに完了すること**」である。現時点の評価:
+
+| 案 | 解除条件を満たすか | 判断 |
+|---|---|---|
+| A | 部分的（`cw 90` は完走するが `stab_flight` が新規 FAIL） | **不採用**のため、そもそも解除に使えない |
+| B | 実体が無い | 同上 |
+| C | 満たす（`cw 90` が完走する） | **不採用**のため、同上。加えて、送信機による手動操縦のヨー飽和は直っておらず、離陸できなくなる新規欠陥を作る |
+
+**採用されない変更で解除条件を満たしても、解除にはならない。** 現在の main のファームでは 4.9.1 節の表のとおり `cw 30` でも落ちるので、探索を実装すれば試験の証拠は「墜落」になる。4.3 節の方針（落下を隠す回避を自動操縦に入れない）に従い、引き続き実装しない。
+
+### 4.10.3 解除条件（更新）
+
+解除条件そのもの（0.5m から `cw 90` が完走すること）は 4.9.1 節のまま変えない。**誰が何を決めれば解除に進めるか**を明示する:
+
+1. **オーナーが `simulation-policy.md` #12 の選択肢 (a)/(b)/(c) から方針を決める。** 「揚力を守る」と「ヨー権限を確保する（外乱の治療）」は相反するため、これは制御則の設計判断であり、飛行実績と実機ログを持つファームのオーナーが決める。
+2. **(a) または (c) を選んだ場合**: 修正されたミキサーで 0.5m からの `cw 90` が完走し、かつ実機での段階的な確認（低高度ホバーから）が済んだ時点で、本節の探索の実装に着手してよい。
+3. **(b)（現状維持）を選んだ場合**: **ヨー回転による探索は恒久的に保留となる。** その場合、自動操縦側は「旋回前に高度を取る」制約を明示し、4.9.6 節の回転を要しない探索（前方距離に基づく即時安全則）のままで完結させる。
+
+**いずれの場合も、高度を上げて地面に届かなくする回避は解除条件に含めない**（4.9.1 節のとおり）。
+
+### 4.10.4 再現手段
+
+参照用シナリオを 2 本、`simulator/sils/scenarios/` に置いた。**どちらも `.expect` を持たない**ので `sf sils regression` の対象外であり、再確認試験の基準は動いていない（`lib/sfcli/commands/sils.py:2183` が `.expect` のあるシナリオだけを集める）。TEST_MATRIX.md 2 節「参照用シナリオ」に登録した。
+
+| シナリオ | 何を再現するか |
+|---|---|
+| `yaw_crossaxis.scn` | 4.3 節の軸をまたぐ移動（`forward 60` → `right 60`）での落下。`--duration 40000000`、窓 26-34 秒 |
+| `yaw_cw90_low.scn` | 4.9.1 節の純ヨー（`cw 90`）での落下。`--duration 36000000`、窓 18-28 秒 |
+
+落下を特徴づける指標（duty の上限張り付き率等）は使い捨ての試験プログラムで算出した。`tools/` にスクリプトを増やさない方針（PROJECT_PLAN §8）に従い、恒久化するなら `sf sils scenario` の既存の指標に足すのが筋である（提案のみ、未実装）。
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
 |------|------|------|
-| `lib/sfpilot/config.py` | しきい値・期限・包絡（dataclass） | 実装済み |
+| `lib/sfpilot/config.py` | しきい値・期限・飛行領域（dataclass） | 実装済み |
 | `lib/sfpilot/link.py` | `Link` インターフェース、`RealLink`（UDP:5005 の 50Hz 受信を含む）、`ReplayLink`、`SilsLink` | 実装済み |
-| `lib/sfpilot/scenes.py` | 場面 3 種の宣言（環境変数＋周期ごとのフック） | 実装済み（P2） |
+| `lib/sfpilot/scenes.py` | 場面 5 種の宣言（環境変数＋周期ごとのフック）。壁の 2 種は 4.9 | 実装済み（P2 / 4.9） |
+| `simulator/sils/devices/vl53_front_device.{hpp,cpp}` | 前方 VL53L3CX のデバイスモデル（XSHUT 関門・0x31 への振り直し。既定 OFF） | 実装済み（4.9） |
 | `lib/sfpilot/monitor.py` | 区分の判定と即時安全則 | 実装済み |
 | `lib/sfpilot/summarizer.py` | 区分 → JSON state、`signature()` | 実装済み |
 | `lib/sfpilot/judge.py` | 質問定義、`JevJudge`、`FakeJudge` | 実装済み |
@@ -837,7 +1080,7 @@ v2 のフロー 2 項目は当初「前回送信からの差分」だった。**
 | `lib/sfpilot/trace.py` | 1 判断 1 行の JSON 記録 | 実装済み |
 | `lib/sfpilot/pilot.py` | ループ本体 | 実装済み |
 | `lib/sfcli/commands/pilot.py` | `sf pilot bench` / `replay` / `run` / `say` | 実装済み |
-| `lib/sfpilot/instruction.py` | 指示 → 手順の列（数値の抽出・組み立て規則・包絡の事前検査・`return_home`） | 実装済み（P3） |
+| `lib/sfpilot/instruction.py` | 指示 → 手順の列（数値の抽出・組み立て規則・飛行領域の事前検査・`return_home`） | 実装済み（P3） |
 | `lib/sfpilot/say.py` | 手順の実行と、その間も動き続ける監視層 | 実装済み（P3） |
 | `lib/sfpilot/tests/say_eval_cases.yaml` | `sf pilot say --eval` の指示 10 例と期待 | 実装済み（P3） |
 | `lib/sfpilot/mission.py` | 経路の読み込み・到達の区分・飛行ループ・コード側の上限 | 実装済み（P4） |
@@ -934,16 +1177,16 @@ security add-generic-password -U -a "$USER" -s typesafe-api-key -w
 
 | 観点 | 確認内容 |
 |------|---------|
-| Arbiter | 期限超過・鮮度切れ・低確信・拮抗・包絡外・API エラーがすべて待機になること。待機 10 秒で着陸すること |
+| Arbiter | 期限超過・鮮度切れ・低確信・拮抗・飛行領域外・API エラーがすべて待機になること。待機 10 秒で着陸すること |
 | Monitor | 数値が区分（言葉）になること。傾向に継続時間が要ること。電池危険で Judge を待たず着陸すること |
 | Summarizer | state に数値が 1 つも無いこと。不明な項目が省かれること。指紋が区分の変化に追随すること |
 | Judge | `emergency` がどの質問の選択肢にも無く、判断経路から出てこないこと |
 | ループ | 例外を投げる Judge でも止まらないこと。記録が 1 行 1 JSON で出ること |
 | ReplayLink | 実際の飛行ログを時刻順に再生し、判断の記録が出ること |
-| 指示の変換（P3） | 数値の抽出（半角・全角・漢数字、m/cm/度）。組み立て規則の各項目（`none` 以降を捨てる・離陸と着陸の補い・既定の量・数値が区分に優先）。包絡の事前検査が超過を手順名指しで拒否すること。低確信で実行しないこと。旋回を含む `return_home` の計算 |
+| 指示の変換（P3） | 数値の抽出（半角・全角・漢数字、m/cm/度）。組み立て規則の各項目（`none` 以降を捨てる・離陸と着陸の補い・既定の量・数値が区分に優先）。飛行領域の事前検査が超過を手順名指しで拒否すること。低確信で実行しないこと。旋回を含む `return_home` の計算 |
 | 手順の実行（P3） | 手順の実行中に待機の `rc` を送らないこと（移動を打ち消すため）。着陸・停止は送ること。答え待ちの待機で中断しないこと。次の手順は機体の応答と静定を待つこと |
 | CLI（P3） | 非対話で `--yes` が無ければ実行しないこと。`--dry-run` が何も飛ばさないこと |
-| 経路の読み込み（P4） | 包絡外の経路を、操作者が書いた区間名で拒否すること。`verb` の欠落・不正・量の欠落・空の経路・存在しないファイルを拒否すること。裸の名前が同梱の経路に解決され、手元の同名ファイルがそれに優先すること |
+| 経路の読み込み（P4） | 飛行領域外の経路を、操作者が書いた区間名で拒否すること。`verb` の欠落・不正・量の欠落・空の経路・存在しないファイルを拒否すること。裸の名前が同梱の経路に解決され、手元の同名ファイルがそれに優先すること |
 | 到達の区分（P4） | 許容内が「目標どおり」。区間の進行方向への射影で「手前」と「行き過ぎ」を分けること。終点の横で終わった区間を「行き過ぎ」と呼ばないこと。許容が config 由来であること |
 | ミッションの state（P4） | 数値が 1 つも無いこと。「3/10」が位置として渡ること。やり直し回数と経過時間が語になること。到達が未確定なら項目ごと省くこと |
 | コード側の上限（P4） | やり直しが上限で「飛ばす」に変わること。待機がやり直しに解決された場合も計数に含まれること。電池が少ないとき進む系の答えが `return_home` に置き換わり、`land` は置き換わらないこと。時間上限が次の区間の前に効くこと |
@@ -985,11 +1228,11 @@ P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 | P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done**. All three scenes confirmed against the live Jev (§4.5) |
 | P3 | `sf pilot say` (natural-language instruction) | **Done**. 7/10 against the live Jev, all three misses diagnosed and fixed, now **10/10** (§4.5) |
 | P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done**. A reply-count race found and fixed during the live-Jev flights; **all six legs now complete `as planned`** (§4.5) |
-| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). **Two premises**: (1) the forward ToF is driven (P2b — implemented, not yet verified on hardware) and (2) **SILS simulates a forward distance** (a MuJoCo raycast or similar; not started). Without (2) a wrong heading judgment is first met in the air | Not started (waiting on P2b's hardware verification and on a simulated forward distance in SILS) |
+| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). Premise (2), a simulated forward distance in SILS, is now implemented (§4.9) | **Partly implemented** (§4.9): the simulated forward distance and the turn-free immediate safety rule are done. **Yaw-turn exploration and heading selection are deferred** — in SILS as it stands even `cw 30` drops the aircraft (§4.9.1). The release condition is resolving backlog #12 |
 | P4c | **Ways to watch a flight** (`--web` live view, plus video / GUI replay afterwards; §4.6) | **Done** |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
-**Forward ToF status (important):** the forward ToF has been driven since 2026-09-19 (P2b; see §4.7 of the Japanese section). `TofTask` holds the forward part in reset while it brings the bottom sensor up at 0x30, and only then wakes the forward one and moves it to 0x31. Telemetry v2's `tof_front` and validity bit1 are supplied from there. **It is not yet verified on hardware.** The forward sensor is Optional and **needs battery power**: on USB alone it does not start and bit1 stays clear. **Obstacle avoidance and exploration (P4b) rest on one more premise that does not yet hold — SILS does not simulate a forward distance.** Until it does, a wrong judgment would first be met in the air.
+**Forward ToF status (important):** the forward ToF has been driven since 2026-09-19 (P2b; see §4.7 of the Japanese section). `TofTask` holds the forward part in reset while it brings the bottom sensor up at 0x30, and only then wakes the forward one and moves it to 0x31. Telemetry v2's `tof_front` and validity bit1 are supplied from there. **It is not yet verified on hardware.** The forward sensor is Optional and **needs battery power**: on USB alone it does not start and bit1 stays clear. **The simulated forward distance in SILS was implemented on 2026-09-19 (§4.9).** The remaining constraint is yaw rotation: in SILS as it stands the aircraft falls out of the air from the turn itself, so exploration is deferred (§4.9.1).
 
 **Why the forward ToF is not fed to the estimator:** it observes obstacles ahead, not the vehicle's own state, so it is mirrored for monitoring and telemetry only. The bottom ToF remains the single vertical observation.
 
@@ -1497,6 +1740,263 @@ With the totals firmware (`1dd1b3c6`) flashed, the craft was held by hand (0.15-
 - **With 39% of the packets lost, going out and coming back returns the totals to where they started.** The delta version lost the displacement of every dropped packet (4.8.3); the effect of sending totals is confirmed on hardware.
 - A fore-aft move barely moves `dy` and a lateral move barely moves `dx`: the axes do not mix.
 - Below the ranging minimum (bottom ToF invalid) with surface quality under 40, the total was seen to jump by more than 1,000 counts at once. Too close to a surface, flow is not trustworthy; if the pilot ever uses raw flow it must gate on surface quality and on the bottom ToF being valid.
+
+## 4.9 Results of P4b (A Forward Distance in SILS, and Exploration Without Turning, 2026-09-19)
+
+### Summary
+
+**A simulated forward distance was implemented in SILS, together with the immediate
+safety rule that uses it while flying forward. Yaw-turn exploration and heading
+selection were DEFERRED, on the strength of measurement.**
+
+The deferral is not a matter of scope. **In SILS as it stands, the aircraft falls out
+of the air from the yaw rotation itself.** `cw 30` was measured to fall exactly as
+`cw 90` does (table below). Exploration rests entirely on turning, so while turning
+does not work, implementing it could only produce a feature whose test evidence is a
+crash, or one that hides the crash behind a climb. Following §4.3's policy — no
+workaround that conceals a fall goes into the autopilot — it is reported rather than
+built.
+
+### 4.9.1 Yaw rotation, measured (the basis for deferring)
+
+From a 0.5 m hover, each command was sent and the ground-truth altitude watched. The
+harness is `_Emu` + `SilsLink` from `simulator/tests/test_pilot_sils.py`, with the
+sticks held neutral throughout.
+
+| Command sent | Minimum altitude | Yaw achieved | Impact | Disarm |
+|---|---|---|---|---|
+| nothing (control) | **+0.498 m** | — | 0 | no |
+| `rc 0 0 0 0` (pure hover) | **+0.490 m** | — | 0 | no |
+| `rc 25 0 0 0` (horizontal, east) | **+0.483 m** | — | 0 | no |
+| `cw 90` | −0.000 m | 0.9° | 4.7 G | **yes** |
+| `cw 45` | −0.000 m | 0.7° | 4.9 G | **yes** |
+| `cw 30` | −0.000 m | 0.5° | 5.3 G | **yes** |
+| `rc 0 0 0 10` (0.1 rad/s) | −0.000 m | ~0° | 0 | no (sank) |
+| `rc 0 0 0 25` (0.25 rad/s) | −0.000 m | 3.7° | 1 | **yes** |
+| `rc 0 0 0 50` (0.5 rad/s) | −0.000 m | ~0° | 1 | **yes** |
+
+The altitude trace for `cw 30` — 0.5 m to the ground in 1.3 s:
+
+```
+alt=+0.505 yaw= +0.0      alt=+0.482 yaw= +6.4
+alt=+0.265 yaw=+15.2      alt=+0.079 yaw=+24.6
+alt=-0.000  → IDLE_GROUND, Impact 5.3G, DISARM
+```
+
+**Three facts this adds to §4.3:**
+
+1. **A smaller turn is not a way out.** §4.3 recorded `cw 90`; `cw 45` and `cw 30`
+   fall the same way. The reason is in the firmware: `cmdRotate` (`api_task.cpp:372`)
+   is a step change to the yaw TARGET, and the turn rate comes from the controller's
+   guidance yaw limit rather than from the angle. "Perhaps 45° steps would get
+   through" therefore **cannot work by construction**.
+2. **A low yaw-rate command is not a way out either.** Even 0.1 rad/s through `rc`
+   sinks the craft to the ground.
+3. **The fall is specific to the yaw axis.** A pure hover and a horizontal `rc` both
+   hold altitude to within 2 cm. This is neither a harness artefact nor a problem
+   with `rc` in general, and it is consistent with the mechanism §4.3 identified
+   (yaw torque saturating, the mixer amplifying it, duty pinning, mean lift falling).
+
+**Depends on:** `simulation-policy.md` improvement backlog **#12** (reconsidering the
+firmware's yaw torque authority). The three candidate approaches — headroom on the
+limit, a filter on the D term, and a priority-weighted mixer scale-down — have since
+been measured as separate work, and **none of them was adopted** (§4.10). The deferral
+in this section therefore stands.
+
+**Release condition (exploration may be built once this holds):** **from a 0.5 m
+hover, `cw 90` completes with no fall, no impact detection and no disarm.** Climbing
+so the ground is out of reach does not count as satisfying it (`api_flight.scn` climbs
+to 0.7 m before turning to AVOID this phenomenon, which is not the same as fixing it).
+
+**No firmware parameter was touched** (`rate.yaw.max_torque` and the rest).
+
+### 4.9.2 What was implemented (the simulated forward distance)
+
+| Layer | Change |
+|---|---|
+| Plant | `Plant::tofFront()` — forward distance along body +X, solved as a ray-to-segment intersection against vertical walls placed at run time by `Plant::addWall()`. Out of range / no target returns `status=255`, value 0, `valid=false` (the same shape the hardware was measured to report, §4.8.6) |
+| Device model | `simulator/sils/devices/vl53_front_device.{hpp,cpp}` — the forward VL53L3CX. While XSHUT is low it answers at **no address at all**; high, it answers at 0x29, reports MODEL_ID 0xEA, and moves to 0x31 when re-addressed |
+| GPIO | The host `gpio_set_level()` now forwards to `sils_board_gpio_set_level()` (it was inert). The only wired pin is the front XSHUT (`CONFIG_STAMPFLY_TOF_FRONT_XSHUT_GPIO` = GPIO9); every other pin stays a no-op |
+| stdin | `wall <n0> <e0> <n1> <e1>` in NED metres, in the same idiom as `wind` / `vbatt`, so obstacles are placed at run time without touching a `.scn` |
+| STATE line | `tof_front` and `tof_front_valid` appended to the tail (no existing key moved) |
+| `SilsLink` | Sets `Sample["tof_front_m"]` only when `tof_front_valid=1`; otherwise the key is dropped entirely |
+| Scenes | `wall_ahead` (a 2 m-wide wall 1.0 m ahead) and `dead_end` (that wall plus an east side wall, west left open) in `scenes.py`. The default-off `SILS_EMU_FRONT_TOF=1` is supplied by the scene's `env` |
+
+**No coordinate transform was written outside `frames`.** The beam direction is the
+truth attitude `q_nb` rotating the unit forward vector, and the wall intersection is
+solved in the 2-D NED horizontal plane.
+
+**Why not `mj_ray` (a deliberate departure from the instruction):** the instruction
+named `mj_ray`, but **a wall added at run time is not in the `mjModel` at all** — MuJoCo
+does not support adding geoms to a live model. Writing the walls into the MJCF would
+stand them in front of all 33 regression scenarios, which the instruction itself ruled
+out as changing the default world. For vertical walls and a horizontal beam the 2-D
+analytic solution is exact, so it was used instead.
+
+### 4.9.3 Where this sits on fidelity (following `simulation-policy.md`)
+
+| Item | Value chosen | Basis |
+|---|---|---|
+| Maximum range | 2.0 m (`Config::tof_front_max_m`) | The range that means anything inside the 2 m envelope radius. The real VL53L3CX reaches further, but **a longer range would not add a situation this plan can verify**, and what cannot be verified is not simulated |
+| Minimum range | 0.05 m | The same close-range floor the downward model uses (`kTofMinRange`) |
+| Out of range / no target | `status=255`, value 0, invalid | **Matched to the hardware measurement (§4.8.6).** A saturated constant is never returned as valid — a false distance is more dangerous than an invalid one |
+| Noise | **None added** | The downward ToF's N2 observation noise is off by default, and giving only the forward part noise would leave the two sensors at mismatched fidelity. If noise is wanted, the place for it is the N3 tier (backlog #6), covering both together |
+
+**The absence of noise is a deliberate simplification and a difference from hardware.**
+The measured 1.017 m against a true 1.0 m is a +17 mm bias from the sub-bin histogram
+resolution shared with the downward model, not noise.
+
+### 4.9.4 Off by default — the baselines did not move
+
+| Check | Result |
+|---|---|
+| `sf sils regression` (default, no forward part) | **28 PASS / 5 KNOWN-FAIL / 1 SKIP** (the baseline) |
+| `test_determinism_unchanged_without_env_vars` SHA256 | **Unchanged from the baseline** |
+| `test_tof_front_sils.py` (the existing 4) | All pass |
+| `pytest simulator/tests lib/sfpilot lib/sfcli lib/sflog` | **458 passed / 1 skipped** (excluding `test_real_link_telemetry.py`; the additions of this work on top of the ~430 baseline) |
+
+### 4.9.5 Bottom-ToF timing with the forward model enabled (measured)
+
+**Enabling the forward part moved the bottom ToF's sample times by nothing at all.**
+
+| Measurement | Result |
+|---|---|
+| STATE line timestamps (forward OFF vs ON, first 266 lines compared pairwise) | **0 mismatches** |
+| The bottom ToF's value and validity stream | **0 mismatches** |
+
+§4.7 estimated "at worst one sample lost"; the measurement is **zero samples**. The
+reason is that the bring-up design of §4.7 — never touching `last_wake`, advancing only
+in the cycle's spare time — holds just as well on the path where the forward part is
+actually present. **This is the first time SILS has run the path where the forward
+sensor really starts and ranges, so this measurement is that path's verification.**
+
+### 4.9.6 What was implemented (exploration that needs no turning)
+
+| Layer | Change |
+|---|---|
+| `config.py` | `ForwardConfig` — `stop_distance_m=0.5`, `release_distance_m=0.7` (hysteresis), `wall_near_m=0.8`, `somewhat_near_m=1.5`, `invalid_grace_s=2.0` |
+| `monitor.py` | The forward classification (`open` / `somewhat near` / `wall near` / `cannot be measured`) and the **immediate safety rule**: `wall near` sends `stop` without waiting for Jev |
+| `summarizer.py` | `flight.forward_clearance` reaches the state in English |
+| `pilot_web.html` | The top view draws the forward distance as a ray along the heading, ending in a mark for the surface, red at or below the stop threshold |
+| `events.py` | `tof_front_m` is fed to the live view (an absent value is not sent, which clears the ray) |
+| `pilot.py` (CLI) | `sf pilot say` gained `--scene`, with the same choices as `run` / `mission` |
+
+**"Cannot be measured" is never treated as "open".** The hardware returns invalid both
+when nothing is ahead and when a surface is too close to resolve (§4.8.6), so reading
+an absent value as clearance would **fly the craft into the case it cannot see**. The
+last valid reading is held for `invalid_grace_s` (2 s) and then becomes "cannot be
+measured". That word alone does not stop the craft — every flight without a forward
+sensor would stop — but it never becomes "open" either.
+
+### 4.9.7 Measured in SILS (`--fake`)
+
+| Scene | Measured |
+|---|---|
+| Flying forward in `wall_ahead` | At t=15.65 s the classification became `wall near` and one `stop` was issued **from the Monitor** (reason: "前方に障害物が近いため即時停止"). Ground truth reached N=**0.668 m**, stopping **0.332 m short** of the wall at N=1.0 m |
+| Flying forward in `dead_end` | The same Monitor `stop` (t=14.54 s). Maximum **while airborne** N=0.946 m, i.e. **0.054 m short**; after touchdown it slid along the ground to N=0.996 m |
+
+#### Two flights against the live Jev
+
+| Run | Result |
+|---|---|
+| `say --scene wall_ahead` (`…175531`) | 114 decisions, round trip p50 216 ms / max 668 ms. **Stopped 0.414 m short of the wall on the Monitor's `stop`.** The state's `forward_clearance` moved `somewhat near` → `wall near` |
+| `say --scene dead_end` (`…175620`) | 298 decisions, round trip p50 247 ms / max 582 ms. **Stopped 0.534 m short on the Monitor's `stop`** |
+
+**The relationship between the judging layer and the immediate rule was confirmed in
+flight.** In both runs the stop came from `source=monitor` — the code's own rule — and
+not from Jev. That is the design: with no guaranteed upper bound on the round trip, the
+decision to stop before a wall cannot sit behind one.
+
+At the same time, **Jev's reading of the state was sound**: while the state said
+`somewhat near` it chose `continue` (confidence 0.47–0.68), and once it said `wall near`
+the answer split between `continue` (0.60), `hold` (0.27) and `land` (0.13). A split
+answer is taken as a hold by the Arbiter (the rule from §4.5). Jev reads the words
+"wall near" as a reason to be less certain, which is correct.
+
+**The 54 mm margin in `dead_end` is recorded plainly as a problem.** The cause is not
+the stop rule but the approach speed and the sideways drift during descent
+(`wall_ahead` included an `up 80` beforehand and approached from 1.48 m at 0.35 m/s;
+`dead_end` approached at 0.17 m/s but began descending near 0.5 m). Position hold not
+acting during descent is the known behaviour reported in §4.2 and §4.3, and it was not
+changed here. **Where the flight ends by landing just in front of a wall, the stop rule
+alone may not prevent contact.**
+
+### 4.9.8 Faults found while implementing (both introduced and fixed in this work)
+
+| # | Symptom | Cause |
+|---|---|---|
+| 1 | The forward part reached 0x31, yet the range was "no target" forever | The re-addressing test keyed only on "a write to register 0x0001". The driver ALSO writes a 137-byte configuration block that STARTS at that register, whose third byte is configuration data. Taking that for an address moved the part to 0x00, where it answered nothing. **What identifies the write is not the register number but the SHAPE of the write** (exactly three bytes) |
+| 2 | After fixing 1, still "no target" | The frame/stream counters in `sils_vl53` were shared between the two sensors. The gen4 decode is **stateful across frames** (interleaved VCSEL configs plus a phase-consistency check between consecutive frames), so each part advanced the counter on the other's transactions and the phase check broke. Resolved by separating the state with `Part::{Bottom,Front}` |
+
+Fault 2 is the instructive one. It presented as **every individual value along the path
+looking correct while the result was permanently invalid**. The header comment written
+first claimed sharing the state was safe; that claim was wrong, and the comment has
+been rewritten to match the measurement.
+
+### 4.9.9 What remains
+
+| Item | Status |
+|---|---|
+| Yaw-turn exploration and heading selection | **Deferred.** The release condition is in 4.9.1 (waiting on backlog #12) |
+| The 54 mm in `dead_end` | The stop rule worked, but the margin is thin. A real fix is position hold during descent (§4.2, §4.3 — a vehicle-side decision) |
+| Noise on the forward model | Not added (4.9.3). The N3 tier, covering it together with the downward part, is the right place |
+| Confirming this section on hardware | Not done. Everything here is measured in SILS |
+| `sf pilot say`'s Japanese parsing | "前に80cm進んで" was observed to become `up 80` + `forward 50`. Outside this work's scope (P3 instruction parsing), but recorded |
+
+## 4.10 Measurement of Three Yaw-Saturation Fixes, and the Conclusion (2026-09-19)
+
+### Summary
+
+The measurement of the three candidates in separate worktrees — the work §4.9.1 pointed to as the basis for deferring — is complete. **The conclusion is that none of the three is adopted for now.** The release condition in §4.9.1 is therefore **not met, and yaw-turn exploration stays deferred.**
+
+§4.9.1 said three candidates were "being measured in other work." This section is that result, and it **does not reverse §4.9's decision to defer — it confirms it.**
+
+### 4.10.1 History
+
+Against `simulation-policy.md` improvement backlog **#12** (reconsidering the firmware's yaw torque authority), three candidates were implemented and measured in separate worktrees, then put through review and three lines of adversarial checking (reproducibility, control theory, hardware risk).
+
+| Candidate | Content | Result |
+|---|---|---|
+| A | Cap with a headroom rule (`rate.yaw.max_torque` → $8.331\times10^{-4}$) | The fall disappears, but `stab_flight` newly FAILs. The targeted known-fails are not fixed, and the torque-cap pinning fraction worsens, 0.8156 → 0.9719 |
+| B | A filter on the yaw-rate D term | **The premise was false**; the implementer showed this by measurement and rejected the candidate. The D term contributes 0.28% of the cap to a 1-LSB alternation and is not what saturates |
+| C | Priority-ordered mixer desaturation (`actuator.cpp` only) | The fall disappears (`yaw_crossaxis` minimum altitude 0.006 → 0.211 m, `yaw_cw90_low` 0.007 → 0.194 m, `api_flight` 0.359 → 0.946 m) and the regression verdicts are unchanged — but adversarial review produced **four blocker-level findings** |
+
+**The root cause** was identified as "the mixer clips each motor's duty independently and never redistributes what it cut off at the upper rail." Yaw carries a leverage of $0.25/\kappa = 61$ N per N·m, so a yaw torque at the cap asks one motor for 73.6% of its hover share on top of hover (duty 1.0522); everything above the rail is clipped away and mean lift is lost.
+
+**The numbers, the breakdown of the findings, and the decision requested from the owner (options (a)/(b)/(c)) are authoritative in "Investigation Result for #12" in `docs/architecture/simulation-policy.md`.** They are not duplicated here.
+
+### 4.10.2 Why §4.9's deferral continues
+
+The release condition in §4.9.1 is: **`cw 90` from a 0.5 m hover completes without a fall, an impact detection, or a disarm.** As of now:
+
+| Candidate | Meets the release condition? | Judgment |
+|---|---|---|
+| A | Partly (`cw 90` completes, but `stab_flight` newly FAILs) | **Not adopted**, so it cannot serve as the release |
+| B | No substance to it | Same |
+| C | Yes (`cw 90` completes) | **Not adopted**, so the same. It also leaves manual transmitter yaw saturation unfixed and introduces a new defect that prevents takeoff |
+
+**Meeting the release condition with a change that is not adopted is not a release.** On main's firmware today, even `cw 30` falls (the table in §4.9.1), so implementing exploration would make the test evidence a crash. Per §4.3's policy — do not put fall-hiding workarounds into the autopilot — it stays unimplemented.
+
+### 4.10.3 Release condition (updated)
+
+The condition itself (`cw 90` completing from 0.5 m) is unchanged from §4.9.1. What is made explicit here is **who decides what before the release can proceed**:
+
+1. **The owner chooses among options (a)/(b)/(c) in `simulation-policy.md` #12.** "Preserve lift" and "preserve yaw authority (the disturbance remedy)" are in conflict, so this is a control-law design decision belonging to the firmware's owner, who holds the flight record and the real-vehicle logs.
+2. **If (a) or (c) is chosen**: once the corrected mixer completes `cw 90` from 0.5 m and staged hardware checks (starting from low-altitude hover) are done, implementation of the exploration in this section may begin.
+3. **If (b) (keep the present behaviour) is chosen**: **yaw-turn exploration is deferred permanently.** The autopilot then states the "gain altitude before turning" constraint explicitly and settles for the turn-free exploration of §4.9.6 (the immediate safety rule based on forward distance).
+
+**In every case, gaining altitude so the ground is out of reach does not count toward the release condition** (as in §4.9.1).
+
+### 4.10.4 How to reproduce
+
+Two reference scenarios were added under `simulator/sils/scenarios/`. **Neither has an `.expect`**, so both are outside `sf sils regression` and the regression baselines have not moved (`lib/sfcli/commands/sils.py:2183` collects only scenarios that have one). They are registered under "Reference scenarios" in TEST_MATRIX.md §2.
+
+| Scenario | What it reproduces |
+|---|---|
+| `yaw_crossaxis.scn` | §4.3's fall during a cross-axis move (`forward 60` → `right 60`). `--duration 40000000`, window 26-34 s |
+| `yaw_cw90_low.scn` | §4.9.1's fall under pure yaw (`cw 90`). `--duration 36000000`, window 18-28 s |
+
+The metrics characterising the fall (duty-rail pinning fraction and so on) were computed with a throw-away test program. Per the policy of not adding standalone scripts under `tools/` (PROJECT_PLAN §8), keeping them means adding them to the existing metric set of `sf sils scenario` (a proposal only; not implemented).
 
 ## 5. Placement
 

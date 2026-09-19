@@ -30,9 +30,11 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "sdkconfig.h"      // CONFIG_STAMPFLY_TOF_FRONT_XSHUT_GPIO (same as the firmware)
 #include "plant.hpp"        // sils::Plant
 #include "data_types.hpp"   // sf::ImuData, sf::MotorOutput
 #include "vl53_device.hpp"  // sils_vl53 (VL53L3CX ToF chip model, shared with the probe)
+#include "vl53_front_device.hpp" // sils_vl53_front (forward ToF, XSHUT-gated, default OFF)
 #include "pmw3901_device.hpp" // sils_pmw3901 (PMW3901 optical-flow chip model)
 
 namespace {
@@ -445,6 +447,24 @@ void sils_board_set_motor_health(int motor, float gain)
     g_plant->setHealth(motor, gain);
 }
 
+void sils_board_gpio_set_level(int gpio_num, int level)
+{
+    // Only the front ToF's XSHUT is wired to anything in this bench. The pin
+    // number comes from the same sdkconfig the firmware compiles against
+    // (CONFIG_STAMPFLY_TOF_FRONT_XSHUT_GPIO), so the two cannot drift apart.
+    // このベンチで何かにつながっている出力ピンは前方 ToF の XSHUT だけである。ピン
+    // 番号はファームがコンパイルに使うのと同じ sdkconfig 由来なので、両者がずれない。
+    if (gpio_num == CONFIG_STAMPFLY_TOF_FRONT_XSHUT_GPIO) {
+        sils_vl53_front::set_xshut(level != 0);
+    }
+}
+
+void sils_board_add_wall(float n0_m, float e0_m, float n1_m, float e1_m)
+{
+    if (g_plant == nullptr) return;
+    g_plant->addWall(n0_m, e0_m, n1_m, e1_m);
+}
+
 void sils_board_set_battery_voltage(float volts)
 {
     // No Plant guard here, unlike the hooks above: this override replaces the
@@ -517,6 +537,27 @@ int sils_board_i2c_xfer(uint16_t addr, const uint8_t* write_buf, size_t write_si
     // it (the env override SILS_VL53_TEST_MM, if set, still wins inside the model).
     // VL53L3CX 下向き測距: 起動時 0x29 → 0x30 へ再アドレス。両方を振り分け（front 0x31 は
     // catch-all）。Plant の下向き距離を渡し合成 histogram に符号化させる。
+    // The FRONT part is offered the address first, and only claims one while its
+    // XSHUT is high (default OFF: SILS_EMU_FRONT_TOF unset -> answers_at() is
+    // always false and this is one predictable branch). Order matters at 0x29:
+    // both parts power up there, and TofTask's whole bring-up sequence rests on
+    // the front one being in reset — and therefore NOT answering — while the
+    // bottom sensor is re-addressed to 0x30. Asking the front part first is what
+    // makes a bring-up bug show up as a wrong reading rather than as silence.
+    //
+    // 「前方」に先にアドレスを問う。前方が名乗るのは XSHUT が HIGH の間だけである
+    // （既定 OFF: SILS_EMU_FRONT_TOF 未設定なら answers_at() は常に false で、ここは
+    // 予測しやすい分岐 1 つになる）。0x29 では順序が意味を持つ: 2 個ともそこで起動し、
+    // TofTask の起動手順全体が「底面を 0x30 へ振り直す間、前方はリセット中であり
+    // 応答しない」ことに拠って立つ。前方に先に問うことで、起動手順の誤りは沈黙では
+    // なく誤った読み値として現れる。
+    if (sils_vl53_front::answers_at(addr)) {
+        if (g_plant != nullptr) {
+            const sf::TofData front = g_plant->tofFront();
+            sils_vl53_front::set_distance(front.distance, front.valid);
+        }
+        return sils_vl53_front::xfer(write_buf, write_size, read_buf, read_size);
+    }
     if (addr == sils_vl53::ADDR_DEFAULT || addr == sils_vl53::ADDR_BOTTOM) {
         if (g_plant != nullptr) {
             sils_vl53::set_distance_mm(g_plant->tof().distance * 1000.0f);

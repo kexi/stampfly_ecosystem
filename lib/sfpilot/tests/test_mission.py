@@ -113,7 +113,7 @@ def test_a_route_that_leaves_the_envelope_is_refused_by_name(tmp_path):
     Refusing at the leg that breaches would find it out in the air, with
     nobody to tell. This is the same rule `sf pilot say` follows.
 
-    包絡を出る経路は、機体が地上にあるうちに、その区間を名指しして拒否される
+    飛行領域を出る経路は、機体が地上にあるうちに、その区間を名指しして拒否される
     こと。
 
     違反する区間に達してから拒否すれば、空中で、伝える相手がいないところで

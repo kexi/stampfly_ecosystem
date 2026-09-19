@@ -185,7 +185,7 @@ def test_the_state_line_carries_the_fields_the_pilot_needs():
     drift, check the envelope, or see the battery at all.
     位置・速度・ToF・電池が STATE 行で届くこと。
 
-    P2 で追加した項目である。これらが無いと Monitor は流れを区分できず、包絡も
+    P2 で追加した項目である。これらが無いと Monitor は流れを区分できず、飛行領域も
     照合できず、電池も見られない。
     """
     emu = _fly_to_hover(duration_s=25.0)

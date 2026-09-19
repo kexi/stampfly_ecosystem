@@ -30,17 +30,35 @@ namespace sils_vl53 {
 constexpr uint16_t ADDR_DEFAULT = 0x29;   // power-on I2C address
 constexpr uint16_t ADDR_BOTTOM  = 0x30;   // re-addressed bottom altimeter
 
-// Push the current down-range target distance [mm] that the synthesized histogram
-// should encode (the board supplies the Plant ToF each transaction). The env
-// override SILS_VL53_TEST_MM, when set, always wins over this pushed value.
-// 合成 histogram が符号化すべき下向き目標距離[mm]を渡す（ボードが毎取引で Plant
-// ToF を供給）。環境変数 SILS_VL53_TEST_MM があれば常にそちらが優先。
-void set_distance_mm(float mm);
+// Which physical part a transaction belongs to. Each part owns its own chip
+// state, because the gen4 decode is STATEFUL: the driver interleaves two VCSEL
+// configs and checks that consecutive frames' phases agree, so the per-frame
+// counters must advance once per frame OF THAT PART. Sharing one counter between
+// two sensors halves each part's frame sequence, breaks the A/B parity and the
+// phase-consistency check, and the driver reports "no target" forever -- with
+// every individual value looking correct along the way.
+//
+// トランザクションがどの部品のものか。部品ごとに固有のチップ状態を持つ。gen4 の
+// 復号は「状態を持つ」からである: ドライバは 2 つの VCSEL 設定を交互に使い、連続
+// フレームの位相が整合するかを確認する。したがってフレーム計数器は「その部品の」
+// フレームごとに 1 回進まねばならない。1 つの計数器を 2 センサで共有すると各部品の
+// フレーム列が半分になり、A/B のパリティと位相整合の確認が破れ、ドライバは永久に
+// 「対象なし」を報告する ―― 途中のどの値も正しく見えたままで。
+enum class Part { Bottom, Front };
 
-// One VL53 I2C transaction. 16-bit BE register pointer in wbuf[0..1] (write-then-
-// read = repeated-START). Returns 0 (ACK). Mirrors the real chip's register map
-// only where the ST driver reads it; everything else is zero/ACK self-heal.
-// VL53 の1 I2Cトランザクション。16bit BE レジスタポインタは wbuf[0..1]。
-int xfer(const uint8_t* wbuf, size_t wlen, uint8_t* rbuf, size_t rlen);
+// Push the current target distance [mm] that the synthesized histogram should
+// encode for `part` (the board supplies the Plant range each transaction). The
+// env override SILS_VL53_TEST_MM, when set, always wins over this pushed value.
+// `part` の合成 histogram が符号化すべき目標距離[mm]を渡す（ボードが毎取引で
+// Plant の距離を供給）。環境変数 SILS_VL53_TEST_MM があれば常にそちらが優先。
+void set_distance_mm(float mm, Part part = Part::Bottom);
+
+// One VL53 I2C transaction for `part`. 16-bit BE register pointer in wbuf[0..1]
+// (write-then-read = repeated-START). Returns 0 (ACK). Mirrors the real chip's
+// register map only where the ST driver reads it; everything else is zero/ACK
+// self-heal.
+// `part` の VL53 の1 I2Cトランザクション。16bit BE レジスタポインタは wbuf[0..1]。
+int xfer(const uint8_t* wbuf, size_t wlen, uint8_t* rbuf, size_t rlen,
+         Part part = Part::Bottom);
 
 }  // namespace sils_vl53

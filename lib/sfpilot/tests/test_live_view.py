@@ -368,7 +368,7 @@ def test_the_route_is_converted_from_centimetres_to_metres():
     区間の amount はセンチメートルで、上から見た図はメートルであること。
 
     `square` は 60cm の区間を辿る。換算せずに描けば 60 **メートル**になり、
-    同じ図が描く 2m の包絡のはるか外に経路が出る — 壊れて見えないまま誤った
+    同じ図が描く 2m の飛行領域のはるか外に経路が出る — 壊れて見えないまま誤った
     絵になる。
     """
     from sfcli.commands.pilot import _leg_points

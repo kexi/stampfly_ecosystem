@@ -152,15 +152,29 @@ void print_state_line_if_due(int64_t now_us)
     // `_fly_parse_state`、simulator/tests/test_realtime_fly.py の `_parse_state`、
     // lib/sfpilot/link.py の SilsLink）、末尾への追加で壊れることはない。以下の
     // 追記部は `sf pilot` が必要とし、従来の行に無かったもの: 水平位置と速度
-    //（流れと包絡の判定）、下向き ToF とその有効性、百分率の電池残量。
+    //（流れと飛行領域の判定）、下向き ToF とその有効性、百分率の電池残量。
+    // The forward ToF is appended last (jev-autopilot P4b). It comes from the
+    // same sensor_snapshot mirror as the downward one, so both readings on a
+    // line are the same age and no reader has to reconcile two clocks. When the
+    // front part is absent -- the default, and the state of every regression run
+    // -- tof_front_valid is 0 and the value is -1.0, the same "do not trust me"
+    // form the downward reading already uses.
+    // 前方 ToF は末尾に追記する（P4b）。下向きと同じ sensor_snapshot のミラー由来
+    // なので、1 行の 2 つの読み値は同じ古さであり、読み手が 2 つの時計を突き合わせる
+    // 必要はない。前方が不在のとき ―― 既定であり、全ての回帰実行の状態である ――
+    // tof_front_valid は 0、値は -1.0 で、下向きが既に使っている「信用するな」と
+    // 同じ形になる。
     std::printf("STATE t=%.3f alt=%.3f roll=%.2f pitch=%.2f yaw=%.2f mode=%s:%s%s vbatt=%.2f"
-                " x=%.3f y=%.3f vx=%.3f vy=%.3f vz=%.3f tof=%.3f tof_valid=%d batt=%.1f\n",
+                " x=%.3f y=%.3f vx=%.3f vy=%.3f vz=%.3f tof=%.3f tof_valid=%d batt=%.1f"
+                " tof_front=%.3f tof_front_valid=%d\n",
                 (double)now_us * 1e-6, alt, e.x * kRad2Deg, e.y * kRad2Deg, e.z * kRad2Deg,
                 state_name, mode_name, mode.armed ? "*" : "", pwr.voltage,
                 est.position[0], est.position[1],
                 est.velocity[0], est.velocity[1], est.velocity[2],
                 snap.tof_valid ? snap.tof_distance : -1.0f, snap.tof_valid ? 1 : 0,
-                battery_percent(pwr.voltage));
+                battery_percent(pwr.voltage),
+                snap.tof_front_valid ? snap.tof_front_distance : -1.0f,
+                snap.tof_front_valid ? 1 : 0);
 }
 
 // Scheduler advance hook: step the physics by the elapsed virtual time, pushing

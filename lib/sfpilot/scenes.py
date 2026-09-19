@@ -33,6 +33,16 @@ from .config import DEFAULT_CONFIG
 NOMINAL = "nominal"
 BATTERY_DROP = "battery_drop"
 DRIFT = "drift"
+WALL_AHEAD = "wall_ahead"
+DEAD_END = "dead_end"
+
+# The forward ToF is absent from SILS unless this is set. It is opt-in because
+# a present forward sensor changes what TofTask does during bring-up, and the
+# regression baseline (28 PASS and a SHA256) is taken with it absent.
+# 前方 ToF は、これを設定しない限り SILS に存在しない。オプトインにするのは、前方が
+# 居ると TofTask の起動処理が変わるためで、回帰の基準（28 PASS と SHA256）は
+# 前方が居ない状態で取られている。
+FRONT_TOF_ENV = {"SILS_EMU_FRONT_TOF": "1"}
 
 
 @dataclass
@@ -109,6 +119,57 @@ def _drift_drive(config=DEFAULT_CONFIG):
     return drive
 
 
+def _walls_drive(walls, config=DEFAULT_CONFIG):
+    """Place the scene's walls once, on the first cycle.
+
+    Built once and left alone, like the wind level: walls do not move. The
+    first cycle is the earliest point at which the Plant is certainly
+    attached, which is why this is a hook rather than part of the launch
+    environment -- an obstacle sent before the Plant exists would be dropped
+    silently, and the flight would then measure an empty room while claiming
+    to measure a wall.
+
+    場面の壁を最初の 1 周期で 1 度だけ置く。
+
+    風の水準と同じく、1 度組み立てたらそのままにする。壁は動かない。最初の周期は
+    Plant が確実に接続されている最も早い時点であり、これを起動時の環境変数ではなく
+    フックにしている理由でもある ―― Plant が存在する前に送られた障害物は黙って
+    捨てられ、飛行は「壁を測っている」と言いながら空の部屋を測ることになる。
+    """
+    state = {"placed": False}
+
+    def drive(link, elapsed_s: float, total_s: float) -> None:
+        if state["placed"]:
+            return
+        state["placed"] = True
+        for n0, e0, n1, e1 in walls:
+            link.add_wall(n0, e0, n1, e1)
+
+    return drive
+
+
+def _wall_ahead_walls(config=DEFAULT_CONFIG) -> tuple:
+    """One wall across the craft's path, `wall_distance_m` to the north.
+    機体の進路を横切る壁 1 枚。北へ `wall_distance_m`。"""
+    sils = config.sils
+    north = sils.wall_distance_m
+    half = sils.wall_half_width_m
+    return ((north, -half, north, half),)
+
+
+def _dead_end_walls(config=DEFAULT_CONFIG) -> tuple:
+    """The wall ahead plus an east side wall; the west side is left open.
+    正面の壁に東の側壁を加える。西側は開けたままにする。"""
+    sils = config.sils
+    north = sils.wall_distance_m
+    half = sils.wall_half_width_m
+    side = sils.dead_end_side_m
+    return (
+        (north, -half, north, half),      # the far wall, straight ahead
+        (0.0, side, north, side),         # the east side, from beside to ahead
+    )
+
+
 def scene_table(config=DEFAULT_CONFIG) -> dict:
     """Every scene, by name. / 全場面を名前で引ける表にする。"""
     return {
@@ -130,12 +191,27 @@ def scene_table(config=DEFAULT_CONFIG) -> dict:
                         "position hold pulls it back. （水平に流される）",
             drive=_drift_drive(config),
         ),
+        WALL_AHEAD: Scene(
+            name=WALL_AHEAD,
+            description="A wall stands across the flight path ahead. The "
+                        "decision under test is stopping before it. "
+                        "（正面に壁。手前で止まれるか）",
+            env=dict(FRONT_TOF_ENV),
+            drive=_walls_drive(_wall_ahead_walls(config), config),
+        ),
+        DEAD_END: Scene(
+            name=DEAD_END,
+            description="A wall ahead and one to the east; the west side is "
+                        "open. （袋小路。西だけが開いている）",
+            env=dict(FRONT_TOF_ENV),
+            drive=_walls_drive(_dead_end_walls(config), config),
+        ),
     }
 
 
 def scene_names() -> tuple:
     """Scene names in the order they are offered. / 提示順の場面名。"""
-    return (NOMINAL, BATTERY_DROP, DRIFT)
+    return (NOMINAL, BATTERY_DROP, DRIFT, WALL_AHEAD, DEAD_END)
 
 
 def get_scene(name: str, config=DEFAULT_CONFIG) -> Scene:

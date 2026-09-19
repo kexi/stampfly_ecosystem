@@ -45,6 +45,8 @@ Measured SILS sample streams used by the tests in `lib/sfpilot/tests/`. These ar
 | File | Contents | How it was taken |
 |------|----------|------------------|
 | `nominal_hover_states.jsonl` | One flight with nothing wrong: 610 samples over 60.3 s, covering the ground (`IDLE_GROUND`), the takeoff, and a steady hover around 0.45 m. The pack voltage falls naturally from 4.19 V to 3.62 V | Recorded through the same path as `sf pilot run --sils --scene nominal`, then thinned to every third sample. Timestamps are shifted so the first is 0 |
+| `wall_approach_states.jsonl` | One flight straight at a wall 1.0 m ahead: 263 samples over 26 s. The forward reading opens at 1.017 m and closes to 0.11 m, so the stream contains a real crossing of every forward band | Recorded from `--scene wall_ahead` (`SILS_EMU_FRONT_TOF=1`, one `wall` placed at N=1.0 m) with a `forward 80` sent after the hover settled, then thinned to every third sample |
+| `open_room_states.jsonl` | One flight with no obstacle and no forward sensor at all: 263 samples. EVERY forward reading is invalid, which is what the `nominal` scene produces and what most flights look like | Recorded from `--scene nominal` the same way. It exists to pin down what an absent reading must NOT become — a wall that is not there, or clear space that was never measured |
 
 ### Line format
 
@@ -52,4 +54,4 @@ One JSON sample per line. The keys are the documented keys of `sfpilot.link.Samp
 
 ## 3. Use
 
-`lib/sfpilot/tests/test_nominal_flight_words.py` reads them and feeds the Monitor one at a time, as a flight does (one sample per cycle).
+`lib/sfpilot/tests/test_nominal_flight_words.py` and `test_forward_clearance.py` read them and feed the Monitor one at a time, as a flight does (one sample per cycle).

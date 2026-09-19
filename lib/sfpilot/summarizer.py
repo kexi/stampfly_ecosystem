@@ -66,6 +66,19 @@ _WORDS = {
     # ground distance sensor / 対地距離センサ
     "正常": "working normally",
     "当てにならない値": "reading is not trustworthy",
+    # forward clearance / 前方の空き
+    #
+    # "cannot be measured" is carried to Jev rather than dropped, unlike the
+    # "不明" that means a field was never populated. The two are different
+    # facts: one says nobody looked, the other says the sensor looked and
+    # could not tell -- and the second is a reason for caution, not silence.
+    # 「測定不能」は、項目が埋まらなかったことを表す「不明」と違い、省かずに Jev へ
+    # 渡す。両者は別の事実である: 一方は「誰も見ていない」、他方は「センサが見て、
+    # 判別できなかった」であり、後者は沈黙ではなく警戒の理由である。
+    "開けている": "open",
+    "やや近い": "somewhat near",
+    "壁が近い": "wall near",
+    "測定不能": "cannot be measured",
     # battery level / 電池残量
     "十分": "plenty left",
     "残り少ない": "running low",
@@ -103,6 +116,7 @@ def summarize(
     _put(flight, "attitude", assessment.attitude)
     _put(flight, "position_estimate", assessment.position_estimate)
     _put(flight, "ground_distance_sensor", assessment.ground_distance_sensor)
+    _put(flight, "forward_clearance", assessment.forward_clearance)
 
     battery = {}
     _put(battery, "level", assessment.battery_level)

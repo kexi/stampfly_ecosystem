@@ -19,7 +19,7 @@ Arbiter は「Jev が遅い・迷っている・間違っているときどう�
 | signature changed / 鮮度切れ | hover / 待機   |
 | low confidence / 低確信      | hover / 待機   |
 | continue vs land tie / 拮抗  | hover / 待機   |
-| outside envelope / 包絡外    | hover / 待機   |
+| outside envelope / 飛行領域外    | hover / 待機   |
 | API error / API エラー       | hover / 待機   |
 | hovering for N s / 待機継続  | land / 着陸    |
 
@@ -269,10 +269,10 @@ class Arbiter:
         Only `continue` is checked: hovering and landing both reduce the
         aircraft's excursion, so refusing them for being out of the
         envelope would strand it outside with nothing left to do.
-        提案された行動を物理的な包絡と照合する。
+        提案された行動を物理的な飛行領域と照合する。
 
         照合するのは `continue` のみ。待機と着陸はどちらも逸脱を小さくする
-        方向であり、包絡外を理由に却下すると、外に出たまま取れる行動が
+        方向であり、飛行領域外を理由に却下すると、外に出たまま取れる行動が
         無くなってしまう。
         """
         if choice != ACT_CONTINUE:
@@ -283,7 +283,7 @@ class Arbiter:
             is_too_low = altitude < self.envelope.altitude_min_m
             is_too_high = altitude > self.envelope.altitude_max_m
             if is_too_low or is_too_high:
-                return True, f"高度が包絡外（{altitude:.2f} m）"
+                return True, f"高度が飛行領域外（{altitude:.2f} m）"
 
         north = assessment.numeric.get("pos_n")
         east = assessment.numeric.get("pos_e")
@@ -291,7 +291,7 @@ class Arbiter:
             radius = (north * north + east * east) ** 0.5
             is_too_far = radius > self.envelope.radius_max_m
             if is_too_far:
-                return True, f"離陸点からの距離が包絡外（{radius:.2f} m）"
+                return True, f"離陸点からの距離が飛行領域外（{radius:.2f} m）"
 
         return False, ""
 

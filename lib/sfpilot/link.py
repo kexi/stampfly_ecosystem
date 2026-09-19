@@ -954,6 +954,23 @@ class SilsLink:
         """
         self._write(f"wind {north_n:.4f} {east_n:.4f} {down_n:.4f}")
 
+    def add_wall(self, n0_m: float, e0_m: float,
+                 n1_m: float, e1_m: float) -> None:
+        """Place a vertical wall the forward ToF can see, in NED [m] (SILS only).
+
+        Not part of the Link interface, for the same reason as the two above:
+        a real room's walls are not ours to place. Sent once before the flight
+        starts -- an obstacle that appeared mid-flight would be a situation no
+        real pilot layer could be asked to handle.
+
+        前方 ToF が見る垂直な壁を NED [m] で置く（SILS 専用）。
+
+        上の 2 つと同じ理由で Link インターフェースには含めない。実際の部屋の壁を
+        こちらが置けるわけではないからである。飛行開始前に 1 度だけ送る ―― 飛行中に
+        現れる障害物は、どの操縦層にも対処を求められない状況である。
+        """
+        self._write(f"wall {n0_m:.3f} {e0_m:.3f} {n1_m:.3f} {e1_m:.3f}")
+
     def takeoff(self) -> None:
         """Enter SDK mode, then take off. Two lines, in this order.
 
@@ -1028,6 +1045,21 @@ def sample_from_state_line(line: str, ts: float) -> Optional[Sample]:
         tof = _state_float(fields, "tof")
         if tof is not None:
             sample["tof_m"] = tof
+
+    # The forward distance, on the same terms. An invalid forward reading is
+    # NOT "nothing ahead": the real part reports invalid both when the space is
+    # empty and when a surface is too close to resolve (§4.8.6). Dropping the
+    # key keeps that ambiguity out of the Sample, so the Monitor is forced to
+    # decide what an absent reading means rather than reading it as clearance.
+    # 前方距離も同じ扱い。前方の無効は「前に何も無い」ではない: 実機は空のときも、
+    # 近すぎて復元できないときも無効を返す（§4.8.6）。キーごと落とすことで、その
+    # 曖昧さを Sample に持ち込まない ―― 無い読み値が何を意味するかは Monitor が
+    # 決めねばならず、「開けている」と読み替えることはできない。
+    is_tof_front_valid = _state_float(fields, "tof_front_valid") == 1.0
+    if is_tof_front_valid:
+        tof_front = _state_float(fields, "tof_front")
+        if tof_front is not None:
+            sample["tof_front_m"] = tof_front
 
     # "FLYING:POS_HOLD*" -> "FLYING". The trailing "*" marks armed and the
     # part after ":" is the sub-mode; the Monitor classifies on the state.
