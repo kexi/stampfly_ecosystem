@@ -55,6 +55,17 @@ def _udp_listener(port: int, csv_path=None) -> None:
         if csv_file.tell() == 0:
             csv_file.write(telem.CSV_HEADER)
     window = []
+    # The page wants a movement, but the wire carries a running total: one
+    # tracker turns one into the other, the same way `sf telemetry` does.
+    # It also holds the running sum since this listener started, which is what
+    # makes the display survive the packets UDP broadcast loses.
+    # 画面が欲しいのは移動量だが、電文が運ぶのは累計である。1 個の tracker が
+    # `sf telemetry` と同じやり方でそれを変換する。受信開始からの累計もここで
+    # 保持する。UDP ブロードキャストが落とすパケットを越えて表示が保たれるのは
+    # これによる。
+    flow_tracker = telem.FlowTracker()
+    flow_since_start = [0, 0]
+    have_flow = False
     while True:
         data, _addr = sock.recvfrom(2048)
         pkt = telem.decode_packet(data)
@@ -64,12 +75,22 @@ def _udp_listener(port: int, csv_path=None) -> None:
         window.append(now)
         while window and now - window[0] > 2.0:
             window.pop(0)
+
+        flow = flow_tracker.update(pkt)
+        if flow[0] is not None:
+            have_flow = True
+            flow_since_start[0] += flow[0]
+            flow_since_start[1] += flow[1]
+        pkt["flow_dx_delta"], pkt["flow_dy_delta"] = flow
+        pkt["flow_dx_since_start"] = flow_since_start[0] if have_flow else None
+        pkt["flow_dy_since_start"] = flow_since_start[1] if have_flow else None
+
         _latest["pkt"] = pkt
         _latest["rx_monotonic"] = now
         _latest["count"] += 1
         _latest["rate_hz"] = len(window) / 2.0
         if csv_file:
-            csv_file.write(telem.csv_row(pkt))
+            csv_file.write(telem.csv_row(pkt, flow))
 
 
 # The dashboard page lives as a sibling asset; the 3D view it mounts, the STL

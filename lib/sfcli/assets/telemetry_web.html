@@ -97,7 +97,7 @@
      <tr><td>ToF front [m]</td><td id="tof_front">--</td></tr>
      <tr><td>baro alt [m]</td><td id="baro_altitude">--</td></tr>
      <tr><td>mag x/y/z [&micro;T]</td><td id="mag">--</td></tr>
-     <tr><td>flow dx/dy (q)</td><td id="flow">--</td></tr>
+     <tr><td>flow dx/dy, total (q)</td><td id="flow">--</td></tr>
     </table></div>
   </div>
   <div class="row">
@@ -247,10 +247,25 @@ function updateSensors(p){
   $("mag").textContent = (p.mag_x === null || p.mag_x === undefined) ? "--"
     : (p.mag_valid === false ? "invalid"
        : fmt(p.mag_x,1)+" "+fmt(p.mag_y,1)+" "+fmt(p.mag_z,1));
-  if(p.flow_dx_sum === null || p.flow_dx_sum === undefined){
+  // The wire carries a running total; the proxy turns it into a movement since
+  // the previous packet (flow_*_delta) and a sum since reception started
+  // (flow_*_since_start). Both are shown: the delta is the current speed of
+  // the surface, the sum is how far it has gone, and the sum stays right
+  // across the packets a UDP broadcast loses (58% received, measured).
+  // 電文が運ぶのは累計で、プロキシがそれを前回パケットからの移動量
+  // （flow_*_delta）と受信開始からの累計（flow_*_since_start）に変える。両方を
+  // 表示する: 変位は今の面の流れの速さ、累計はどれだけ進んだか。累計は UDP
+  // ブロードキャストが落とすパケットをまたいでも正しいままである（実測で受信 58%）。
+  if(p.flow_dx_total === null || p.flow_dx_total === undefined){
     $("flow").textContent = "--";
   } else {
-    $("flow").textContent = fmt(p.flow_dx_sum,0)+" "+fmt(p.flow_dy_sum,0)
+    const move = (p.flow_dx_delta === null || p.flow_dx_delta === undefined)
+      ? "--- ---"
+      : fmt(p.flow_dx_delta,0)+" "+fmt(p.flow_dy_delta,0);
+    const total = (p.flow_dx_since_start === null || p.flow_dx_since_start === undefined)
+      ? ""
+      : "  total "+fmt(p.flow_dx_since_start,0)+" "+fmt(p.flow_dy_since_start,0);
+    $("flow").textContent = move+total
       +" (q "+p.flow_squal+")"+(p.flow_valid ? "" : " stale");
   }
 }

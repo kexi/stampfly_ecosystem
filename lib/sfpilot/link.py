@@ -97,6 +97,14 @@ class Sample(dict):
                    Carried for monitoring and recording only — nothing decides
                    on it yet; obstacle-aware exploration waits on a simulated
                    forward distance in SILS (docs/plans/jev-autopilot.md P4b).
+      flow_dx, flow_dy   optical-flow movement [counts] since the PREVIOUS
+                   RECEIVED packet, not since a fixed period: UDP:5005 is a
+                   broadcast and loses packets (58% received, measured
+                   2026-09-19), so the interval these cover varies. Absent on
+                   the first packet of a stream and just after a vehicle
+                   restart, where there is nothing to difference against.
+                   Carried for monitoring and recording only — nothing decides
+                   on it.
       flight_state firmware FlightState name, e.g. "FLYING"
 
     1 サンプル: キーを文書化した素の dict。`t` 以外はすべて省略可能で、
@@ -302,7 +310,17 @@ class RealLink:
     def _telem_loop(self) -> None:
         """Decode every UDP:5005 packet into a Sample on the queue.
         UDP:5005 の各パケットを Sample にしてキューへ積む。"""
-        from sfcli.commands.telemetry import decode_packet
+        from sfcli.commands.telemetry import FlowTracker, decode_packet
+
+        # One tracker for this socket's whole stream. The flow fields on the
+        # wire are running totals, and the difference between two of them is
+        # taken by the decoder's own helper rather than re-derived here, so
+        # this link and `sf telemetry` cannot disagree about what a movement
+        # of the surface is.
+        # このソケットの流れ全体につき 1 個。電文のフロー項目は累計で、その差は
+        # ここで導き直さず復号器側の補助を通す。本リンクと `sf telemetry` で
+        # 「面の移動量」の意味が食い違わないようにするためである。
+        flow_tracker = FlowTracker()
 
         while not self._closed.is_set():
             try:
@@ -312,7 +330,9 @@ class RealLink:
             packet = decode_packet(data)
             if packet is None:
                 continue   # not a telemetry packet / テレメトリではない
-            self._telem_q.put(_sample_from_packet(packet, time.monotonic()))
+            sample = _sample_from_packet(packet, time.monotonic())
+            _add_flow(sample, flow_tracker.update(packet))
+            self._telem_q.put(sample)
 
     def handshake(self, timeout: float):
         """Enter SDK mode ("command"). Returns (ok, error|None).
@@ -511,6 +531,30 @@ def _sample_from_packet(packet: dict, ts: float) -> Sample:
     if tof_front is not None and packet.get("tof_front_valid"):
         sample["tof_front_m"] = float(tof_front)
     return sample
+
+
+def _add_flow(sample: Sample, flow: tuple) -> None:
+    """Put a FlowTracker's (dx, dy) on the sample, leaving the keys out when
+    there is no movement to report.
+
+    Why not write zeros instead: a Sample's missing key means "not measured by
+    this source", and the Monitor reports that as unknown rather than acting on
+    it. The first packet of a stream and the one after a vehicle restart have
+    no earlier total to difference against, and a zero there would claim the
+    surface had not moved.
+
+    FlowTracker の (dx, dy) をサンプルに入れる。報告できる移動量が無いときは
+    キーを置かない。
+
+    なぜ 0 を書かないか: サンプルのキーが無いことは「この入力源では測っていない」
+    を意味し、Monitor はそれを「不明」として扱い判断材料にしない。流れの最初の
+    パケットと機体再起動直後のパケットには差を取る相手の累計が無く、そこに 0 を
+    書けば「面は動かなかった」と主張することになる。
+    """
+    if flow[0] is None:
+        return
+    sample["flow_dx"] = flow[0]
+    sample["flow_dy"] = flow[1]
 
 
 def _sample_from_state_dict(state: dict, ts: float) -> Sample:

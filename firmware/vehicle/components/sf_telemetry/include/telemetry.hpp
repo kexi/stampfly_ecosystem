@@ -28,7 +28,13 @@
 #include <cstddef>   // offsetof — wire-offset static_assert / 電文オフセット検査用
 #include <cstdint>
 
-#include "data_types.hpp"   // sf::SensorSnapshot (accumulateFlow) / フロー積算の引数型
+// sf::SensorSnapshot — the source of every v2 sensor field packSensorFields()
+// reads. Kept here rather than in the .cpp so a user of this header sees the
+// type the wire fields are derived from.
+// sf::SensorSnapshot — packSensorFields() が読む v2 の各センサ項目の出所。
+// 電文の各項目が何から導かれるかがヘッダの利用者に見えるよう、.cpp ではなく
+// ここに置く。
+#include "data_types.hpp"
 
 namespace sf {
 
@@ -48,6 +54,16 @@ inline constexpr uint16_t TELEM_MAGIC = 0xCAFE;
 
 /// Telemetry protocol version — 2 since the v2 sensor block was appended
 /// テレメトリプロトコルバージョン — v2 センサ部の追記により 2
+///
+/// The two flow fields changed MEANING on 2026-09-19 (difference -> running
+/// total) without moving this number, because v2 was born on the
+/// feat/jev-autopilot branch that same day and no released firmware ever sent
+/// the old meaning. Bumping to 3 would have made every receiver carry a decode
+/// path for a packet that exists nowhere. See detailed_design.md §10.
+/// フローの 2 項目は 2026-09-19 に「意味」を変えた（差分 → 累計）が、この番号は
+/// 据え置いた。v2 は同日 feat/jev-autopilot ブランチで生まれたもので、旧い意味を
+/// 送った公開ファームは存在しないためである。3 へ上げれば、どこにも無いパケットの
+/// ための復号経路を全受信側が抱えることになる。detailed_design.md §10 参照。
 ///
 /// Why the version moves but packet_type does not: the v2 block is APPENDED,
 /// so the first 104 bytes are bit-identical to v1 and an old receiver keeps
@@ -118,6 +134,42 @@ inline constexpr float kTelemTofFrontUnavailable = -1.0f;
 /// 誤って無効になることはなく、停止したセンサは 0.5 秒以内に無効と分かる。
 inline constexpr uint32_t kTelemSensorStaleUs = 500000;   // 500 ms
 
+/// Span a receiver may lose before the flow totals become ambiguous.
+///
+/// The wire carries the LOW 16 BITS of a running total, so a receiver recovers
+/// the displacement as `int16_t(current - previous)` — a wrapping subtraction
+/// that is correct however many packets went missing in between, as long as
+/// the true displacement across the gap stays inside ±32767 counts. Beyond
+/// that the wrap is indistinguishable from a shorter move the other way.
+///
+/// Why not send the difference since the previous packet, as v2 first did:
+/// UDP:5005 is a broadcast and WiFi does not retransmit broadcasts. Measured
+/// on hardware on 2026-09-19, the Mac received 714 of about 1,230 packets
+/// (58%) over 24.6 s, in runs of 4 to 10 consecutive losses. A difference
+/// carried by a lost packet is gone for good; a total is not, because the next
+/// packet to arrive states the whole position again.
+///
+/// The limit in practice: hand-waving the vehicle over a desk produced at most
+/// about 900 counts per second, so ±32767 is roughly 36 seconds of unbroken
+/// loss. Nothing recovers a 36-second outage anyway.
+///
+/// 受信が途絶えても累計の解釈が一意でいられる幅。
+///
+/// 電文が運ぶのは累計の「下位 16 ビット」であり、受信側は
+/// `int16_t(今回 - 前回)` で変位を復元する。この引き算は折り返しを前提とするので、
+/// 間に何個パケットが落ちても、その間の真の変位が ±32767 カウント以内であれば
+/// 正しい。それを超えると、折り返しは逆向きの短い移動と区別がつかなくなる。
+///
+/// なぜ v2 当初のように「前回送信からの差分」を送らないか: UDP:5005 は
+/// ブロードキャストで、WiFi はブロードキャストを再送しない。2026-09-19 の実機実測
+/// では、24.6 秒に約 1,230 個送って Mac が受け取ったのは 714 個（58%）で、連続
+/// 4〜10 個の欠損が何度も起きた。失われたパケットが運んでいた差分は永久に戻らない
+/// が、累計は戻る。次に届いたパケットが現在地をあらためて述べるからである。
+///
+/// 実際の限界: 機体を手で机上で振ったときの最大が毎秒約 900 カウントだったので、
+/// ±32767 はおよそ 36 秒の連続欠損にあたる。36 秒の途絶はどのみち復元できない。
+inline constexpr int32_t kTelemFlowWrapSpan = 32767;
+
 /// Battery voltage reported when the power monitor has never published.
 /// PowerData zero-initialises to 0.0 V, which is also the "unknown" marker.
 /// 電源モニタが一度も publish していないときに報告する電池電圧。PowerData は
@@ -169,8 +221,12 @@ struct TelemetryPacket {
     float   voltage;         // [V] battery pack / 電池電圧（0 = 不明）
     float   tof_bottom;      // [m] downward ToF / 下向き ToF 距離
     float   tof_front;       // [m] forward ToF (kTelemTofFrontUnavailable = no reading) / 前方 ToF（測定値なしは kTelemTofFrontUnavailable）
-    int16_t flow_dx_sum;     // [counts] displacement since last send / 前回送信からの変位
-    int16_t flow_dy_sum;     // [counts] displacement since last send / 同上
+    // Low 16 bits of the running flow totals since boot, wrapping. NOT a
+    // difference: see kTelemFlowWrapSpan for why, and for the one limit.
+    // 起動からのフロー累計の下位 16 ビット（折り返す）。差分ではない。
+    // 理由と唯一の限界は kTelemFlowWrapSpan を参照。
+    uint16_t flow_dx_total16;  // [counts] cumulative dx, wrapping / 累計 dx（折り返し）
+    uint16_t flow_dy_total16;  // [counts] cumulative dy, wrapping / 累計 dy（同上）
     uint8_t flow_squal;      // Latest surface quality / 最新の表面品質
     uint8_t valid_flags;     // TELEM_VALID_* bits / TELEM_VALID_* ビット
     uint8_t reserved2[2];    // Zero; keeps mag on a 4-byte offset / 0。mag を4B境界に保つ
@@ -195,8 +251,8 @@ static_assert(sizeof(TelemetryPacket) == 140,
 static_assert(offsetof(TelemetryPacket, voltage)      == 104, "v2 offset drift: voltage");
 static_assert(offsetof(TelemetryPacket, tof_bottom)   == 108, "v2 offset drift: tof_bottom");
 static_assert(offsetof(TelemetryPacket, tof_front)    == 112, "v2 offset drift: tof_front");
-static_assert(offsetof(TelemetryPacket, flow_dx_sum)  == 116, "v2 offset drift: flow_dx_sum");
-static_assert(offsetof(TelemetryPacket, flow_dy_sum)  == 118, "v2 offset drift: flow_dy_sum");
+static_assert(offsetof(TelemetryPacket, flow_dx_total16) == 116, "v2 offset drift: flow_dx_total16");
+static_assert(offsetof(TelemetryPacket, flow_dy_total16) == 118, "v2 offset drift: flow_dy_total16");
 static_assert(offsetof(TelemetryPacket, flow_squal)   == 120, "v2 offset drift: flow_squal");
 static_assert(offsetof(TelemetryPacket, valid_flags)  == 121, "v2 offset drift: valid_flags");
 static_assert(offsetof(TelemetryPacket, reserved2)    == 122, "v2 offset drift: reserved2");
@@ -237,11 +293,6 @@ private:
     /// 追記した v2 センサ部（電源＋ミラーされた非同期センサ）を詰める
     void packSensorFields(TelemetryPacket& pkt);
 
-    /// Displacement since the previous packet, from the snapshot's totals
-    /// スナップショットの累積から、前回パケット以降の変位を求める
-    void takeFlowDelta(const SensorSnapshot& snapshot,
-                       int32_t& dx_out, int32_t& dy_out);
-
     /// Send packet via UDP, with rate-limited error logging
     /// UDP でパケット送信。エラーはレート制限付きでログ出力
     void sendPacket(const TelemetryPacket& pkt);
@@ -253,19 +304,16 @@ private:
     bool     ready_       = false;  // True after socket bound / ソケット準備完了
     bool     network_up_  = false;  // WiFi ready (sends gated on this) / WiFi準備完了（送信の条件）
 
-    // Where the flow totals stood when the previous packet was built. The
-    // difference against the current totals is the displacement to report, and
-    // it includes EVERY sample ImuTask added in between — nothing is lost to
-    // the 50Hz sampling rate. Unsigned because the totals wrap (see
-    // SensorSnapshot); see takeFlowDelta().
+    // No flow state is kept here. The sender is stateless about flow because
+    // the wire now carries the total itself: every packet states the whole
+    // position, so a packet lost in the air costs the receiver nothing.
+    // Keeping a "previous total" here would only reintroduce the difference
+    // that the loss destroyed.
     //
-    // 前回パケットを組み立てた時点のフロー累積。現在の累積との差が報告すべき変位で、
-    // その間に ImuTask が加えた「全」サンプルを含む — 50Hz という周期のために失われる
-    // ものは無い。累積は折り返すので符号なしである（SensorSnapshot 参照）。
-    // 詳細は takeFlowDelta() を参照。
-    uint32_t last_flow_dx_total_ = 0;   // [counts] at previous packet / 前回パケット時点
-    uint32_t last_flow_dy_total_ = 0;   // [counts] at previous packet / 同上
-    bool     flow_baseline_set_  = false;  // Baseline captured / 基準を取得済みか
+    // フローに関する状態は持たない。電文が累計そのものを運ぶようになったため、
+    // 送信側はフローについて状態を持たない。各パケットが現在地の全てを述べるので、
+    // 空中で失われたパケットは受信側に何の損失も与えない。ここに「前回の累計」を
+    // 持てば、欠損が壊したあの差分を呼び戻すだけである。
 };
 
 }  // namespace sf

@@ -362,10 +362,11 @@ struct SensorHealth {
 | 2026-06-07 | 実体定義 | sensor_health（予約→実体, publish は Phase 6）, command_target, nav_path | 予約 Topic の実体を定義（producer は将来配線） |
 | 2026-06-07 | 全 Topic | overflow_count 内蔵（R14） | TopicRing/TopicQueue に overflow_count_ + getter を追加 |
 | 2026-06-14 | 追加 | controller_status | 誘導解除（パイロット介入/モード変更）を API へ同期する guidance_active 事実（ControlTask → ApiTask, code-review M-3） |
-| 2026-09-19 | データ型変更 | sensor_snapshot（`SensorSnapshot` に `flow_dx_total` / `flow_dy_total` を追加） | フローの dx/dy は差分量で、センサ（約100Hz）より遅い読み手は取りこぼす。起動からの累積を ImuTask が全サンプル加算し、読み手が2回の読み取りの差で全量を復元できるようにした（50Hz テレメトリの `flow_dx_sum`）。書き手は ImuTask のみ（R5）。詳細は `detailed_design.md` §10 |
+| 2026-09-19 | データ型変更 | sensor_snapshot（`SensorSnapshot` に `flow_dx_total` / `flow_dy_total` を追加） | フローの dx/dy は差分量で、センサ（約100Hz）より遅い読み手は取りこぼす。起動からの累積を ImuTask が全サンプル加算し、読み手が2回の読み取りの差で全量を復元できるようにした（50Hz テレメトリ）。書き手は ImuTask のみ（R5）。詳細は `detailed_design.md` §10 |
 | 2026-09-19 | 契約のみ | sensor_tof_front（未実装） | 前方 ToF を駆動する際は専用 Topic を新設し、底面（`sensor_tof`）と変数・Topic を共有しない（R11 の契約先行、`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」）。ミラー先は `SensorSnapshot` の `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp`。詳細は `detailed_design.md` §10。**本改修では実装しない** |
 | 2026-09-19 | 未対応 | sensor_health（`SensorHealth`） | 前方 ToF は `sensor_health` に載せていない。`SensorHealth` の `present_mask`/`healthy_mask` は `sf::SensorId`（`Imu/Mag/Baro/Tof/Flow/Power`、`data_types.hpp`）を索引とする電文であり、ここに前方を足すと電文様式の変更になる。前方の presence と鮮度は `sf::internal::board::SensorId::FrontToF`（BSP 内部、本改修で追加）には記録されており、`PowerTask` が両 enum を明示的に対応付けているので黙って食い違うことはない。載せるかどうかは電文変更として別途判断する |
 | 2026-09-19 | 実装 | sensor_tof_front（契約 → 実体）、sensor_snapshot（`tof_front_distance` / `tof_front_status` / `tof_front_valid` / `tof_front_timestamp` を追加） | 前方 ToF を駆動（jev-autopilot P2b）。上の契約どおり専用 Topic とし、`SensorSnapshot` にも底面とは別のフィールドでミラーする。ImuTask は**推定器に渡さず**ミラーのみ（前方は機体の状態ではなく障害物の観測であり、状態ベクトルがモデル化していない）。テレメトリ v2 の `tof_front` と `valid_flags` bit1 がここから供給される。**実機未確認** |
+| 2026-09-19 | 変更なし（電文のみ） | sensor_snapshot（`flow_dx_total` / `flow_dy_total` はそのまま） | テレメトリ v2 のフロー 2 項目を「前回送信からの差分」から「累計の下位 16 ビット」へ改めた。UDP:5005 はブロードキャストで WiFi が再送せず、実機実測で受信 58%（連続 4〜10 個の欠損）だったため、失われたパケットが運んだ差分は永久に戻らない。累計なら欠損を越えて復元できる。**Topic 側は無変更**で、`SensorSnapshot` の累計をそのまま切り詰めて送るだけである。詳細は `detailed_design.md` §10 |
 
 ---
 

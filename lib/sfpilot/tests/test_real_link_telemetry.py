@@ -1,11 +1,13 @@
 """
 What RealLink's 50Hz path guarantees: a UDP:5005 packet becomes a Sample,
-a 140-byte v2 packet supplies the battery and ToF by itself, and a
-104-byte v1 packet omits them rather than inventing zeros.
+a 140-byte v2 packet supplies the battery and ToF by itself, a
+104-byte v1 packet omits them rather than inventing zeros, and the flow
+totals on the wire reach the Sample as a movement.
 
 RealLink の 50Hz 経路が保証すること: UDP:5005 のパケットが Sample になること、
 140 バイトの v2 パケットは電池と ToF を単独で供給すること、104 バイトの v1
-パケットはそれらを 0 で捏造せず省くこと。
+パケットはそれらを 0 で捏造せず省くこと、電文のフロー累計が Sample には移動量
+として届くこと。
 
 Packets are built here with the SAME struct format the firmware encoder and
 `sfcli.commands.telemetry` share, so a format change breaks this test rather
@@ -51,7 +53,8 @@ def _v1_packet(mode: int = FLYING_MODE) -> bytes:
 
 def _v2_packet(voltage: float = 3.9, tof: float = 0.79,
                valid: bool = True, mode: int = FLYING_MODE,
-               tof_front: float = None) -> bytes:
+               tof_front: float = None,
+               flow_total: int = 0, t_us: int = 1234) -> bytes:
     """A 140-byte v2 packet: v1 prefix plus the appended block.
 
     `tof_front=None` is the common real case — the forward sensor is optional
@@ -64,15 +67,20 @@ def _v2_packet(voltage: float = 3.9, tof: float = 0.79,
     bit1 を落として載せる。
     """
     values = [FLOATS.get(name, 0.0) for name in FLOAT_NAMES]
-    head = struct.pack(TELEM_FMT, TELEM_MAGIC, TELEM_VERSION_V2, 0, 1234, *values, mode)
+    head = struct.pack(TELEM_FMT, TELEM_MAGIC, TELEM_VERSION_V2, 0, t_us, *values, mode)
     flags = 0
     if valid:
         flags = VALID_BITS["tof_bottom_valid"] | VALID_BITS["power_valid"]
     front_value = TOF_FRONT_UNAVAILABLE if tof_front is None else tof_front
     if tof_front is not None:
         flags |= VALID_BITS["tof_front_valid"]
+    # `flow_total` goes into BOTH flow slots: the wire carries running totals
+    # modulo 2^16, so what a test states here is a position, not a movement.
+    # `flow_total` はフローの 2 枠の両方へ入れる。電文が運ぶのは 2^16 を法とする
+    # 累計なので、ここで書く値は移動量ではなく位置である。
     tail = struct.pack(
-        TELEM_V2_FMT, voltage, tof, front_value, 0, 0, 0, flags,
+        TELEM_V2_FMT, voltage, tof, front_value,
+        flow_total % 65536, flow_total % 65536, 0, flags,
         0.0, 0.0, 0.0, 0.80,
     )
     return head + tail
@@ -224,6 +232,40 @@ def test_every_packet_since_the_last_call_is_returned(link):
     samples = _deliver(link, [_v2_packet() for _ in range(5)])
 
     assert len(samples) == 5
+
+
+def test_flow_reaches_the_sample_as_a_movement_not_as_the_wire_total(link):
+    """The Sample carries the movement since the previous packet, and the first
+    packet — having nothing to difference against — carries no flow key at all.
+
+    The wire total is meaningless alone (it is only known modulo 2^16), so
+    passing it through unchanged would put a number in the Sample that no
+    reader could interpret.
+
+    Sample が運ぶのは前回パケットからの移動量であること。最初のパケットは差を
+    取る相手が無いので、フローのキーを持たないこと。
+
+    電文の累計は単独では意味を持たない（2^16 を法としてしか分からない）ので、
+    そのまま通せば、どの読み手も解釈できない数を Sample に置くことになる。
+    """
+    samples = _deliver(link, [
+        _v2_packet(flow_total=65530, t_us=1000),
+        _v2_packet(flow_total=10, t_us=21000),     # +16 across the wrap / 折り返し
+    ])
+
+    assert len(samples) == 2
+    assert "flow_dx" not in samples[0]
+    assert samples[1]["flow_dx"] == 16
+    assert samples[1]["flow_dy"] == 16
+
+
+def test_a_v1_packet_carries_no_flow_key(link):
+    """Old firmware sends no flow field, so the Sample must not invent one.
+    旧ファームはフロー項目を送らないので、Sample が値を作り出さないこと。"""
+    samples = _deliver(link, [_v1_packet()])
+
+    assert len(samples) == 1
+    assert "flow_dx" not in samples[0]
 
 
 def test_a_packet_that_is_not_telemetry_is_ignored(link):

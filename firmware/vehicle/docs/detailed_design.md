@@ -777,8 +777,8 @@ v2 は v1 への**末尾追記**であり、先頭 104 バイトは両版でビ�
 | 104 | voltage | f32 | 電池電圧 [V]（0 = 不明） |
 | 108 | tof_bottom | f32 | 下向き ToF 距離 [m] |
 | 112 | tof_front | f32 | 前方 ToF 距離 [m]。測定値が無いときは `kTelemTofFrontUnavailable`（-1.0）。有効性は bit1 が正 |
-| 116 | flow_dx_sum | i16 | フロー変位 dx [counts]。前回送信からの変位（全サンプルを含む） |
-| 118 | flow_dy_sum | i16 | フロー変位 dy [counts]。同上 |
+| 116 | flow_dx_total16 | u16 | フロー累計 dx [counts] の下位 16 ビット（折り返す）。**差分ではない** |
+| 118 | flow_dy_total16 | u16 | フロー累計 dy [counts] の下位 16 ビット（同上） |
 | 120 | flow_squal | u8 | 最新の表面品質 |
 | 121 | valid_flags | u8 | 有効ビット（下表） |
 | 122 | reserved2[2] | u8×2 | 0（地磁気を4バイト境界に置くため） |
@@ -802,21 +802,36 @@ v2 は v1 への**末尾追記**であり、先頭 104 バイトは両版でビ�
 
 ビットは 2 つの条件の積で立つ。(1) センサ自身が publish した有効性（下向き ToF は `tof_valid`、電池電圧は 0 より大きいこと）と、(2) 鮮度である。鮮度は各センサのタイムスタンプの経過時間が `kTelemSensorStaleUs`（500ms）未満であることで判定する（R16）。`sensor_snapshot` と `sensor_power` はどちらも Latest トピックで最終値を周期を跨いで保持するため、経過時間を見ないと停止したセンサが動作中だと誤って報告され続ける。500ms は対象で最も遅い気圧計（50Hz）の 25 周期にあたり、正常なセンサが誤って無効になることはない。
 
-### フロー変位の求め方（取りこぼし無し）
+### フローの 2 項目は「累計」である（2026-09-19 に差分から改めた）
 
-`flow_dx_sum` / `flow_dy_sum` は**前回送信からの変位**であり、その間の**全サンプルを含む**。
+`flow_dx_total16` / `flow_dy_total16` は、**起動からの累計の下位 16 ビット**である。移動量ではない。受信側が「今回の累計 − 前回受信の累計」を **16 ビットの折り返しつきで** 引き算して、その間の移動量を得る。
 
-フローセンサの `dx`/`dy` は「前回読み出しからの変位」という差分量で、絶対量ではない。センサは約 100Hz、テレメトリは 50Hz なので、差分量をそのまま 50Hz で覗くと各周期の最後の 1 件しか見えず残りが失われる。
+#### なぜ機体が差分を送らないのか
 
-そこで `SensorSnapshot` に**起動からの累積** `flow_dx_total` / `flow_dy_total` を持たせ、`ImuTask` が 400Hz のループで**全サンプル**をこれに加算する（`ImuTask` は `sensor_flow` キューの唯一の consumer であり全サンプルを通す）。テレメトリは「今回の累積 − 前回送信時の累積」を送る。この差には間に加えられた全サンプルが含まれるため、**周期の違いによる取りこぼしは無い**。
+フローセンサの `dx`/`dy` は「前回読み出しからの変位」という差分量で、絶対量ではない。センサは約 100Hz、テレメトリは 50Hz なので、差分量をそのまま 50Hz で覗くと各周期の最後の 1 件しか見えず残りが失われる。そのため `SensorSnapshot` に**起動からの累計** `flow_dx_total` / `flow_dy_total`（`uint32`）を持たせ、`ImuTask` が 400Hz のループで**全サンプル**をこれに加算している（`ImuTask` は `sensor_flow` キューの唯一の consumer であり全サンプルを通す）。書き手は `ImuTask` の 1 か所だけである（R5、`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」）。
 
-書き手は `ImuTask` の 1 か所だけである（R5、`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」）。
+v2 は当初、この累計の差（＝前回**送信**からの変位）を `int16` の枠に入れて送っていた。**2026-09-19 の実機実測でこれが成り立たないことが分かった。** UDP:5005 は 255.255.255.255 へのブロードキャストで、WiFi はブロードキャストを再送しない。24.6 秒に約 1,230 個送って Mac が受け取ったのは 714 個（58%）で、連続 4〜10 個の欠損が何度も起きた（同じ時刻にユニキャストの Data Stream、`sf log wifi` は欠損 0%）。**空中で失われたパケットが運んでいた差分は、受信側では永久に失われる。** 「送信が飛んだ分を次のパケットに持ち越す」という当初の設計は、機体が送らなかった場合しか救わない。
 
-累積は `uint32` で、桁あふれしたら折り返る前提である。C++ では符号なしの桁あふれは折り返しと定義される一方、符号付きの桁あふれは未定義動作だからである。読み手は `uint32` のまま引き算し、その差を `int32` として解釈すれば折り返しを跨いでも正しい符号付き差分が得られる。
+累計ならこの欠損を越えて生き残る。欠損の両側で受け取った 2 つの累計の差は、間で何個パケットが消えていても、その間の移動量の全量のままだからである。
 
-送信が飛んだ場合（キャプチャ中は Data Stream がテレメトリを抑止する）も変位は失われず、**次のパケットに持ち越されて**その間の全量が報告される。ただし電文は `int16` なので、範囲を超える値は飽和させ、超過分は切り捨てる（符号を保つため。単純なキャストでは向きが反転する）。1 周期には約 2 サンプルしか入らないため、飽和に達するのは送信が長く抑止された後かセンサが異常値を報告した場合だけである。
+#### 折り返しと、唯一の限界
 
-最初のパケットは、起動からの累積を 1 回の巨大な変位として報告する代わりに、現在の累積を基準として採用し 0 を送る。
+累計は `uint32` だが電文の枠は 16 ビットなので、`static_cast<uint16_t>(snap.flow_dx_total)` で下位 16 ビットに切り詰めて送る。ここでの切り捨ては望むところである。差分と違い累計は常に 2^16 を法として読まれるので、捨てた上位ビットに受信側が必要とする情報は無い。
+
+受信側は `delta = int16(今回 − 前回)`、すなわち差を 2^16 で法として取り符号つきとして読む。**限界はただ一つ、「受信が途絶えている間の移動量が ±32767 カウントを超えた場合」である。** それを超えると、折り返しは逆向きの短い移動と区別がつかなくなる。実測では手で機体を振っても毎秒約 900 カウントだったので、これはおよそ **36 秒の連続欠損**にあたる。36 秒の途絶はどのみち復元できない。この値は `telemetry.hpp` の `kTelemFlowWrapSpan` に定数として置いてある。
+
+#### 受信側（PC）の作法
+
+差の取り方は `lib/sfcli/commands/telemetry.py` の `flow_delta(prev_total16, cur_total16)` **1 か所**にまとめてある。端末表示・CSV・ブラウザ表示・`lib/sfpilot/link.py` はいずれもこれを通す。状態（前回の累計と前回の `t_us`）を持つのは同ファイルの `FlowTracker` である。
+
+- `decode_packet()` は**生の累計**を返す。移動量に変えるのは呼び出し側の仕事で、復号器は 1 パケットの純粋な復号にとどめる
+- **機体の再起動を検出する。** タイムスタンプ `timestamp_us` は「その機体の起動」からのマイクロ秒なので、再起動すれば時刻もフロー累計も 0 から始まる。`FlowTracker` は `t_us` が**巻き戻ったら**基準を捨て、その 1 件だけ移動量を「不明」とする。これが無いと再起動後の最初のパケットが、古い累計との差を 1 回の巨大な移動として報告してしまう
+- CSV には**生の累計と、前回行からの移動量の両方**を出す（`flow_dx_total` / `flow_dx_delta` 等）。移動量はそのまま図に描ける量で、累計は記録側が飛ばした行をまたいだ移動量を解析側が取り直すためにある
+- 104B（v1）のパケットにはフロー項目が無いので、CSV は従来どおり空欄にする。**0 を書かない**（0 は「面が動かなかった」と読まれる）
+
+#### バージョン番号を 2 のまま据え置いた理由
+
+意味を変えたのに `TELEM_VERSION` を 3 へ上げなかったのは、**v2 自体が 2026-09-19 に `feat/jev-autopilot` ブランチで生まれ、同じ日・同じブランチで直したものであり、旧い意味（差分）を送った公開ファームが存在しない**ためである。3 へ上げれば、どこにも無いパケットのための復号経路を全受信側が抱えることになる。着手前に、リポジトリ内に v2 の差分を前提とした利用者が他に無いことを確認した（`flow_dx_sum` の読み手は `sf telemetry`・`telemetry_web`・その試験だけで、いずれも本変更に追随させた）。
 
 ### 前方 ToF の供給経路（R11 の契約を実装）
 
@@ -1053,8 +1068,8 @@ Growing the packet does not cost anything to send: lwIP's `sendto()` on ESP32 ta
 | 104 | voltage | f32 | Battery voltage [V] (0 = unknown) |
 | 108 | tof_bottom | f32 | Downward ToF distance [m] |
 | 112 | tof_front | f32 | Forward ToF distance [m]. `kTelemTofFrontUnavailable` (-1.0) when there is no reading; bit1 is the authority on validity |
-| 116 | flow_dx_sum | i16 | Flow displacement dx [counts] since the previous packet (every sample included) |
-| 118 | flow_dy_sum | i16 | Flow displacement dy [counts], same |
+| 116 | flow_dx_total16 | u16 | Low 16 bits of the running flow total dx [counts], wrapping. **Not a difference** |
+| 118 | flow_dy_total16 | u16 | Low 16 bits of the running flow total dy [counts], same |
 | 120 | flow_squal | u8 | Latest surface quality |
 | 121 | valid_flags | u8 | Validity bits (table below) |
 | 122 | reserved2[2] | u8×2 | 0 (keeps the magnetometer 4-byte aligned) |
@@ -1078,21 +1093,36 @@ Each offset is pinned by `static_assert(offsetof(...))` in `telemetry.hpp`, and 
 
 A bit is set when two conditions hold: (1) the validity the sensor itself published (`tof_valid` for the downward ToF; greater than zero for the battery voltage), and (2) freshness. Freshness means the age of that sensor's own timestamp is below `kTelemSensorStaleUs` (500ms) (R16). Both `sensor_snapshot` and `sensor_power` are Latest topics that keep their last value across cycles, so without an age check a stopped sensor would be reported as working indefinitely. 500ms is 25 periods of the slowest source (the 50Hz barometer), so a healthy sensor never trips it.
 
-### How optical-flow displacement is derived (nothing is lost)
+### The two flow fields are RUNNING TOTALS (changed from differences on 2026-09-19)
 
-`flow_dx_sum` / `flow_dy_sum` are the **displacement since the previous packet**, and they **include every sample** taken in between.
+`flow_dx_total16` / `flow_dy_total16` carry the **low 16 bits of a running total since boot**. They are not a movement. The receiver takes `current − previous` **as a wrapping 16-bit subtraction** to get the movement in between.
 
-The sensor's `dx`/`dy` is an incremental quantity — displacement since the previous read, not an absolute value. The sensor runs at about 100Hz while telemetry sends at 50Hz, so reading the incremental value directly at 50Hz would show only the last sample of each interval and drop the rest.
+#### Why the vehicle does not send a difference
 
-`SensorSnapshot` therefore carries **running totals since boot**, `flow_dx_total` / `flow_dy_total`, to which `ImuTask` adds **every sample** in its 400Hz loop (`ImuTask` is the sole consumer of the `sensor_flow` queue and sees all of them). Telemetry sends the difference between the current totals and those at the previous packet. That difference contains every sample added in between, so **no sample is lost to the rate mismatch**.
+The sensor's `dx`/`dy` is an incremental quantity — displacement since the previous read, not an absolute value. The sensor runs at about 100Hz while telemetry sends at 50Hz, so reading the incremental value directly at 50Hz would show only the last sample of each interval and drop the rest. `SensorSnapshot` therefore carries **running totals since boot**, `flow_dx_total` / `flow_dy_total` (`uint32`), to which `ImuTask` adds **every sample** in its 400Hz loop (`ImuTask` is the sole consumer of the `sensor_flow` queue and sees all of them). `ImuTask` is the only writer (R5; `docs/architecture/udp-telemetry-design.md` §2, "one data source = one variable").
 
-`ImuTask` is the only writer (R5; `docs/architecture/udp-telemetry-design.md` §2, "one data source = one variable").
+v2 originally sent the difference between two of those totals (the displacement since the previous **send**) in an `int16` slot. **Measurement on hardware on 2026-09-19 showed that this does not hold.** UDP:5005 is a broadcast to 255.255.255.255, and WiFi does not retransmit broadcasts: of about 1,230 packets sent over 24.6 s the Mac received 714 (58%), with repeated runs of 4 to 10 consecutive losses (the unicast Data Stream, `sf log wifi`, lost nothing in the same session). **A difference carried by a packet lost in the air is gone for good on the receiving side.** The original design — "a suppressed send carries over to the next packet" — only covers the case where the vehicle did not send.
 
-The totals are `uint32` and are meant to wrap: in C++ unsigned overflow is defined to wrap, while signed overflow is undefined behaviour. A reader subtracts in `uint32` and reinterprets the difference as `int32`, which yields the correct signed delta across a wrap.
+A total survives that loss, because the difference between the two totals received either side of a gap is still the whole movement across it, however many packets vanished in between.
 
-If a packet is skipped (the Data Stream suppresses telemetry during a capture), no displacement is lost: it **carries over to the next packet**, which reports the whole gap. The wire field is `int16`, so a value beyond that range saturates and the excess is discarded (saturating preserves the sign, where a plain cast would reverse the direction). Since one interval holds about two samples, saturation is only reachable after a long suppressed stretch or an absurd sensor reading.
+#### The wrap, and the one limit
 
-The first packet adopts the current totals as its baseline and reports zero, rather than emitting everything accumulated since boot as one huge displacement.
+The totals are `uint32` but the wire slot is 16 bits, so the firmware truncates with `static_cast<uint16_t>(snap.flow_dx_total)`. Truncation is exactly what is wanted: unlike a difference, a total is only ever read modulo 2^16, so the discarded high bits carry no information the receiver needs.
+
+The receiver computes `delta = int16(current − previous)`, that is, the difference modulo 2^16 read as signed. **There is exactly one limit: a movement of more than ±32767 counts while reception is interrupted.** Beyond that the wrap is indistinguishable from a shorter move the other way. Hand-waving the vehicle measured at most about 900 counts per second, so this is roughly **36 seconds of unbroken loss**, and nothing recovers a 36-second outage anyway. The bound is `kTelemFlowWrapSpan` in `telemetry.hpp`.
+
+#### What the PC side must do
+
+The subtraction lives in **one place**, `flow_delta(prev_total16, cur_total16)` in `lib/sfcli/commands/telemetry.py`. The terminal display, the CSV writer, the browser view and `lib/sfpilot/link.py` all go through it. The state (previous totals and previous `t_us`) belongs to `FlowTracker` in the same file.
+
+- `decode_packet()` returns the **raw totals**. Turning them into a movement is the caller's job; the decoder stays a pure decode of one packet.
+- **Detect a vehicle restart.** `timestamp_us` counts microseconds since *that vehicle's* boot, so a reboot restarts both it and the flow totals at zero. `FlowTracker` drops its reference when `t_us` goes **backwards** and reports the movement as unknown for that one packet. Without this, the first packet after a reboot would report the difference against the pre-reboot total as one enormous movement.
+- The CSV carries **both the raw total and the movement since the previous row** (`flow_dx_total` / `flow_dx_delta`, …). The movement is what an analysis plots directly; the total lets it re-derive a movement across rows the recorder itself skipped.
+- A 104-byte (v1) packet has no flow field, so the CSV leaves those cells empty as before. **Never a zero** — a zero would read as "the surface did not move".
+
+#### Why the version number stayed at 2
+
+`TELEM_VERSION` was not raised to 3 despite the change of meaning, because **v2 itself was born on the `feat/jev-autopilot` branch on 2026-09-19 and was corrected on the same day on the same branch: no released firmware ever sent the old meaning.** Raising it would make every receiver carry a decode path for a packet that exists nowhere. Before making the change, the repository was checked for other consumers assuming the v2 difference; the only readers of `flow_dx_sum` were `sf telemetry`, `telemetry_web` and their tests, all of which were updated with it.
 
 ### Forward-ToF reserved slot and its future supply contract (R11)
 

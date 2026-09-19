@@ -69,18 +69,6 @@ constexpr int        kWifiPollMaxAttempts   = 150;   // 200ms x 150 = 30s budget
 // sendto エラーログのレート制限（フラッディング防止）。
 constexpr uint32_t kErrorLogEveryN = 50;             // ~1 per second at 50Hz
 
-// Saturate an int32 accumulator into the int16 wire field (see call site).
-// int32 の積算値を int16 の電文フィールドへ飽和させる（呼び出し側のコメント参照）。
-constexpr int32_t kFlowSumMax =  32767;
-constexpr int32_t kFlowSumMin = -32768;
-
-int16_t clampToInt16(int32_t value)
-{
-    if (value > kFlowSumMax) return static_cast<int16_t>(kFlowSumMax);
-    if (value < kFlowSumMin) return static_cast<int16_t>(kFlowSumMin);
-    return static_cast<int16_t>(value);
-}
-
 }  // namespace
 
 // -----------------------------------------------------------------------------
@@ -285,60 +273,6 @@ void Telemetry::packBaseFields(TelemetryPacket& pkt)
 }
 
 // -----------------------------------------------------------------------------
-// takeFlowDelta — displacement since the previous packet, losing no sample
-// フロー差分 — 前回パケット以降の変位。サンプルを取りこぼさない
-//
-// ImuTask adds EVERY flow sample to snapshot.flow_*_total at 400Hz, so the
-// difference between two reads of that total covers every sample in between,
-// however fast the sensor runs relative to this 50Hz loop. This is why the
-// total exists: reading the incremental flow_dx/dy at 50Hz would show only the
-// last sample of each interval and silently drop the rest.
-//
-// The subtraction is done in uint32 so it stays correct when the total wraps
-// (unsigned overflow wraps by definition; signed overflow is undefined). The
-// wrapped difference is then reinterpreted as a signed delta.
-//
-// If a packet is skipped (the Data Stream suppresses telemetry during a
-// capture), no displacement is lost: the totals keep advancing and the next
-// packet reports the whole gap — subject only to the int16 saturation applied
-// by the caller, which discards the excess of an extreme value.
-//
-// ImuTask は 400Hz で「全」フローサンプルを snapshot.flow_*_total に加えるので、
-// その累積を2回読んだ差には、センサがこの 50Hz ループに対してどれだけ速くても、
-// 間の全サンプルが含まれる。累積を設けた理由がこれである。差分量の flow_dx/dy を
-// 50Hz で覗くと各周期の最後の1件しか見えず、残りが黙って失われる。
-//
-// 引き算は uint32 のまま行い、累積が折り返しても正しさを保つ（符号なしの桁あふれは
-// 定義上折り返すが、符号付きは未定義）。折り返した差をあらためて符号付き差分として
-// 解釈する。
-//
-// パケットが飛んだ場合（キャプチャ中は Data Stream がテレメトリを抑止する）も変位は
-// 失われない。累積は進み続け、次のパケットがその間の全量を報告する。ただし呼び出し側が
-// 行う int16 への飽和だけは例外で、極端な値の超過分は切り捨てられる。
-// -----------------------------------------------------------------------------
-void Telemetry::takeFlowDelta(const SensorSnapshot& snapshot,
-                              int32_t& dx_out, int32_t& dy_out)
-{
-    // First packet: adopt the current totals as the baseline rather than
-    // reporting everything accumulated since boot as one huge displacement.
-    // 最初のパケット: 起動からの累積を1回の巨大な変位として報告する代わりに、
-    // 現在の累積を基準として採用する。
-    if (!flow_baseline_set_) {
-        last_flow_dx_total_ = snapshot.flow_dx_total;
-        last_flow_dy_total_ = snapshot.flow_dy_total;
-        flow_baseline_set_  = true;
-        dx_out = 0;
-        dy_out = 0;
-        return;
-    }
-
-    dx_out = static_cast<int32_t>(snapshot.flow_dx_total - last_flow_dx_total_);
-    dy_out = static_cast<int32_t>(snapshot.flow_dy_total - last_flow_dy_total_);
-    last_flow_dx_total_ = snapshot.flow_dx_total;
-    last_flow_dy_total_ = snapshot.flow_dy_total;
-}
-
-// -----------------------------------------------------------------------------
 // packSensorFields — the v2 block: power + mirrored async sensors
 // v2 部 — 電源＋ミラーされた非同期センサ
 //
@@ -355,10 +289,6 @@ void Telemetry::packSensorFields(TelemetryPacket& pkt)
     const SensorSnapshot snapshot = sensor_snapshot.latest();
     const PowerData      power    = sensor_power.latest();
     const uint32_t       now_us   = static_cast<uint32_t>(esp_timer_get_time());
-
-    int32_t flow_dx = 0;
-    int32_t flow_dy = 0;
-    takeFlowDelta(snapshot, flow_dx, flow_dy);
 
     // Freshness per sensor (R16): a mirrored value persists across cycles, so
     // without an age check a stopped sensor would be reported as working
@@ -425,20 +355,30 @@ void Telemetry::packSensorFields(TelemetryPacket& pkt)
         flags |= TELEM_VALID_TOF_FRONT;
     }
 
-    // Clamp rather than truncate: the delta is int32 but the wire field is
-    // int16, and a plain cast would wrap a large positive value into a
-    // negative one — a reversed direction on the display. Saturating keeps the
-    // sign honest. One 50Hz interval holds ~2 samples, so the bound is only
-    // reachable after a long suppressed stretch or an absurd sensor reading;
-    // the excess is then discarded rather than carried further.
-    // 切り捨てではなく飽和させる: 差分は int32 だが電文は int16 で、単純なキャストは
-    // 大きな正の値を負値に折り返す（表示上、向きが反転する）。飽和なら符号は正しいまま。
-    // 50Hz の1周期には約2サンプルしか入らないため、この上限に達するのは送信が長く
-    // 抑止された後かセンサが異常値を報告した場合だけで、超過分は以降へ持ち越さず
-    // 切り捨てる。
-    pkt.flow_dx_sum = clampToInt16(flow_dx);
-    pkt.flow_dy_sum = clampToInt16(flow_dy);
-    pkt.flow_squal  = snapshot.flow_squal;
+    // Send the total itself, truncated to its low 16 bits, and let the
+    // receiver take the difference. Truncation is exactly what is wanted here
+    // — unlike a difference, a total is only ever read modulo 2^16, so the
+    // discarded high bits carry no information the receiver needs.
+    //
+    // Why not the difference since the previous packet, which this field held
+    // until 2026-09-19: UDP:5005 is a broadcast and WiFi does not retransmit
+    // broadcasts. 42% of packets were measured lost on hardware, and a
+    // difference that a lost packet was carrying is gone for good. A total
+    // survives the loss: the next packet to arrive states the whole position
+    // again. See kTelemFlowWrapSpan for the one remaining limit.
+    //
+    // 累計そのものを下位 16 ビットに切り詰めて送り、差を取るのは受信側に任せる。
+    // ここでの切り捨てはまさに望むところである — 差分と違い、累計は常に 2^16 を法と
+    // して読まれるので、捨てた上位ビットに受信側が必要とする情報は無い。
+    //
+    // なぜ 2026-09-19 までこの枠が持っていた「前回送信からの差分」をやめたか:
+    // UDP:5005 はブロードキャストで、WiFi はブロードキャストを再送しない。実機では
+    // 42% のパケットが失われており、失われたパケットが運んでいた差分は永久に戻らない。
+    // 累計なら欠損を越えて生き残る。次に届いたパケットが現在地をあらためて述べる
+    // からである。残る唯一の限界は kTelemFlowWrapSpan を参照。
+    pkt.flow_dx_total16 = static_cast<uint16_t>(snapshot.flow_dx_total);
+    pkt.flow_dy_total16 = static_cast<uint16_t>(snapshot.flow_dy_total);
+    pkt.flow_squal      = snapshot.flow_squal;
     if (is_fresh(snapshot.flow_timestamp)) flags |= TELEM_VALID_FLOW;
 
     pkt.mag_x = snapshot.mag[0];

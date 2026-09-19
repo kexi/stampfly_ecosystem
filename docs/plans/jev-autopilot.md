@@ -751,6 +751,57 @@ HAL 側（`isPresentAt()`）は待たず XSHUT にも触れない設計にした
 | バッテリー駆動と USB 給電のみの差 | 電源に依存する現象で、SILS には電源が無い |
 | ホバリング時の高度保持が従来どおりであること | SILS の回帰は変更前と一致したが、SILS のプラントは実機と忠実度が異なる |
 
+## 4.8 実機確認の結果（2026-09-19）
+
+上の手順書のうち、飛行を伴わない項目をユーザーが実施した。**テレメトリ v2（140B）の各項目が実機で読めること**が確認でき、同時に**UDP:5005 のブロードキャストが大量に欠損すること**が分かった。後者を受けてフローの送り方を改めた（§4.8.3）。
+
+### 4.8.1 読めたもの
+
+| 事項 | 結果 |
+|------|------|
+| テレメトリ v2 の 140B 各項目 | **読めた。** `sf telemetry` で電池電圧・底面 ToF・前方 ToF・フロー・地磁気・気圧高度が値として出た |
+| 前方 ToF | 駆動し測距した（`sf telemetry` で `front` が数値。手をかざすと前方だけが変わる） |
+| 底面 ToF のレート | `sf log wifi`（400Hz の Data Stream）で **30.4Hz**。前方を足しても設計どおり 30Hz を保っている |
+| `sf log wifi` の欠損 | **0%。** ユニキャストなので WiFi が再送し、取りこぼしが無い |
+
+### 4.8.2 UDP:5005 のブロードキャストは 58% しか届かない
+
+| 測定 | 値 |
+|------|---|
+| 測定時間 | 24.6 秒 |
+| 機体が送った数（50Hz × 24.6 秒） | 約 1,230 個 |
+| Mac が受け取った数 | **714 個（58%）** |
+| 欠損の形 | 単発ではなく**連続 4〜10 個**の欠損が何度も |
+
+原因は形式そのものにある。UDP:5005 は 255.255.255.255 へのブロードキャストで、**WiFi はブロードキャストフレームを再送しない**（ユニキャストのような ACK と再送の仕組みが働かない）。同じ時刻にユニキャストで流れている `sf log wifi` の Data Stream は欠損 0% なので、無線環境ではなく形式の差である。
+
+### 4.8.3 これを受けてフローを累計送信に改めた
+
+v2 のフロー 2 項目は当初「前回送信からの差分」だった。**空中で失われたパケットが運んでいた差分は、受信側では永久に失われる。** 42% が失われる経路でこれは成り立たない。
+
+そこで同じ 2 枠（オフセット 116 / 118、ワイヤ形式は 140B のまま）に**累計の下位 16 ビット**（`uint16_t`、折り返す）を入れることにした。受信側は `delta = int16(今回 − 前回)` で、間で何個欠けても次に届いたパケットで全量を復元できる。限界は「受信が途絶えている間の移動量が ±32767 カウントを超えた場合」だけで、実測の最大が毎秒約 900 カウントなので**約 36 秒の途絶**にあたる。
+
+`TELEM_VERSION` は **2 のまま**とした。v2 自体が同じ日・同じブランチで生まれたもので、旧い意味（差分）を送った公開ファームが存在しないためである。設計の詳細は `firmware/vehicle/docs/detailed_design.md` §10 を参照。
+
+### 4.8.4 `No IMU notification for 10ms` は変更前からの挙動
+
+このブランチの起動ログに出るため疑ったが、**main でも出る**。起動 0.5 秒・4.0 秒の時点と、USB の開閉時に出る。
+
+| 条件 | 出た回数 |
+|------|---------|
+| 本ブランチ | 18 回中 2 回 |
+| main（SoftAP） | 24 回中 2 回 |
+| 本ブランチ・前方無効（SoftAP） | 24 回中 5 回 |
+
+本改修が持ち込んだものではない。原因の特定は本計画の範囲外とし、別途扱う。
+
+### 4.8.5 運用上分かったこと
+
+| 事項 | 内容 |
+|------|------|
+| 電源 | **ドック経由の USB では、バッテリーをつながないと機体が USB 機器として認識されなかった。** ただし USB のみでも機体の起動自体はした |
+| アクセスポイント | `wifi.mode=1` にしないとアクセスポイントが立たない。`sf telemetry` が無音のときはまずこれを確認する |
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -1233,6 +1284,59 @@ Each flight gets `simulator/sils/viz/out_<kind>/<datetime>/`. `finalize_flightlo
 C stayed hidden under `sf sils scenario` because that command runs its duration out and leaves through the normal path. `sf pilot` ends by sending `quit`, so only that path was broken. This is the only change made to the SILS C/C++ for this work.
 
 `sf sils video -m <name>` was also fixed to name its output from the last path segment, so a name containing a separator (`pilot/<datetime>`) no longer points the mp4 at a directory that does not exist.
+
+## 4.8 Results of the Hardware Check (2026-09-19)
+
+The user ran the non-flying steps of the procedure above. **Every field of the 140-byte v2 telemetry packet was readable on hardware**, and at the same time **the UDP:5005 broadcast turned out to lose a large fraction of its packets**. The second finding is why the flow fields were changed to carry a total (§4.8.3).
+
+(The Japanese side also carries §4.7, the P2b forward-ToF results; that section has no English counterpart yet. This is pre-existing and left as it is rather than expanded here.)
+
+### 4.8.1 What was readable
+
+| Item | Result |
+|------|--------|
+| All 140-byte v2 fields | **Readable.** `sf telemetry` showed battery voltage, bottom ToF, front ToF, optical flow, magnetometer and pressure altitude as numbers |
+| Forward ToF | Driven and ranging (`front` shows a distance; a hand in front changes only that reading) |
+| Bottom ToF rate | **30.4 Hz** over `sf log wifi` (the 400Hz Data Stream). Adding the front sensor kept it at the designed 30 Hz |
+| `sf log wifi` loss | **0%.** It is unicast, so WiFi retransmits and nothing is dropped |
+
+### 4.8.2 The UDP:5005 broadcast delivers only 58%
+
+| Measurement | Value |
+|-------------|-------|
+| Duration | 24.6 s |
+| Sent by the vehicle (50Hz × 24.6 s) | about 1,230 packets |
+| Received by the Mac | **714 (58%)** |
+| Shape of the loss | not isolated drops but repeated runs of **4 to 10 consecutive** packets |
+
+The cause is the format itself. UDP:5005 is a broadcast to 255.255.255.255, and **WiFi does not retransmit broadcast frames** (the ACK-and-retry mechanism that covers unicast does not apply). The unicast Data Stream running at the same time lost nothing, so this is a property of the format, not of the radio environment.
+
+### 4.8.3 Hence the flow fields now carry a total
+
+The two v2 flow fields originally held the displacement since the previous send. **A difference carried by a packet lost in the air is gone for good on the receiving side**, and that does not work over a path that loses 42%.
+
+The same two slots (offsets 116 / 118; the wire stays 140 bytes) now carry the **low 16 bits of the running total** (`uint16_t`, wrapping). The receiver computes `delta = int16(current − previous)` and recovers the whole movement from the next packet that arrives, however many went missing. The one limit is a movement of more than ±32767 counts while reception is interrupted; at the measured peak of about 900 counts per second that is roughly **36 seconds of outage**.
+
+`TELEM_VERSION` **stays 2**, because v2 itself was born on this branch on the same day and no released firmware ever sent the old meaning. The design is described in `firmware/vehicle/docs/detailed_design.md` §10.
+
+### 4.8.4 `No IMU notification for 10ms` predates this work
+
+It appears in this branch's boot log, but **it also appears on main**: at 0.5 s and 4.0 s after boot, and when the USB connection is opened or closed.
+
+| Condition | Occurrences |
+|-----------|-------------|
+| This branch | 2 of 18 boots |
+| main (SoftAP) | 2 of 24 boots |
+| This branch, front ToF disabled (SoftAP) | 5 of 24 boots |
+
+It was not introduced by this work. Finding its cause is out of scope here and is left for separate handling.
+
+### 4.8.5 Operational notes
+
+| Item | Note |
+|------|------|
+| Power | **Through a dock, the vehicle was not recognised as a USB device unless a battery was connected.** It did boot on USB alone, though |
+| Access point | The access point does not come up unless `wifi.mode=1`. Check this first when `sf telemetry` is silent |
 
 ## 5. Placement
 

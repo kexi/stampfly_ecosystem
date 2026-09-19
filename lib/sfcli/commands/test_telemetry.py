@@ -6,6 +6,11 @@ What these guarantee:
   - anything that is not one of those two lengths, or carries the wrong magic,
     or claims a version other than 2 at 140 bytes, decodes to None
   - valid_flags maps to the documented per-sensor booleans
+  - the flow fields are running totals and the difference between two of them
+    is the movement in between -- positive, negative, and across the 0xFFFF
+    wrap -- so that losing packets costs the total nothing
+  - a vehicle restart (its clock going backwards) drops the reference instead
+    of reporting the jump as one enormous movement
   - the Python struct formats agree with the C++ wire contract: the offsets
     asserted by static_assert(offsetof(...)) in telemetry.hpp are parsed out of
     that header and compared against what Python's format strings imply, so a
@@ -17,6 +22,11 @@ What these guarantee:
   - その2つ以外の長さ、magic 不一致、140バイトなのに version が 2 でないものは
     None になること
   - valid_flags が文書どおりのセンサ別真偽値に対応すること
+  - フローの 2 項目が累計であり、2 つの累計の差がその間の移動量になること
+    （正・負・0xFFFF の折り返しをまたぐ場合）。パケットが失われても累計は何も
+    失わないこと
+  - 機体の再起動（時刻の巻き戻り）で基準を捨て、跳びを 1 回の巨大な移動として
+    報告しないこと
   - Python の struct 書式が C++ の電文契約と一致すること。telemetry.hpp の
     static_assert(offsetof(...)) が固定するオフセットを同ヘッダから読み取り、
     Python の書式が示すオフセットと突き合わせる。片側だけ並べ替えると、
@@ -44,8 +54,8 @@ V2_OFFSETS = [
     ("voltage", 104, "f"),
     ("tof_bottom", 108, "f"),
     ("tof_front", 112, "f"),
-    ("flow_dx_sum", 116, "h"),
-    ("flow_dy_sum", 118, "h"),
+    ("flow_dx_total16", 116, "H"),
+    ("flow_dy_total16", 118, "H"),
     ("flow_squal", 120, "B"),
     ("valid_flags", 121, "B"),
     ("reserved2", 122, "2x"),
@@ -58,29 +68,30 @@ V2_OFFSETS = [
 ]
 
 
-def build_v1(version=1, magic=telem.TELEM_MAGIC, mode=5):
+def build_v1(version=1, magic=telem.TELEM_MAGIC, mode=5, t_us=1234):
     """A syntactically valid v1 packet with recognisable field values.
     見分けのつく値を入れた、形式的に正しい v1 パケット。"""
     floats = [float(i) for i in range(len(telem.FLOAT_NAMES))]
-    return struct.pack(telem.TELEM_FMT, magic, version, 0x01, 1234, *floats, mode)
+    return struct.pack(telem.TELEM_FMT, magic, version, 0x01, t_us, *floats, mode)
 
 
-def build_v2(version=2, flags=0b111111, **over):
+def build_v2(version=2, flags=0b111111, t_us=1234, **over):
     """A v1 prefix plus the appended v2 block.
     v1 部に v2 追記部を足したもの。"""
     values = {
         "voltage": 3.85, "tof_bottom": 0.42, "tof_front": -1.0,
-        "flow_dx_sum": -7, "flow_dy_sum": 11, "flow_squal": 90,
+        "flow_dx_total16": 65529, "flow_dy_total16": 11, "flow_squal": 90,
         "mag_x": 1.5, "mag_y": -2.5, "mag_z": 3.5, "baro_altitude": 1.25,
     }
     values.update(over)
     tail = struct.pack(
         telem.TELEM_V2_FMT, values["voltage"], values["tof_bottom"],
-        values["tof_front"], values["flow_dx_sum"], values["flow_dy_sum"],
+        values["tof_front"], values["flow_dx_total16"],
+        values["flow_dy_total16"],
         values["flow_squal"], flags,
         values["mag_x"], values["mag_y"], values["mag_z"],
         values["baro_altitude"])
-    return build_v1(version=version) + tail
+    return build_v1(version=version, t_us=t_us) + tail
 
 
 # ---------------------------------------------------------------------------
@@ -122,8 +133,13 @@ def test_v2_decodes_all_appended_fields():
     assert pkt["voltage"] == pytest.approx(3.85, rel=1e-6)
     assert pkt["tof_bottom"] == pytest.approx(0.42, rel=1e-6)
     assert pkt["tof_front"] == pytest.approx(-1.0)
-    assert pkt["flow_dx_sum"] == -7
-    assert pkt["flow_dy_sum"] == 11
+    # The totals are decoded RAW, as unsigned: 65529 must not come back as -7.
+    # Turning a pair of them into a movement is flow_delta()'s job, not the
+    # decoder's.
+    # 累計は符号なしのまま復号される: 65529 が -7 になってはならない。2 つの累計を
+    # 移動量に変えるのは flow_delta() の仕事で、復号器の仕事ではない。
+    assert pkt["flow_dx_total"] == 65529
+    assert pkt["flow_dy_total"] == 11
     assert pkt["flow_squal"] == 90
     assert pkt["mag_x"] == pytest.approx(1.5)
     assert pkt["mag_z"] == pytest.approx(3.5)
@@ -303,7 +319,7 @@ def test_csv_columns_are_stable_across_versions():
     1つの CSV に両版を収められ、v1 では v2 の升目が空欄であること。"""
     n_cols = len(telem.CSV_HEADER.strip().split(","))
     row_v1 = telem.csv_row(telem.decode_packet(build_v1()))
-    row_v2 = telem.csv_row(telem.decode_packet(build_v2()))
+    row_v2 = telem.csv_row(telem.decode_packet(build_v2()), flow=(-7, 11))
     assert len(row_v1.strip().split(",")) == n_cols
     assert len(row_v2.strip().split(",")) == n_cols
     # v1 must not write zeros where it has no measurement.
@@ -312,6 +328,213 @@ def test_csv_columns_are_stable_across_versions():
     assert all(cell == "" for cell in tail_v1)
     tail_v2 = row_v2.strip().split(",")[2 + len(telem.FLOAT_NAMES):]
     assert all(cell != "" for cell in tail_v2)
+
+
+def _csv_cell(row: str, column: str):
+    """The value under one CSV column name, for asserting on a recorded row.
+    CSV の 1 列の値。記録された行を検査するために取り出す。"""
+    header = telem.CSV_HEADER.strip().split(",")
+    return row.strip().split(",")[header.index(column)]
+
+
+def test_csv_records_both_the_raw_total_and_the_movement():
+    """A row carries the total as sent AND the movement since the row before.
+
+    Both are needed: the movement is what an analysis plots directly, while the
+    total lets it re-derive a movement across rows this recorder never saw.
+    1 行が「送られたままの累計」と「1 つ前の行からの移動量」の両方を持つこと。
+
+    両方が要る。移動量はそのまま図に描ける量であり、累計は記録側が見なかった行を
+    またいだ移動量を取り直すためにある。
+    """
+    row = telem.csv_row(telem.decode_packet(build_v2()), flow=(-7, 11))
+
+    assert _csv_cell(row, "flow_dx_total") == "65529"
+    assert _csv_cell(row, "flow_dx_delta") == "-7"
+    assert _csv_cell(row, "flow_dy_delta") == "11"
+
+
+def test_csv_leaves_the_movement_empty_when_there_is_no_reference():
+    """The first row of a stream has nothing to difference against, so the
+    movement cells are empty rather than zero -- a zero would claim the surface
+    had not moved.
+    流れの最初の行には差を取る相手が無いので、移動量の升目は 0 ではなく空欄に
+    すること。0 は「面が動かなかった」と主張することになる。
+    """
+    row = telem.csv_row(telem.decode_packet(build_v2()))
+
+    assert _csv_cell(row, "flow_dx_delta") == ""
+    assert _csv_cell(row, "flow_dx_total") == "65529"
+
+
+# ---------------------------------------------------------------------------
+# Flow totals -> movement (flow_delta / FlowTracker)
+# フローの累計から移動量へ
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("previous,current,expected", [
+    (100, 150, 50),            # plain forward / 素直な前進
+    (150, 100, -50),           # plain backward / 素直な後退
+    (100, 100, 0),             # standing still / 静止
+    (65530, 10, 16),           # forward across 0xFFFF / 折り返しをまたぐ前進
+    (10, 65530, -16),          # backward across 0xFFFF / 折り返しをまたぐ後退
+    (0, 32767, 32767),         # the largest movement that stays unambiguous
+    (0, 32768, -32768),        # one count further reads as the other direction
+])
+def test_flow_delta_reads_the_difference_as_a_signed_wrap(previous, current,
+                                                          expected):
+    """The movement between two totals is their difference modulo 2^16, signed.
+
+    The 0xFFFF cases are the point of the format: the totals are only ever sent
+    as their low 16 bits, so every reader must cross that boundary without
+    seeing a 65000-count jump. The last two rows state the limit exactly --
+    32767 counts is the most that can be told apart from a move the other way.
+
+    2 つの累計の間の移動量は、その差を 2^16 で法として符号つきと読んだもの。
+
+    0xFFFF をまたぐ場合こそがこの様式の要点である。累計は常に下位 16 ビットしか
+    送られないので、どの読み手もその境界を「65000 カウントの跳び」と見ずに
+    越えねばならない。最後の 2 行が限界を正確に示す — 逆向きの移動と区別できるのは
+    32767 カウントまでである。
+    """
+    assert telem.flow_delta(previous, current) == expected
+
+
+def test_lost_packets_do_not_lose_any_displacement():
+    """The movement recovered across a gap equals the sum of the movements of
+    the packets that went missing.
+
+    This is the whole reason the wire carries a total. UDP:5005 is a broadcast
+    that WiFi never retransmits, and runs of 4 to 10 consecutive losses were
+    measured on hardware on 2026-09-19; a difference carried by a lost packet
+    would be gone for good.
+
+    欠損をまたいで復元した移動量が、失われたパケットの移動量の合計に等しいこと。
+
+    電文が累計を運ぶ理由そのものである。UDP:5005 は WiFi が再送しない
+    ブロードキャストで、2026-09-19 の実機実測では連続 4〜10 個の欠損が起きた。
+    失われたパケットが運んでいた差分なら永久に戻らない。
+    """
+    moves = [37, -12, 250, -4, 19, 900, -333]
+    totals = [1000]
+    for move in moves:
+        totals.append((totals[-1] + move) % 65536)
+    packets = [build_v2(flow_dx_total16=total, t_us=1000 * i)
+               for i, total in enumerate(totals)]
+
+    # Keep only the first and last: every packet in between is "lost".
+    # 最初と最後だけ残す。間のパケットは全て「失われた」ことにする。
+    tracker = telem.FlowTracker()
+    tracker.update(telem.decode_packet(packets[0]))
+    recovered, _ = tracker.update(telem.decode_packet(packets[-1]))
+
+    assert recovered == sum(moves)
+
+    # And the unbroken stream reports the same total movement, packet by
+    # packet -- losing packets changes when the movement is reported, not how
+    # much of it there is.
+    # 欠損の無い流れも、1 パケットずつで同じ総移動量を報告すること — 欠損が変える
+    # のは移動量が報告される時点であって、その量ではない。
+    unbroken = telem.FlowTracker()
+    unbroken.update(telem.decode_packet(packets[0]))
+    stepwise = [unbroken.update(telem.decode_packet(p))[0]
+                for p in packets[1:]]
+    assert stepwise == moves
+    assert sum(stepwise) == recovered
+
+
+def test_the_first_packet_of_a_stream_reports_no_movement():
+    """With no earlier total there is nothing to difference against, so the
+    tracker says "unknown" rather than treating the vehicle's own total since
+    boot as one enormous movement.
+    より前の累計が無ければ差を取る相手が無いので、tracker は「不明」と答える。
+    機体の起動からの累計を 1 回の巨大な移動として扱わないこと。
+    """
+    tracker = telem.FlowTracker()
+    assert tracker.update(telem.decode_packet(build_v2())) == (None, None)
+
+
+def test_a_vehicle_restart_drops_the_reference():
+    """When the vehicle's clock goes backwards its flow totals restarted too,
+    so the jump must be discarded, not reported.
+
+    The timestamp counts microseconds since the vehicle's own boot, so a reboot
+    restarts both it and the totals at zero. Without this the first packet
+    after a reboot would report the difference against the pre-reboot total.
+
+    機体の時刻が巻き戻ったときは、フローの累計も 0 から始まっている。よってその
+    跳びは報告せず捨てること。
+
+    タイムスタンプは「その機体の起動」からのマイクロ秒なので、再起動すれば時刻も
+    累計も 0 から始まる。この処理が無いと、再起動後の最初のパケットが再起動前の
+    累計との差を報告してしまう。
+    """
+    tracker = telem.FlowTracker()
+    tracker.update(telem.decode_packet(
+        build_v2(flow_dx_total16=40000, t_us=9_000_000)))
+
+    after_reboot = tracker.update(telem.decode_packet(
+        build_v2(flow_dx_total16=3, t_us=120_000)))
+
+    assert after_reboot == (None, None)
+
+    # The packet after that one is measured against the post-reboot total, so
+    # the stream recovers on the very next packet.
+    # その次のパケットは再起動後の累計を基準に測られる。流れは次の 1 件で復帰する。
+    assert tracker.update(telem.decode_packet(
+        build_v2(flow_dx_total16=9, t_us=140_000)))[0] == 6
+
+
+def test_a_v1_packet_reports_no_flow_movement():
+    """Old firmware sends no flow field, so the tracker must not invent one.
+    旧ファームはフロー項目を送らないので、tracker が値を作り出さないこと。"""
+    tracker = telem.FlowTracker()
+    assert tracker.update(telem.decode_packet(build_v1())) == (None, None)
+    assert tracker.update(telem.decode_packet(build_v1())) == (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Flow display
+# フローの表示
+# ---------------------------------------------------------------------------
+
+def _flow_line(pkt: dict, flow=(None, None), since_start=(None, None)) -> str:
+    """The dashboard's `flow` row, for asserting on what the operator reads.
+    ダッシュボードの `flow` 行。操作者が読む内容を検査するために取り出す。"""
+    lines = [line for line in telem._sensor_lines(pkt, flow, since_start)
+             if line.startswith("flow")]
+    assert len(lines) == 1, f"expected exactly one flow row, got {lines}"
+    return lines[0]
+
+
+def test_the_flow_row_shows_the_movement_not_the_raw_total():
+    """The operator reads a movement and a running sum, never the wire total.
+
+    The wire total is a number modulo 2^16 with no meaning on its own -- 65529
+    is a movement of -7, not of 65529 -- so showing it would be misleading.
+    操作者が読むのは移動量と累計であって、電文の生の累計ではないこと。
+
+    電文の累計は 2^16 を法とする数で単独では意味を持たない（65529 は 65529 の
+    移動ではなく -7 の移動である）ため、そのまま出すと誤解を招く。
+    """
+    line = _flow_line(telem.decode_packet(build_v2()),
+                      flow=(-7, 11), since_start=(120, -30))
+
+    assert "dx    -7" in line and "dy   +11" in line
+    assert "65529" not in line
+    assert "+120" in line and "-30" in line
+
+
+def test_the_flow_row_says_so_when_there_is_no_movement_yet():
+    """Before a second packet arrives there is no movement to show, and the row
+    must not print a zero that would read as "not moving".
+    2 件目が届くまでは表示できる移動量が無い。「動いていない」と読める 0 を
+    出さないこと。
+    """
+    line = _flow_line(telem.decode_packet(build_v2()))
+
+    assert "dx -----" in line
+    assert "+0" not in line
 
 
 # ---------------------------------------------------------------------------
