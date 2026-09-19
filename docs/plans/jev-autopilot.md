@@ -802,6 +802,26 @@ v2 のフロー 2 項目は当初「前回送信からの差分」だった。**
 | 電源 | **ドック経由の USB では、バッテリーをつながないと機体が USB 機器として認識されなかった。** ただし USB のみでも機体の起動自体はした |
 | アクセスポイント | `wifi.mode=1` にしないとアクセスポイントが立たない。`sf telemetry` が無音のときはまずこれを確認する |
 
+### 4.8.6 フローの符号と、欠損に対する強さ（手で動かした実測）
+
+累計送信に改めたファーム（`1dd1b3c6`）を書き込み、機体を手で持って（高さ 0.15〜0.24m、
+表面品質 80〜160）、決めた順に動かして `sf telemetry --csv` で 26.7 秒記録した。
+受信は 1,336 個中 821 個（61%）。
+
+| 動かし方 | 累計の動き | 裏づけ |
+|---------|-----------|--------|
+| 前へ → 戻す（2 回） | `flow_dx_total` が +350〜+600 増え、戻すと元の値の ±100 以内に戻る | 同時に前方 ToF が 0.52→0.36m（前進）、0.36→0.64m（後退）と動いた |
+| 右へ → 戻す（2 回） | `flow_dy_total` が +630〜+650 増え、戻すと元の値の ±30 以内に戻る | 動かした順番（操作者の申告）。独立した観測は無い |
+
+- **符号: 前進で `flow_dx_total` が増え、右への移動で `flow_dy_total` が増える。** これは
+  センサーの生のカウントであり、推定器が使う機体座標への変換（`pmw3901_wrapper.cpp`）とは別である
+- **39% のパケットが届かなくても、行って戻ると累計は元に戻る。** 差分を送っていた版では
+  欠けたパケットの変位が失われていた（4.8.3）。累計送信の効果を実機で確認できた
+- 前後の動きで `dy`、横の動きで `dx` はほとんど動かない（軸は混ざっていない）
+- 高さが測距の下限未満（底面 ToF が無効）で表面品質が 40 を下回る状態では、累計が一度に
+  1,000 カウント以上跳ぶことがあった。面に近すぎるとフローは信頼できない。自動操縦が
+  フローの生値を使うときは、表面品質と底面 ToF の有効性で門をかけること
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -1337,6 +1357,20 @@ It was not introduced by this work. Finding its cause is out of scope here and i
 |------|------|
 | Power | **Through a dock, the vehicle was not recognised as a USB device unless a battery was connected.** It did boot on USB alone, though |
 | Access point | The access point does not come up unless `wifi.mode=1`. Check this first when `sf telemetry` is silent |
+
+### 4.8.6 Flow signs, and robustness to loss (measured by hand)
+
+With the totals firmware (`1dd1b3c6`) flashed, the craft was held by hand (0.15-0.24 m above the surface, surface quality 80-160), moved in a fixed order and recorded for 26.7 s with `sf telemetry --csv`. 821 of 1,336 packets arrived (61%).
+
+| Motion | Totals | Corroboration |
+|--------|--------|---------------|
+| forward, then back (twice) | `flow_dx_total` rises by +350 to +600 and returns to within 100 counts | the front ToF moved 0.52->0.36 m (forward) and 0.36->0.64 m (back) at the same time |
+| right, then back (twice) | `flow_dy_total` rises by +630 to +650 and returns to within 30 counts | the order of motion as reported by the operator; no independent observation |
+
+- **Signs: `flow_dx_total` increases moving forward, `flow_dy_total` increases moving right.** These are raw sensor counts, separate from the conversion into the body frame that the estimator uses (`pmw3901_wrapper.cpp`).
+- **With 39% of the packets lost, going out and coming back returns the totals to where they started.** The delta version lost the displacement of every dropped packet (4.8.3); the effect of sending totals is confirmed on hardware.
+- A fore-aft move barely moves `dy` and a lateral move barely moves `dx`: the axes do not mix.
+- Below the ranging minimum (bottom ToF invalid) with surface quality under 40, the total was seen to jump by more than 1,000 counts at once. Too close to a surface, flow is not trustworthy; if the pilot ever uses raw flow it must gate on surface quality and on the bottom ToF being valid.
 
 ## 5. Placement
 
