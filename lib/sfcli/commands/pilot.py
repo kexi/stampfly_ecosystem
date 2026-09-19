@@ -30,6 +30,40 @@ COMMAND_HELP = "Jev-assisted autopilot — bench the judge, or replay a flight l
 
 BENCH_DEFAULT_N = 20
 
+# Default port for `--web`. Chosen next to `sf telemetry --web`'s so the two
+# can run at once, and high enough to need no privilege.
+# `--web` の既定ポート。`sf telemetry --web` の隣にして同時に使えるようにし、
+# 特権の要らない範囲から選ぶ。
+WEB_DEFAULT_PORT = 8770
+
+
+def _add_web_arguments(parser: argparse.ArgumentParser) -> None:
+    """Give a flying subcommand the `--web` family of options.
+
+    Shared so `run`, `say` and `mission` cannot drift in what they call the
+    same option -- an operator who learned `--no-browser` on one should not
+    find it spelled differently on another.
+
+    飛行するサブコマンドに `--web` 一式の選択肢を与える。
+
+    共有するのは、`run`・`say`・`mission` で同じ選択肢の呼び名が食い違わない
+    ようにするためである。一方で `--no-browser` を覚えた操作者が、他方で別の
+    綴りに出会うべきではない。
+    """
+    parser.add_argument(
+        "--web", action="store_true",
+        help="Watch the flight and Jev's decisions in a browser "
+             "（ブラウザで飛行と判断を見る。127.0.0.1 のみ）",
+    )
+    parser.add_argument(
+        "--port", type=int, default=WEB_DEFAULT_PORT,
+        help=f"Port for --web (default: {WEB_DEFAULT_PORT})",
+    )
+    parser.add_argument(
+        "--no-browser", dest="open_browser", action="store_false",
+        help="With --web, do not open a browser automatically",
+    )
+
 # A situation that exercises every question without being trivially safe
 # or trivially dangerous: low battery plus a slow drift. Using one fixed
 # state keeps repeated benches comparable.
@@ -116,6 +150,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--deadline-ms", type=float, default=None,
         help="Override the Jev response deadline in milliseconds",
     )
+    _add_web_arguments(run_parser)
     run_parser.set_defaults(func=run_run)
 
     say_parser = subs.add_parser(
@@ -157,6 +192,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--duration", type=float, default=RUN_DEFAULT_DURATION_S,
         help=f"Ceiling on the flight in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
     )
+    _add_web_arguments(say_parser)
     say_parser.set_defaults(func=run_say)
 
     mission_parser = subs.add_parser(
@@ -193,6 +229,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--duration", type=float, default=None,
         help="Override the mission time limit in seconds",
     )
+    _add_web_arguments(mission_parser)
     mission_parser.set_defaults(func=run_mission)
 
 
@@ -383,13 +420,49 @@ def _print_replay_summary(pilot, link, trace) -> None:
 # =============================================================================
 # sf pilot run --sils
 # =============================================================================
-def run_run(args: argparse.Namespace) -> int:
-    """Fly the SILS emulator under the judging layers.
-    SILS エミュレータを判断層の下で飛ばす。"""
+def _run_config(args):
+    """This run's config, with `--deadline-ms` applied if it was given.
+
+    The WHOLE config is rebuilt rather than the Judge's part alone, so the
+    Arbiter's copy of the deadline moves with the Judge's -- they are read
+    from one object for exactly this reason (config.py).
+
+    この実行の設定。`--deadline-ms` があれば反映する。
+
+    Judge の部分だけでなく設定一式を作り直す。期限は Judge と Arbiter の両方が
+    見るので、両者を一緒に動かすためである（そのために 1 つのオブジェクトに
+    まとめてある）。
+    """
     from dataclasses import replace
 
     from sfpilot.config import DEFAULT_CONFIG
+
+    config = DEFAULT_CONFIG
+    if args.deadline_ms is None:
+        return config
+    judge_config = replace(config.judge, deadline_s=args.deadline_ms / 1e3)
+    return replace(config, judge=judge_config)
+
+
+def _open_run_judge(args, config):
+    """The Judge for `sf pilot run`, or None with the reason printed.
+    `sf pilot run` が使う Judge。開けなければ None を返し理由を表示する。"""
     from sfpilot.judge import FakeJudge, JevJudge, MissingApiKey
+
+    if args.fake:
+        return FakeJudge()
+    try:
+        return JevJudge(config)
+    except MissingApiKey as exc:
+        console.error(str(exc))
+        console.info("Use --fake to fly without an API key（キー無しなら --fake）")
+        return None
+
+
+def run_run(args: argparse.Namespace) -> int:
+    """Fly the SILS emulator under the judging layers.
+    SILS エミュレータを判断層の下で飛ばす。"""
+    from sfpilot.recording import FlightRecording
     from sfpilot.scenes import get_scene
     from sfpilot.trace import Trace
 
@@ -401,40 +474,35 @@ def run_run(args: argparse.Namespace) -> int:
         )
         return 1
 
-    config = DEFAULT_CONFIG
-    if args.deadline_ms is not None:
-        # Rebuild the whole config so the Arbiter's copy of the deadline
-        # moves with the Judge's -- they are read from one object for
-        # exactly this reason (config.py).
-        # 期限は Judge と Arbiter の両方が見るため、設定一式を作り直して
-        # 両者を一緒に動かす（そのために 1 つのオブジェクトにまとめてある）。
-        judge_config = replace(config.judge, deadline_s=args.deadline_ms / 1e3)
-        config = replace(config, judge=judge_config)
-
+    config = _run_config(args)
     scene = get_scene(args.scene, config)
-
-    if args.fake:
-        judge = FakeJudge()
-    else:
-        try:
-            judge = JevJudge(config)
-        except MissingApiKey as exc:
-            console.error(str(exc))
-            console.info("Use --fake to fly without an API key（キー無しなら --fake）")
-            return 1
+    judge = _open_run_judge(args, config)
+    if judge is None:
+        return 1
 
     console.info(f"Scene: {scene.name} — {scene.description}")
-    trace = Trace()
+    recording = FlightRecording("pilot")
+    bus, server = _open_live_view(args, {
+        "command": "sf pilot run",
+        "scene": scene.name,
+        "judge": "FakeJudge" if args.fake else "Jev",
+    })
+    trace = Trace(bus=bus)
     try:
-        outcome = _fly_sils(args, config, scene, judge, trace)
+        outcome = _fly_sils(args, config, scene, judge, trace, recording, bus)
     except _SilsUnavailable as exc:
         console.error(str(exc))
         return 1
     finally:
+        # Pair the two records of this flight before closing either.
+        # どちらかを閉じる前に、この飛行の 2 つの記録を対応づける。
+        trace.write_recording(recording)
         trace.close()
         judge.close()
+        if server is not None:
+            server.stop()
 
-    _print_run_summary(outcome, trace)
+    _print_run_summary(outcome, trace, recording)
     return 0
 
 
@@ -442,7 +510,43 @@ class _SilsUnavailable(RuntimeError):
     """The emulator could not be started. / エミュレータを起動できなかった。"""
 
 
-def _fly_sils(args, config, scene, judge, trace) -> dict:
+def _open_live_view(args, context: dict):
+    """Start the browser view when `--web` was asked for. Returns (bus, server).
+
+    Without `--web` this starts NOTHING -- no bus, no thread, no socket --
+    so a flight that was not asked to be watched is byte-for-byte the
+    flight it was before this option existed.
+
+    `--web` が指定されたときにブラウザ表示を開始する。(bus, server) を返す。
+
+    `--web` が無ければ**何も**起動しない（bus もスレッドもソケットも作らない）。
+    見ることを求められていない飛行は、この選択肢が存在しなかったときの飛行と
+    完全に同じである。
+    """
+    if not getattr(args, "web", False):
+        return None, None
+
+    from sfcli.commands.pilot_web import PilotWebServer
+    from sfpilot.events import EventBus
+
+    bus = EventBus()
+    server = PilotWebServer(bus, port=args.port,
+                            open_browser=getattr(args, "open_browser", True),
+                            context=context)
+    try:
+        server.start()
+    except OSError as exc:
+        # A busy port must not cancel the flight: the operator asked to fly
+        # and to watch, and only the watching failed.
+        # ポートが塞がっていても飛行を取り止めない。操作者が求めたのは「飛ぶ」
+        # ことと「見る」ことであり、失敗したのは見ることだけである。
+        console.warning(f"could not open the live view on port {args.port}: {exc} "
+                        f"— flying without it（表示なしで飛行します）")
+        return None, None
+    return bus, server
+
+
+def _fly_sils(args, config, scene, judge, trace, recording, bus=None) -> dict:
     """Launch, take off, monitor, land, shut down. Returns the outcome.
     起動・離陸・監視・着陸・終了。結果を返す。"""
     from sfcli.commands.sils import (
@@ -450,10 +554,6 @@ def _fly_sils(args, config, scene, judge, trace) -> dict:
     )
     from sfpilot.link import SilsLink
 
-    from sfcli.utils.paths import paths
-
-    bundle = paths.root() / "simulator" / "sils" / "viz" / "out_pilot"
-    bundle.mkdir(parents=True, exist_ok=True)
     # The emulator is given headroom beyond the flight so it is still alive
     # to accept `land` and `quit` at the end rather than exiting underneath
     # the loop.
@@ -461,68 +561,122 @@ def _fly_sils(args, config, scene, judge, trace) -> dict:
     # 取れるよう、ループの下で先に終了してしまわないようにするためである。
     total_s = (config.sils.boot_settle_s + config.sils.takeoff_settle_s
                + args.duration + config.sils.land_grace_s)
-    env = realtime_emu_env(bundle, extra_env=scene.env)
+    # Record the flight-log bundle, so the flight can be watched again with
+    # `sf sils video` / the SILS GUI rather than only read as decisions.
+    # フライトログ一式を記録する。飛行を判断の記録として読むだけでなく、
+    # `sf sils video`・SILS GUI でもう一度見られるようにするためである。
+    recording.prepare()
+    env = realtime_emu_env(recording.bundle_dir,
+                           flightlog_dir=recording.flightlog_dir,
+                           extra_env=scene.env)
     try:
         proc = launch_realtime_emu(total_s + 10.0, env, scenario_path=None)
     except RealtimeEmuUnavailable as exc:
         raise _SilsUnavailable(str(exc)) from exc
 
     link = SilsLink(proc)
+    outcome = None
     try:
-        return _run_flight(args, config, scene, judge, trace, link, proc)
+        outcome = _run_flight(args, config, scene, judge, trace, link, proc, bus)
+        return outcome
     finally:
         link.close()
         _shutdown(proc)
+        # After the process is gone, never before: the emulator flushes and
+        # closes its CSVs as it exits.
+        # プロセスの終了後に行う（それ以前では決して行わない）。エミュレータは
+        # 終了時に CSV を書き出して閉じるためである。
+        recording.finalize(
+            notes=f"sf pilot run --sils (scene={scene.name}, "
+                  f"{'FakeJudge' if args.fake else 'Jev'})",
+            decisions=outcome["pilot"].decisions if outcome else (),
+        )
 
 
-def _run_flight(args, config, scene, judge, trace, link, proc) -> dict:
-    """The flight itself: settle, take off, judge, land.
-    飛行そのもの: 静定・離陸・判断・着陸。"""
-    from sfpilot.pilot import Pilot
+def _settle_and_take_off(link, config, live) -> None:
+    """Wait out boot calibration, then take off and settle at a hover.
 
+    An ARM (and so an API `takeoff`) is refused until calibration is done,
+    which is why the wait comes first rather than being a courtesy.
+
+    起動校正を待ってから離陸し、ホバリングで静定させる。
+
+    校正が終わるまで ARM（したがって API の `takeoff`）は受理されない。
+    最初に待つのは、そのためであって気遣いではない。
+    """
     console.info(f"Waiting {config.sils.boot_settle_s:g}s for boot calibration ...")
+    live.phase("起動校正中 / boot calibration")
     _hold_neutral(link, config.sils.boot_settle_s)
 
     console.info("Taking off (api command -> api takeoff) ...")
+    live.phase("離陸 / taking off")
     link.takeoff()
     _hold_neutral(link, config.sils.takeoff_settle_s)
+    live.phase("飛行中 / flying")
 
-    console.info(f"Monitoring for {args.duration:g}s "
-                 f"({'FakeJudge' if args.fake else 'Jev'}) ...")
-    pilot = Pilot(link, judge, config, trace=trace)
+
+def _monitor_until_done(args, config, scene, link, proc, pilot, live,
+                        started: float) -> tuple:
+    """Run the 50Hz loop until the time is up, a landing, or a dead emulator.
+
+    Returns `(landed_early, emulator_died)`. An emulator that died is a
+    THIRD outcome, neither "landed" nor "flew its full length": without it,
+    the caller would send a `land` to a dead process and then wait out the
+    landing grace period, reporting a normal flight several seconds longer
+    than it really was.
+
+    時間切れ・着陸・エミュレータの異常終了のいずれかまで 50Hz ループを回す。
+
+    `(早期着陸したか, エミュレータが死んだか)` を返す。エミュレータの異常終了は
+    「着陸した」でも「飛び切った」でもない第 3 の結末である。区別しないと、
+    呼び出し側が死んだプロセスへ `land` を送ったうえで着陸の猶予時間を待ち切り、
+    実際より数秒長い正常な飛行として報告してしまう。
+    """
     period = 1.0 / config.monitor_hz
-    started = time.monotonic()
-    landed_early = False
-    # An emulator that died is a THIRD outcome, neither "landed" nor "flew
-    # its full length". Without it, the code below would send a `land` to a
-    # dead process and then wait out the landing grace period, reporting a
-    # normal flight that was several seconds longer than it really was.
-    # エミュレータの異常終了は「着陸した」でも「飛び切った」でもない第 3 の
-    # 結末である。区別しないと、死んだプロセスへ `land` を送ったうえで着陸の
-    # 猶予時間を待ち切り、実際より数秒長い正常な飛行として報告してしまう。
-    emulator_died = False
     while True:
         cycle_start = time.monotonic()
         elapsed = cycle_start - started
         if elapsed >= args.duration:
-            break
+            return False, False
         if proc.poll() is not None:
             console.error("emu_vehicle exited during the flight")
             for line in link.log_tail[-15:]:
                 console.print(f"  {line}")
-            emulator_died = True
-            break
+            return False, True
         if scene.drive is not None:
             scene.drive(link, elapsed, args.duration)
         pilot.step()
         link.hold_sticks_neutral()
+        # Publishing is non-blocking by contract (EventBus drops rather than
+        # waits), so the browser can never stretch this 20ms cycle.
+        # 配信は仕様上ブロックしない（EventBus は待たずに捨てる）ので、ブラウザ
+        # がこの 20ms の周期を延ばすことはありえない。
+        live.sample(pilot.monitor.latest_sample, cycle_start)
         if pilot.executor.landing:
-            landed_early = True
             console.info(f"Landing decided at t={elapsed:.1f}s")
-            break
+            live.phase("着陸 / landing")
+            return True, False
         slack = period - (time.monotonic() - cycle_start)
         if slack > 0:
             time.sleep(slack)
+
+
+def _run_flight(args, config, scene, judge, trace, link, proc, bus=None) -> dict:
+    """The flight itself: settle, take off, judge, land.
+    飛行そのもの: 静定・離陸・判断・着陸。"""
+    from sfpilot.pilot import Pilot
+
+    live = _LiveFeed(bus)
+    _settle_and_take_off(link, config, live)
+
+    console.info(f"Monitoring for {args.duration:g}s "
+                 f"({'FakeJudge' if args.fake else 'Jev'}) ...")
+    pilot = Pilot(link, judge, config, trace=trace)
+    live.watch(pilot.decisions)
+    started = time.monotonic()
+    landed_early, emulator_died = _monitor_until_done(
+        args, config, scene, link, proc, pilot, live, started,
+    )
 
     flown_s = time.monotonic() - started
     should_land = not landed_early and not emulator_died
@@ -542,6 +696,134 @@ def _run_flight(args, config, scene, judge, trace, link, proc) -> dict:
         "flown_s": flown_s,
         "scene": scene.name,
     }
+
+
+def _status_row(row: dict) -> dict:
+    """A Pilot decision in the shape `LiveStatus.note_decision` reads.
+
+    The Pilot keeps objects (`judgement`) where the trace keeps JSON, and
+    the totals are defined over the trace's shape -- so the conversion
+    happens once, here, rather than `LiveStatus` learning both.
+
+    Pilot の判断を `LiveStatus.note_decision` が読む形にする。
+
+    Pilot は記録が JSON を持つところにオブジェクト（`judgement`）を持ち、集計は
+    記録側の形に対して定義されている。そこで変換はここで 1 度だけ行い、
+    `LiveStatus` が両方の形を知らずに済むようにする。
+    """
+    judgement = row.get("judgement")
+    if judgement is None:
+        return {"latency_ms": None, "answers": {}}
+    answers = {"error": judgement.error} if judgement.error else {}
+    return {"latency_ms": judgement.latency_ms, "answers": answers}
+
+
+class _LiveFeed:
+    """Publishes samples and phases when `--web` is on; nothing when it is not.
+
+    Every call is a no-op without a bus, so the flight loop reads the same
+    whether or not anyone is watching -- there is no `if web:` threaded
+    through the loop, which is where such a condition would eventually be
+    got wrong.
+
+    `--web` のとき標本と段階を配信し、そうでなければ何もしない。
+
+    bus が無ければ全ての呼び出しが何もしないので、見ている人がいてもいなくても
+    飛行ループの見た目は変わらない。ループ中に `if web:` を通す必要が無くなる
+    — そのような条件は、いずれどこかで誤るものである。
+    """
+
+    # How often a sample is sent to the page. The loop runs at 50Hz; a live
+    # view redraws far below that, and sending every cycle would only fill
+    # the viewer's queue with frames the browser drops anyway.
+    # 標本をページへ送る周期。ループは 50Hz で回るが、ライブ表示の描画はそれより
+    # ずっと粗い。毎周期送っても、ブラウザが捨てるだけの中身で閲覧者の待ち行列を
+    # 埋めることにしかならない。
+    SAMPLE_PERIOD_S = 0.1
+
+    def __init__(self, bus, decisions=None):
+        self.bus = bus
+        self._last_sample_at = 0.0
+        self._phase = ""
+        # The list the Pilot appends its decisions to. Read (not copied) so
+        # the running totals are counted from the SAME rows the summary
+        # prints at the end -- one definition, shown live and again after.
+        # Pilot が判断を追記していく配列。複製せず参照するので、現在値は最後に
+        # 集計が表示するのと**同じ**行から数えられる（定義は 1 つで、ライブと
+        # 終了後の両方に出る）。
+        self._decisions = decisions
+        self._counted = 0
+        self._status = None
+        if bus is not None:
+            from sfcli.commands.pilot_web import LiveStatus
+
+            self._status = LiveStatus(bus)
+
+    def watch(self, decisions: list) -> None:
+        """Take the decision list to count the running totals from.
+        現在値を数える元になる判断の配列を受け取る。"""
+        self._decisions = decisions
+
+    def sample(self, sample, now: float) -> None:
+        """Send one telemetry sample, at most every `SAMPLE_PERIOD_S`.
+        テレメトリ標本を送る（`SAMPLE_PERIOD_S` に 1 回まで）。"""
+        if self.bus is None or not sample:
+            return
+        if now - self._last_sample_at < self.SAMPLE_PERIOD_S:
+            return
+        self._last_sample_at = now
+        from sfpilot.events import EVENT_SAMPLE, sample_payload
+
+        self.bus.publish(EVENT_SAMPLE, sample_payload(sample, self._phase))
+        self._fold_new_decisions(now)
+
+    def _fold_new_decisions(self, now: float) -> None:
+        """Count decisions made since the last sample, then send the totals.
+
+        Folded here rather than at each decision because the Trace's
+        broadcast is what carries a decision to the page; this only has to
+        keep the SUMMARY beside it current, at the sample rate.
+
+        前回の標本以降に成立した判断を数え、現在値を送る。
+
+        判断ごとではなくここで畳み込む。判断そのものをページへ運ぶのは Trace の
+        配信であり、ここが受け持つのはその傍らの**集計**を標本の周期で追随させる
+        ことだけだからである。
+        """
+        if self._status is None or self._decisions is None:
+            return
+        while self._counted < len(self._decisions):
+            row = self._decisions[self._counted]
+            self._counted += 1
+            self._status.note_decision(_status_row(row))
+        self._status.phase = self._phase
+        self._status.publish_throttled(now)
+
+    def phase(self, label: str) -> None:
+        """Announce a change of flight phase. / 飛行フェーズの変化を伝える。"""
+        self._phase = label
+        if self.bus is None:
+            return
+        from sfpilot.events import EVENT_STATUS
+
+        self.bus.publish(EVENT_STATUS, {"phase": label})
+
+    def step(self, label: str) -> None:
+        """Announce the step or leg now running. / 実行中の手順・区間を伝える。"""
+        if self.bus is None:
+            return
+        from sfpilot.events import EVENT_PHASE
+
+        self.bus.publish(EVENT_PHASE, {"label": label})
+
+    def legs(self, points: list) -> None:
+        """Send the route so the top view can draw it before it is flown.
+        経路を送り、飛ぶ前に上から見た図へ描けるようにする。"""
+        if self.bus is None:
+            return
+        from sfpilot.events import EVENT_PHASE
+
+        self.bus.publish(EVENT_PHASE, {"legs": points})
 
 
 def _hold_neutral(link, seconds: float) -> None:
@@ -587,7 +869,31 @@ def _outcome_note(outcome: dict) -> str:
     return ""
 
 
-def _print_run_summary(outcome: dict, trace) -> None:
+def _print_recording(recording) -> None:
+    """Where the flight was recorded, and the one line that replays it.
+
+    Printed even when there is no bundle: a run that recorded nothing is
+    something the operator needs told, because the flight itself looked
+    perfectly normal.
+
+    飛行をどこに記録したかと、それを再生する 1 行を表示する。
+
+    束が無い場合も表示する。何も記録されなかった実行は操作者に伝える必要が
+    ある — 飛行そのものは何ごともなく見えるからである。
+    """
+    if recording is None:
+        return
+    if recording.bundle_path is None:
+        console.warning(
+            "no flight-log bundle was written — the video/GUI replay is not "
+            "available for this flight（この飛行は動画・GUI で再生できません）"
+        )
+        return
+    print(f"  flight log  : {recording.bundle_path}")
+    print(f"  watch it    : {recording.video_command()}")
+
+
+def _print_run_summary(outcome: dict, trace, recording=None) -> None:
     """Report what was decided, how long Jev took, and where the trace is.
     何が決まったか、Jev に何秒かかったか、記録はどこかを報告する。"""
     pilot = outcome["pilot"]
@@ -624,6 +930,7 @@ def _print_run_summary(outcome: dict, trace) -> None:
               f"max {max(latencies):.0f} ms")
     print(f"  over deadline / 期限超過: {overdue}")
     print(f"  trace       : {trace.path}")
+    _print_recording(recording)
     print()
 
 
@@ -650,7 +957,16 @@ def run_say(args: argparse.Namespace) -> int:
     from sfpilot.trace import Trace
 
     config = DEFAULT_CONFIG
-    trace = Trace()
+    # The view opens before the translation, so an operator watching the page
+    # sees the instruction being turned into steps, not only the flight.
+    # 変換の前に表示を開く。ページを見ている操作者に、飛行だけでなく、指示が
+    # 手順に変わる過程も見えるようにするためである。
+    bus, server = _open_live_view(args, {
+        "command": "sf pilot say",
+        "judge": "FakeJudge" if args.fake else "Jev",
+        "instruction": args.instruction,
+    })
+    trace = Trace(bus=bus)
     try:
         console.info(f"Translating: {args.instruction}")
         plan = translate(args.instruction, judge, on_ground=True,
@@ -662,10 +978,12 @@ def run_say(args: argparse.Namespace) -> int:
         if args.dry_run:
             console.info(f"Dry run — nothing was flown. trace: {trace.path}")
             return 0
-        return _fly_said_plan(args, config, plan, judge, trace)
+        return _fly_said_plan(args, config, plan, judge, trace, bus)
     finally:
         trace.close()
         judge.close()
+        if server is not None:
+            server.stop()
 
 
 def _open_judge(args):
@@ -747,7 +1065,7 @@ def _print_plan(plan) -> None:
     print()
 
 
-def _fly_said_plan(args, config, plan, judge, trace) -> int:
+def _fly_said_plan(args, config, plan, judge, trace, bus=None) -> int:
     """Confirm, then fly the plan against SILS. / 確認してから SILS で飛ばす。"""
     if not args.sils:
         console.error(
@@ -759,12 +1077,19 @@ def _fly_said_plan(args, config, plan, judge, trace) -> int:
     if not _confirmed(args):
         return 1
 
+    from sfpilot.recording import FlightRecording
+
+    recording = FlightRecording("say")
     try:
-        outcome = _fly_instruction(args, config, plan, judge, trace)
+        outcome = _fly_instruction(args, config, plan, judge, trace, recording, bus)
     except _SilsUnavailable as exc:
         console.error(str(exc))
         return 1
-    _print_say_summary(outcome, trace)
+    finally:
+        # Pair the two records of this flight (see `Trace.write_recording`).
+        # この飛行の 2 つの記録を対応づける（`Trace.write_recording` 参照）。
+        trace.write_recording(recording)
+    _print_say_summary(outcome, trace, recording)
     return 0 if outcome.finished else 1
 
 
@@ -796,18 +1121,15 @@ def _confirmed(args) -> bool:
     return False
 
 
-def _fly_instruction(args, config, plan, judge, trace):
+def _fly_instruction(args, config, plan, judge, trace, recording, bus=None):
     """Launch SILS, settle, then fly the plan under the safety layer.
     SILS を起動・静定させ、安全層の下で計画を飛ばす。"""
     from sfcli.commands.sils import (
         RealtimeEmuUnavailable, launch_realtime_emu, realtime_emu_env,
     )
-    from sfcli.utils.paths import paths
     from sfpilot.link import SilsLink
     from sfpilot.say import fly_plan
 
-    bundle = paths.root() / "simulator" / "sils" / "viz" / "out_say"
-    bundle.mkdir(parents=True, exist_ok=True)
     total_s = (config.sils.boot_settle_s + args.duration
                + config.sils.land_grace_s + 10.0)
     # Record the flight-log bundle: `truth.csv` is how an operator checks
@@ -815,15 +1137,20 @@ def _fly_instruction(args, config, plan, judge, trace):
     # of what the firmware's own estimate believed.
     # フライトログ一式を記録する。手順どおりに機体が実際に動いたかを、ファーム
     # 自身の推定とは独立に操作者が確かめる手段が `truth.csv` だからである。
-    env = realtime_emu_env(bundle, flightlog_dir=bundle, extra_env={})
+    recording.prepare()
+    env = realtime_emu_env(recording.bundle_dir,
+                           flightlog_dir=recording.flightlog_dir, extra_env={})
     try:
         proc = launch_realtime_emu(total_s + 10.0, env, scenario_path=None)
     except RealtimeEmuUnavailable as exc:
         raise _SilsUnavailable(str(exc)) from exc
 
+    live = _LiveFeed(bus)
     link = SilsLink(proc)
+    outcome = None
     try:
         console.info(f"Waiting {config.sils.boot_settle_s:g}s for boot calibration ...")
+        live.phase("起動校正中 / boot calibration")
         _hold_neutral(link, config.sils.boot_settle_s)
         # `command` puts the firmware in SDK mode; the plan's own first step
         # is the takeoff, so it is not sent here.
@@ -831,18 +1158,36 @@ def _fly_instruction(args, config, plan, judge, trace):
         # なので、ここでは送らない。
         link.send_command("command")
         console.info("Flying the steps （手順を実行します）...")
-        return fly_plan(link, judge, plan, config, trace=trace,
-                        on_step=_announce_step)
+        live.phase("手順を実行中 / flying the steps")
+        outcome = fly_plan(link, judge, plan, config, trace=trace,
+                           on_step=_make_step_announcer(live),
+                           on_cycle=live.sample, on_decisions=live.watch)
+        return outcome
     finally:
         link.close()
         _shutdown(proc)
+        # After the process is gone, never before (see `_fly_sils`).
+        # プロセスの終了後に行う（`_fly_sils` 参照）。
+        recording.finalize(
+            notes=f"sf pilot say: {plan.instruction}",
+            decisions=outcome.decision_rows if outcome else (),
+        )
 
 
 def _announce_step(position: int, step) -> None:
     console.info(f"  step {position}: {step.describe()}  -> {step.command()}")
 
 
-def _print_say_summary(outcome, trace) -> None:
+def _make_step_announcer(live):
+    """Announce each step on the terminal and, if open, on the page.
+    各手順を端末に表示し、ページが開いていればそちらにも伝える。"""
+    def announce(position: int, step) -> None:
+        _announce_step(position, step)
+        live.step(f"{position}. {step.describe()}")
+    return announce
+
+
+def _print_say_summary(outcome, trace, recording=None) -> None:
     """Report which steps flew and why the rest did not.
     どの手順が飛び、残りがなぜ飛ばなかったかを報告する。"""
     print()
@@ -858,6 +1203,7 @@ def _print_say_summary(outcome, trace) -> None:
     print(f"  landed      : {'yes' if outcome.landed else 'no'}")
     print(f"  flown       : {outcome.flown_s:.1f} s")
     print(f"  trace       : {trace.path}")
+    _print_recording(recording)
     print()
 
 
@@ -1036,6 +1382,68 @@ def run_mission(args: argparse.Namespace) -> int:
     return _fly_mission(request, mission, args, config)
 
 
+# A Step's amount is in the vehicle's own units -- centimetres for a move
+# (`instruction.Step.describe` prints "cm", and the envelope is
+# `move_min_cm`/`move_max_cm`). The top view draws metres, like every other
+# position on the page.
+# Step の amount は機体自身の単位であり、移動では**センチメートル**である
+#（`instruction.Step.describe` は "cm" を付け、包絡も `move_min_cm`・
+# `move_max_cm` である）。上から見た図は、ページ上の他の位置と同じくメートルで
+# 描く。
+CM_PER_M = 100.0
+
+
+def _leg_points(mission) -> list:
+    """The route as [north, east] waypoints in METRES from the takeoff point.
+
+    The legs are RELATIVE moves, so they are accumulated here into absolute
+    points the top view can draw. Yaw is not followed: the routes this
+    ships with keep the nose north, and a turn would need the live heading
+    rather than the plan. A leg that moves neither north nor east (a climb,
+    a turn) simply repeats the previous point.
+
+    経路を、離陸点を原点とする [北, 東] の通過点（**メートル**）にする。
+
+    区間は**相対的な**移動なので、ここで積算して、上から見た図が描ける絶対
+    座標にする。機首方位は追わない（同梱の経路は機首を北に保つし、旋回を扱う
+    には計画ではなく実際の方位が要る）。北にも東にも動かない区間（上昇・旋回）
+    は、直前の点をそのまま繰り返す。
+    """
+    from sfpilot.judge import (
+        STEP_BACK, STEP_FORWARD, STEP_LEFT, STEP_RETURN_HOME, STEP_RIGHT,
+    )
+
+    # Nose-north convention: forward is +north, right is +east.
+    # 機首は北を向いている前提: 前進は北 +、右は東 +。
+    offsets = {
+        STEP_FORWARD: (1.0, 0.0), STEP_BACK: (-1.0, 0.0),
+        STEP_RIGHT: (0.0, 1.0), STEP_LEFT: (0.0, -1.0),
+    }
+    north, east = 0.0, 0.0
+    points = []
+    for leg in mission.legs:
+        step = leg.step
+        if step.verb == STEP_RETURN_HOME:
+            north, east = 0.0, 0.0
+        else:
+            delta = offsets.get(step.verb)
+            if delta is not None:
+                amount_m = (step.amount or 0.0) / CM_PER_M
+                north += delta[0] * amount_m
+                east += delta[1] * amount_m
+        points.append([round(north, 3), round(east, 3)])
+    return points
+
+
+def _make_mission_announcer(live):
+    """Report each leg on the terminal and, if open, on the page.
+    各区間を端末に表示し、ページが開いていればそちらにも伝える。"""
+    def announce(message: str) -> None:
+        console.info(message)
+        live.step(message)
+    return announce
+
+
 def _fly_mission(request, mission, args, config) -> int:
     """Open the judge, fly, and report. / Judge を開き、飛ばし、報告する。"""
     from sfpilot.judge import JevJudge, MissingApiKey, MissionFakeJudge
@@ -1052,20 +1460,39 @@ def _fly_mission(request, mission, args, config) -> int:
             console.info("Use --fake to fly without an API key（キー無しなら --fake）")
             return 1
 
+    from sfpilot.recording import FlightRecording
+
     console.info(f"Scene: {request.scene}")
-    trace = Trace()
+    recording = FlightRecording("mission")
+    bus, server = _open_live_view(args, {
+        "command": "sf pilot mission",
+        "scene": request.scene,
+        "judge": "MissionFakeJudge" if args.fake else "Jev",
+        "legs": _leg_points(mission),
+    })
+    live = _LiveFeed(bus)
+    trace = Trace(bus=bus)
     try:
         outcome = fly_in_sils(request, mission, judge, config, trace=trace,
-                              on_event=console.info)
+                              on_event=_make_mission_announcer(live),
+                              recording=recording, on_cycle=live.sample,
+                              on_decisions=live.watch)
     except SilsUnavailable as exc:
         console.error(str(exc))
         return 1
     finally:
+        # Pair the two records of this flight (see `Trace.write_recording`).
+        # この飛行の 2 つの記録を対応づける（`Trace.write_recording` 参照）。
+        trace.write_recording(recording)
         trace.close()
         judge.close()
+        if server is not None:
+            server.stop()
 
     for line in summarize_outcome(outcome, trace.path):
         print(line)
+    _print_recording(recording)
+    print()
     return 0 if outcome.completed else 1
 
 

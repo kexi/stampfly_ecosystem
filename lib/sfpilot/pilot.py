@@ -76,6 +76,14 @@ class Pilot:
         self._last_asked = 0.0
         self._last_signature = ""
         self._lock = threading.Lock()
+        # Set on the first `step`, not here: a Pilot may be built well
+        # before it flies (the caller settles the aircraft first), and a
+        # decision's time should count from the first cycle, not from
+        # construction.
+        # ここではなく最初の `step` で設定する。Pilot は飛ぶよりだいぶ前に
+        # 作られうるし（呼び出し側が先に機体を静定させる）、判断の時刻は
+        # 生成時ではなく最初の周期から数えるべきだからである。
+        self._started: Optional[float] = None
 
     @property
     def question_ids(self) -> tuple:
@@ -107,6 +115,8 @@ class Pilot:
         """One turn of the loop. Returns the decision row if one was made.
         ループ 1 周。判断が成立した場合はその行を返す。"""
         now = time.monotonic() if now is None else now
+        if self._started is None:
+            self._started = now
         samples = self.link.read_samples()
         assessment = self.monitor.update(samples)
         state = summarize(assessment, self.mission, self.operator_instruction)
@@ -141,6 +151,14 @@ class Pilot:
         if not is_decision:
             return None
         row = {
+            # Seconds since the loop's first step. Kept on the row so a
+            # decision can be placed on a chart of the flight afterwards;
+            # `now` is a monotonic reading whose origin means nothing on
+            # its own.
+            # ループ最初の周期からの経過秒。判断を後から飛行のグラフ上に
+            # 置けるよう、行に持たせる。`now` は単調時計の値で、それ自体の
+            # 原点には意味が無い。
+            "t_s": now - self._started,
             "state": state,
             "verdict": verdict,
             "judgement": judgement,

@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（本物の Jev による初回実走と、その結果見つかった 5 件の不具合の修正を 4.5 節に追記）。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（飛行を見る手段 — `--web` のライブ表示と飛行後の動画・GUI 再生 — を 4.6 節に追記）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -28,6 +28,7 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 | P3 | `sf pilot say`（自然言語の指示） | **実装済み**。Jev 実走で 7/10 → 原因を特定して修正 → **10/10**（下記 4.5）|
 | P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**。Jev 実走で応答計数の競合を発見して修正し、**全 6 区間が `as planned` で完走**（下記 4.5）|
 | P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。**P2b の後**に着手する — 前方 ToF が駆動していない現行ファームでは前提が成立しない | 未着手（P2b 待ち）|
+| P4c | **飛行を見る手段**（`--web` のライブ表示＋飛行後の動画・GUI 再生。4.6 節） | **実装済み** |
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
 **前方 ToF の現状（重要）**: 前方 ToF はハードウェアとしては実装されているが、**現行ファームでは駆動していない**。`TofTask` が XSHUT を low に固定してリセット保持している（VL53L3CX 2 個が同じ I2C アドレス 0x29 で起動し、底面のアドレス変更が両方に届いて測距データが混線するため）。テレメトリ v2 には枠（`tof_front`、有効ビット bit1）を確保してあるが、現行ファームでは bit1 は常に 0、値は常に -1.0 である。**障害物回避・探索を Jev に判断させる計画は、P2b の完了まで前提が成立しない。**
@@ -572,6 +573,56 @@ p50 216ms から 511ms まで悪化した。その間の実行は全判断が期
 | `mission line --fake`（`…120011`） | **全 6 区間が `as planned` で完走**（修正前の Jev 実走では区間 3・4 が `stopped short` で飛ばされた） |
 | `pytest simulator/tests lib/sfpilot lib/sfcli lib/sflog` | 元の 368 passed / 1 skipped に対し、**393 passed / 1 skipped（追加 25 件）** |
 
+## 4.6 飛行を見る（P4c、2026-09-19）
+
+「自動操縦のシミュレーションを自分の目で見たい」という要望に応える。見方は 2 通りで、**飛行中**に見るもの（`--web`）と、**飛行後**に見るもの（動画・GUI 再生）である。
+
+### 飛行中に見る — `sf pilot run|say|mission --web`
+
+```bash
+sf pilot run --sils --scene drift --fake --web
+```
+
+`--web` を付けると 127.0.0.1 に HTTP サーバを立ててブラウザを開く（`--port` で変更、`--no-browser` で自動で開かない）。画面は左に機体、右に判断の流れを置く。
+
+| 欄 | 内容 |
+|----|------|
+| 上部の帯 | 飛行フェーズ、実行中の手順・区間、判断の件数、待機の連続秒数、Jev の往復時間 p50/p95、期限超過の回数 |
+| 3D 表示 | 機体の姿勢・位置・軌跡。`sf telemetry --web` と**同一**の表示（下記） |
+| 上から見た図 | 水平位置の軌跡、離陸点、包絡の半径 2m、ミッションなら経路と現在の区間 |
+| 判断の流れ | 1 判断 1 行、新しいものが上。時刻／Jev に渡した状況の語（変わった区分を強調）／`safety_action` 3 択の確率を棒で／`abnormal`／`next_move`／Arbiter の採否と理由／実際に送ったコマンド／往復時間。期限超過と破棄は色と文字で区別する |
+
+**データの出どころは記録と同じ 1 か所である。** `lib/sfpilot/events.py` の `EventBus` を `Trace` が持ち、`Trace.write()` が行を書いた直後に同じ行を配信する。ページと `logs/pilot/*.jsonl` は「1 つの行を 2 通りの体裁で見せたもの」であり、別々に組み立ててはいない（別々ならいずれ食い違い、その食い違いは誰かが見ている飛行でしか表に出ない）。
+
+**監視ループは表示を待たない。** サーバは別スレッドで動き、配信は `EventBus` の規則により決してブロックしない（閲覧者の待ち行列が満杯なら**最も古い**出来事を捨てる）。表示が 1 コマ飛ぶのは正しい動作で、50Hz のループが周期を落とすのは正しくない。閲覧者が 0 でも、`--web` を付けなければサーバもスレッドもソケットも作らない。
+
+**秘密情報は画面にも流れない。** 記録ファイルと同じ規則に従う（API キー・環境変数・区分前の生の数値は配信しない）。ページは画面の写真 1 枚で共有されうるため、規則を緩める理由がない。
+
+**3D 表示は複製せず共有する。** `sf telemetry --web` のページに埋め込まれていた 3D シーン（StampFly のモデル・照明・OS 別ズーム付き OrbitControls・duty 駆動のプロペラ回転）を `lib/sfcli/assets/stampfly3d.js` へ切り出し、両ページがこれを読み込む。複製すれば食い違っていき、最初に食い違うのは機体ヨー 90 度のずれを直したクォータニオン変換である（その発見には SILS GUI との数値比較を要した）。three.js と STL は従来どおりローカル配信で、CDN は使わない。
+
+### 飛行後に見る — 動画と GUI 再生
+
+SILS 飛行は毎回フライトログ一式（`sils_pilot_<日時>.sflog.zip` 等）を残し、終了時に動画にする 1 行を表示する。
+
+```
+  flight log  : .../simulator/sils/viz/out_pilot/20260919t131801/sils_pilot_20260919t131801.sflog.zip
+  watch it    : sf sils video -m pilot/20260919t131801
+```
+
+置き場所は `simulator/sils/viz/out_<種別>/<日時>/` とし、飛行ごとに分ける。`finalize_flightlog()` は 1 ディレクトリにつき一式を 1 つだけ残して他を消すので、共有するともう一度見たい飛行が次の飛行の時点で失われるためである。日時は小文字にしてある（`sf sils video -m` が名前を小文字化するため）。記録（`logs/pilot/<日時>.jsonl`）と一式は同じ日時で対応づく。
+
+### なぜ今まで一式が出なかったか（原因は 3 つ重なっていた）
+
+| # | 原因 | 場所 | 対処 |
+|---|------|------|------|
+| A | `sf pilot run --sils` が記録を**有効化していなかった**（`realtime_emu_env()` に `flightlog_dir` を渡していないため `SILS_EMU_FLIGHTLOG` が付かず、エミュレータ側は何も書かない） | `lib/sfcli/commands/pilot.py` | `sf sils fly` と同じく `<一式>/flightlog` を渡す |
+| B | `say`・`mission` は CSV を書いていたが、**一式にまとめる処理を誰も呼んでいなかった**（`_finalize_flightlog()` の呼び出しは `sils.py` 内の 4 か所だけ）。加えて CSV の出力先が一式のディレクトリ自身で、まとめる処理がそれを消してしまう配置だった | `lib/sfcli/commands/pilot.py`、`lib/sfpilot/mission_run.py` | エミュレータの**終了後**に既存の `finalize_flightlog()` を呼ぶ。CSV は下位ディレクトリへ |
+| C | **エミュレータが `quit` で終わるとき、フライトログを閉じていなかった。** `emu_main.cpp` の `quit` 経路は `std::_Exit(0)` を呼ぶが、`_Exit` は stdio の書き出しを行わない。通常終了の経路にある `sils_emu_flightlog_close()` がこちらには無く、各ストリームの未書き出し行が失われていた。とりわけ最も低速な `status.csv`（1Hz）は見出し行さえ失い、0 バイトのファイルが残って `pd.read_csv` が `No columns to parse from file` で拒否していた | `simulator/sils/emu/emu_main.cpp` | `_Exit` の前に `sils_emu_flightlog_close()` を呼ぶ（1 行） |
+
+C が `sf sils scenario` で表に出なかったのは、そちらが時間を走り切って**通常経路**から抜けるためである。`sf pilot` は `quit` を送って終わるので、この経路だけが壊れていた。これが本件で SILS の C/C++ に手を入れた唯一の箇所である。
+
+併せて `sf sils video -m <名前>` が、区切りを含む名前（`pilot/<日時>`）でも動画の出力先を誤らないようにした（末尾の区切りだけをファイル名に使う）。
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -594,6 +645,12 @@ p50 216ms から 511ms まで悪化した。その間の実行は全判断が期
 | `lib/sfpilot/mission_run.py` | SILS の段取りと結果の集計表示（CLI から処理本体を移した先）| 実装済み（P4） |
 | `lib/sfpilot/missions/*.yaml` | 同梱の経路（`line`＝現状飛べる、`square`＝P4 の対象だが現状飛べない）| 実装済み（P4） |
 | `lib/sfpilot/landing.py` | 着陸前手順（移動を終える → `stop` → 静定待ち → `land`）| 実装済み（P4） |
+| `lib/sfpilot/events.py` | 出来事の流れ（`EventBus`）。記録とライブ表示の分岐点 | 実装済み（P4c） |
+| `lib/sfpilot/recording.py` | SILS 飛行のフライトログ一式の置き場所と命名 | 実装済み（P4c） |
+| `lib/sfcli/commands/pilot_web.py` | `--web` の HTTP・SSE サーバ（127.0.0.1 のみ） | 実装済み（P4c） |
+| `lib/sfcli/commands/web_assets.py` | ブラウザ表示の共有静的配信（STL・three.js・共有 3D） | 実装済み（P4c） |
+| `lib/sfcli/assets/pilot_web.html` | 飛行と判断を並べて見せるページ | 実装済み（P4c） |
+| `lib/sfcli/assets/stampfly3d.js` | 共有 3D シーン（`sf telemetry --web` から切り出し） | 実装済み（P4c） |
 | `simulator/sils/devices/rc_stdin.cpp` | stdin に `api <行>`・`wind`・`vbatt` を追加 | 実装済み（P2） |
 | `lib/sfpilot/scenes.py` | 電池低下・横流れの場面（`.scn` ファイルではなく宣言の表として持つ） | 実装済み（P2） |
 
@@ -648,7 +705,9 @@ security add-generic-password -U -a "$USER" -s typesafe-api-key -w
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 233 件。キー不要・通信不要で通る。加えて
+`lib/sfpilot/tests/` に 253 件（ライブ表示 14 件・記録 6 件を含む）。キー不要・通信不要で
+通る。ブラウザ表示の共有部分は `lib/sfcli/commands/test_web_assets.py` に 10 件
+（3D シーンの切り出しで `sf telemetry --web` が壊れていないことの確認を含む）。加えて
 `simulator/tests/test_mission_sils.py` に SILS の実飛行 6 件（`--fake`。エミュレータの
 ビルドが無ければ自動で飛ばす）。
 
@@ -728,6 +787,7 @@ P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 | P3 | `sf pilot say` (natural-language instruction) | **Done**. 7/10 against the live Jev, all three misses diagnosed and fixed, now **10/10** (§4.5) |
 | P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done**. A reply-count race found and fixed during the live-Jev flights; **all six legs now complete `as planned`** (§4.5) |
 | P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). Starts **after P2b**: the premise does not hold while the current firmware leaves the forward ToF undriven | Not started (waiting on P2b) |
+| P4c | **Ways to watch a flight** (`--web` live view, plus video / GUI replay afterwards; §4.6) | **Done** |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
 **Forward ToF status (important):** the forward ToF exists in hardware but is **not driven by the current firmware**. `TofTask` holds its XSHUT low, keeping it in reset (both VL53L3CX parts boot at I2C address 0x29, so re-addressing the bottom sensor would reach both and interleave their ranging data). Telemetry v2 reserves the slot (`tof_front`, validity bit1), but on current firmware bit1 is always clear and the value is always -1.0. **Any plan to have Jev judge obstacle avoidance or exploration rests on a premise that does not hold until P2b is done.**
@@ -994,6 +1054,56 @@ The keyless checks were completed too, and the fixes reproduce in SILS:
 | `mission line --fake` (`…120011`) | **All six legs `as planned`, route completed** (before the fix, the live-Jev run skipped legs 3 and 4 as `stopped short`) |
 | `pytest simulator/tests lib/sfpilot lib/sfcli lib/sflog` | Against the original 368 passed / 1 skipped: **393 passed / 1 skipped, including 25 new tests** |
 
+## 4.6 Watching the Flight (P4c, 2026-09-19)
+
+Answers the request to *see* the autopilot's simulation. There are two ways: watching **during** the flight (`--web`), and watching **afterwards** (video / GUI replay).
+
+### During the flight — `sf pilot run|say|mission --web`
+
+```bash
+sf pilot run --sils --scene drift --fake --web
+```
+
+`--web` serves a page on 127.0.0.1 and opens a browser (`--port` to change it, `--no-browser` to skip opening). The aircraft is on the left, the reasoning on the right.
+
+| Area | Content |
+|------|---------|
+| Top strip | Flight phase, the step or leg running, decisions so far, how long it has been holding, Jev's round-trip p50/p95, deadline overruns |
+| 3D view | Attitude, position and trail — the **same** view `sf telemetry --web` shows (below) |
+| Top view | Horizontal track, the takeoff point, the 2 m envelope, and for a mission the route and the current leg |
+| Decision list | One decision per row, newest on top: time, the WORDS sent to Jev (with whatever changed emphasised), the three `safety_action` probabilities as bars, `abnormal`, `next_move`, the Arbiter's ruling and reason, the command actually sent, and the round-trip time. Overruns and discards are marked |
+
+**The page and the trace come from one place.** `Trace` holds an `EventBus` (`lib/sfpilot/events.py`) and publishes the row it has just written. The page and `logs/pilot/*.jsonl` are one row shown two ways, not two assemblies that could disagree — and such a disagreement would surface only while someone was watching.
+
+**The loop never waits for the page.** The server runs on its own thread and publishing never blocks: when a viewer's queue is full the OLDEST event is dropped. A live view that skipped a frame is correct; a 50Hz loop that missed its deadline is not. Without `--web` nothing is started at all — no bus, no thread, no socket.
+
+**No secrets reach the page**, following the trace file's rule: the API key, environment variables and raw pre-classification figures are never published. A page is one screenshot away from being shared.
+
+**The 3D view is shared, not copied.** The scene embedded in `sf telemetry --web` (StampFly model, lighting, per-OS trackpad zoom, duty-driven prop spin) was extracted into `lib/sfcli/assets/stampfly3d.js`, which both pages import. A copy would drift, and the first thing to drift would be the quaternion conversion whose 90-degree body-yaw bug took a numeric comparison against the SILS GUI to find. three.js and the STL parts stay locally served; no CDN.
+
+### Afterwards — video and GUI replay
+
+Every SILS flight now records a flight-log bundle and prints the one line that turns it into a video:
+
+```
+  flight log  : .../simulator/sils/viz/out_pilot/20260919t131801/sils_pilot_20260919t131801.sflog.zip
+  watch it    : sf sils video -m pilot/20260919t131801
+```
+
+Each flight gets `simulator/sils/viz/out_<kind>/<datetime>/`. `finalize_flightlog()` keeps exactly one bundle per directory and deletes the rest, so sharing one would lose the flight worth watching as soon as another was flown. The stamp is lower-case because `sf sils video -m` lower-cases its argument. The bundle and the trace share that datetime.
+
+### Why no bundle was produced before (three causes, stacked)
+
+| # | Cause | Where | Fix |
+|---|-------|-------|-----|
+| A | `sf pilot run --sils` never **enabled** recording: it passed no `flightlog_dir` to `realtime_emu_env()`, so `SILS_EMU_FLIGHTLOG` was absent and the emulator wrote nothing | `lib/sfcli/commands/pilot.py` | Pass `<bundle>/flightlog`, as `sf sils fly` does |
+| B | `say` and `mission` wrote the CSVs but **nobody assembled them** (`_finalize_flightlog()` was called from four places, all inside `sils.py`). Their CSV directory was also the bundle directory itself, which the assembling step deletes | `lib/sfcli/commands/pilot.py`, `lib/sfpilot/mission_run.py` | Call the existing `finalize_flightlog()` **after** the emulator exits; write CSVs to a subdirectory |
+| C | **The emulator did not close its flight log when it exited via `quit`.** That path calls `std::_Exit(0)`, which skips stdio flushing, and unlike the normal end-of-run path it never called `sils_emu_flightlog_close()`. Every stream lost its buffered rows; the slowest one (`status.csv`, 1Hz) lost even its header, leaving a zero-byte file that `pd.read_csv` rejects with "No columns to parse from file" | `simulator/sils/emu/emu_main.cpp` | Call `sils_emu_flightlog_close()` before `_Exit` (one line) |
+
+C stayed hidden under `sf sils scenario` because that command runs its duration out and leaves through the normal path. `sf pilot` ends by sending `quit`, so only that path was broken. This is the only change made to the SILS C/C++ for this work.
+
+`sf sils video -m <name>` was also fixed to name its output from the last path segment, so a name containing a separator (`pilot/<datetime>`) no longer points the mp4 at a directory that does not exist.
+
 ## 5. Placement
 
 `RealLink` moved from `lib/sfcli/commands/blocks.py` to `lib/sfpilot/link.py` on 2026-09-19, so that `sf blocks` and `sf pilot` drive the vehicle through one client instead of two copies that could drift apart. `blocks.py` imports it.
@@ -1046,7 +1156,7 @@ The remedy is a test that runs **measured samples through Monitor → Summarizer
 
 The samples are recorded from a real SILS flight rather than written by hand (`lib/sfpilot/tests/fixtures/`; the README there gives the reason — a hand-written sample would encode the same wrong assumptions the code did).
 
-233 tests in `lib/sfpilot/tests/`, all passing without a key or a network, plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+253 tests in `lib/sfpilot/tests/` (including 14 for the live view and 6 for the recording), all passing without a key or a network, plus 10 in `lib/sfcli/commands/test_web_assets.py` for the shared browser assets (including the check that extracting the 3D scene left `sf telemetry --web` behaving as before), plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
 
 P3 adds: figure extraction across half-width, full-width and kanji numerals in m, cm and degrees; every assembly rule (everything after the first `none` is dropped, a takeoff and a landing are supplied, an unspecified amount takes the default band, a spoken figure outranks the band); that the envelope pre-check refuses an over-reaching plan and names the offending step; that a low-confidence step is not flown; the `return_home` computation including a turn along the way; that the hovering `rc` is withheld while a plan drives the vehicle but `land` is not; that waiting for an answer does not interrupt the sequence while a hold Jev chose does; that a step waits for the vehicle's reply and for the craft to settle; and that a non-interactive session will not fly without `--yes`.
 

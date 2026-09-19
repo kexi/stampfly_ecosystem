@@ -36,7 +36,6 @@ Prerequisite / 事前条件:
     pytest simulator/tests/test_mission_sils.py -v
 """
 
-import csv
 import math
 import sys
 from pathlib import Path
@@ -104,41 +103,66 @@ def _fly(scene: str, duration_s: float):
 
     from dataclasses import replace
 
+    from sfpilot.recording import FlightRecording
+
     config = replace(DEFAULT_CONFIG,
                      mission=replace(DEFAULT_CONFIG.mission, time_limit_s=duration_s))
     mission = load_mission(builtin_mission_path(ROUTE), config)
     request = MissionRequest(mission_path=ROUTE, scene=scene,
                              duration_s=duration_s, fake=True)
-    outcome = fly_in_sils(request, mission, MissionFakeJudge(), config)
-    return outcome, _truth_rows()
+    # The flight's own recording, so the truth below is read from the bundle
+    # THIS flight produced. Reading a fixed directory instead would silently
+    # read the previous flight's truth once a run failed to record.
+    # この飛行自身の記録。下で読む真値を、**この**飛行が作った束から読むため
+    # である。固定のディレクトリを読むと、記録に失敗した実行のときに前回の
+    # 飛行の真値を黙って読んでしまう。
+    recording = FlightRecording("mission")
+    outcome = fly_in_sils(request, mission, MissionFakeJudge(), config,
+                          recording=recording)
+    return outcome, _truth_rows(recording)
 
 
-def _truth_rows() -> list:
-    """`truth.csv` as (t, north, east, altitude) in metres.
+def _truth_rows(recording) -> list:
+    """The flight's `truth` stream as (t, north, east, altitude) in metres.
 
-    The last line is dropped when it is short of fields. The emulator is
-    killed once the flight is over, so its final row can be half-written;
-    discarding an incomplete row is right, while letting it through turns
-    every reader of this file into a `NoneType` error at the point it is
-    least expected.
+    Read from the `sils_*.sflog.zip` bundle the flight assembled, which is
+    the same bundle `sf sils video` and the SILS GUI replay -- so a test
+    that passes here is a flight that can actually be watched again.
 
-    `truth.csv` を (時刻, 北, 東, 高度) [m] の列にする。
+    Rows short of fields are dropped. The emulator is shut down once the
+    flight is over, so its final row can be half-written; discarding an
+    incomplete row is right, while letting it through turns every reader
+    into a `NoneType` error at the point it is least expected.
 
-    項目の足りない最終行は捨てる。飛行の終了後にエミュレータを終了させるため、
+    この飛行の `truth` ストリームを (時刻, 北, 東, 高度) [m] の列にする。
+
+    飛行が組み立てた `sils_*.sflog.zip` から読む。`sf sils video` と SILS GUI
+    が再生するものと同じ束なので、ここを通る試験は「実際にもう一度見られる
+    飛行」を意味する。
+
+    項目の足りない行は捨てる。飛行の終了後にエミュレータを終了させるため、
     最後の行は書きかけになりうる。不完全な行を捨てるのが正しく、通してしまうと、
-    このファイルを読む全員が、最も予期しない場所で `NoneType` の例外に変わる。
+    読む側が最も予期しない場所で `NoneType` の例外に変わる。
     """
-    path = (paths.root() / "simulator" / "sils" / "viz" / "out_mission" / "truth.csv")
+    import sflog
+
+    assert recording.bundle_path is not None, (
+        "the mission flight wrote no flight-log bundle — without it the flight "
+        "cannot be replayed by `sf sils video` either"
+    )
+    streams = sflog.load(recording.bundle_path).streams
+    assert "truth" in streams, f"{recording.bundle_path}: no 'truth' stream"
+
+    truth = streams["truth"]
     rows = []
-    with path.open(encoding="utf-8") as handle:
-        for record in csv.DictReader(handle):
-            wanted = ("timestamp_us", "pos_x", "pos_y", "pos_z")
-            is_complete = all(record.get(key) for key in wanted)
-            if not is_complete:
-                continue
-            rows.append((float(record["timestamp_us"]) * 1e-6,
-                         float(record["pos_x"]), float(record["pos_y"]),
-                         -float(record["pos_z"])))
+    for record in truth.to_dict("records"):
+        wanted = ("timestamp_us", "pos_x", "pos_y", "pos_z")
+        is_complete = all(record.get(key) is not None for key in wanted)
+        if not is_complete:
+            continue
+        rows.append((float(record["timestamp_us"]) * 1e-6,
+                     float(record["pos_x"]), float(record["pos_y"]),
+                     -float(record["pos_z"])))
     return rows
 
 

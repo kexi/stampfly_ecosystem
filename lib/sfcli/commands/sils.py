@@ -924,6 +924,18 @@ def _finalize_flightlog(flightlog_dir: Path, zip_path: Path, *, notes: str,
     return zip_path
 
 
+# The public spelling for callers outside this module. `sf pilot` records its
+# SILS flights the same way `sf sils fly` does, and it reaches the launch side
+# through `realtime_emu_env` / `launch_realtime_emu` already -- the bundling
+# side belongs in that same group, or `sf pilot` would grow a second way of
+# writing a flight-log bundle and the two would drift.
+# 本モジュール外から呼ぶときの公開名。`sf pilot` は `sf sils fly` と同じやり方で
+# SILS 飛行を記録し、起動側は既に `realtime_emu_env`・`launch_realtime_emu` 経由で
+# 触れている。束を作る側も同じ仲間に置く — さもないと `sf pilot` がフライトログ
+# 一式を書く 2 つ目のやり方を持ち、両者が食い違っていく。
+finalize_flightlog = _finalize_flightlog
+
+
 def run_run(args: argparse.Namespace) -> int:
     bd = _build_dir()
     exe = bd / _exe("hover_smoke")
@@ -2384,7 +2396,16 @@ def run_video(args: argparse.Namespace) -> int:
     if not any(bundle.glob("*.sflog.zip")):
         console.error(f"No flight-log bundle in {bundle} — run 'sf sils run' first"); return 1
     fps = getattr(args, "fps", 50)
-    out = bundle / f"{args.milestone.lower()}_flight.mp4"
+    # Name the file after the LAST segment only. A milestone may name one run
+    # inside a directory of runs (`-m pilot/<datetime>`, which `sf pilot`
+    # prints), and using the whole string would put the mp4 in a subdirectory
+    # that does not exist.
+    # 名前に使うのは**末尾の区切り**だけにする。マイルストーンは実行の入った
+    # ディレクトリの中の 1 回を指すことがあり（`sf pilot` が表示する
+    # `-m pilot/<日時>`）、文字列全体を使うと存在しないディレクトリに mp4 を
+    # 置こうとしてしまう。
+    run_name = args.milestone.lower().replace("\\", "/").rstrip("/").split("/")[-1]
+    out = bundle / f"{run_name}_flight.mp4"
     console.info("Rendering review video (MuJoCo 3D + state graphs)...")
     r = subprocess.run([str(py), str(_sils_dir() / "viz" / "render_video.py"),
                         "--model", str(_model()), "--bundle", str(bundle),

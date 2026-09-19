@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<!--
+  sf pilot - -web — the autopilot's flight and its reasoning, side by side.
+
+  The 3D view is NOT a copy: it is the shared module /asset/stampfly3d.js,
+  which `sf telemetry - -web` mounts too (extracted from that page in
+  2026-09-19). three.js and the STL parts are served locally from
+  simulator/shared/assets -- NOT a CDN. See web_assets.py for why.
+
+  sf pilot - -web — 自動操縦の飛行と、その判断の根拠を並べて表示する。
+
+  3D 表示は複製ではなく、共有モジュール /asset/stampfly3d.js である
+  （`sf telemetry - -web` も同じものを読み込む。2026-09-19 に同ページから切り
+  出した）。three.js と STL はローカル配信で CDN ではない（理由は web_assets.py）。
+-->
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StampFly autopilot — Jev の判断</title>
+<script type="importmap">
+{ "imports": {
+    "three": "/vendor/three/three.module.min.js",
+    "three/addons/": "/vendor/three/addons/"
+} }
+</script>
+<style>
+/* Light and dark both supported: a workshop projector is usually light,
+   a desk at night is usually dark. One token set, redefined per scheme.
+   明暗どちらにも対応する（講習の投影は明るい部屋、夜の机は暗い）。
+   トークンを 1 組定義し、配色ごとに定義し直す。 */
+:root{
+  --bg:#f4f6f9; --panel:#ffffff; --line:#d3dae4; --ink:#161b22; --muted:#5b6673;
+  --accent:#1d6fd0; --ok:#15803d; --warn:#a16207; --bad:#c2410c; --drop:#9ca3af;
+  --bar:#e3e8ef; --shadow:0 1px 2px rgba(16,24,40,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10141a; --panel:#1a212b; --line:#2a3442; --ink:#dde3ea; --muted:#7a8694;
+    --accent:#3b82f6; --ok:#22c55e; --warn:#eab308; --bad:#f97316; --drop:#6b7280;
+    --bar:#2a3442; --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10141a; --panel:#1a212b; --line:#2a3442; --ink:#dde3ea; --muted:#7a8694;
+  --accent:#3b82f6; --ok:#22c55e; --warn:#eab308; --bad:#f97316; --drop:#6b7280;
+  --bar:#2a3442; --shadow:none;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);margin:0;padding:16px;
+     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+h1{font-size:15px;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.muted{color:var(--muted)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+      padding:10px 12px;box-shadow:var(--shadow)}
+.pill{padding:2px 9px;border-radius:999px;background:var(--bar);font-size:12px}
+.pill.FLYING{background:var(--ok);color:#fff}
+.pill.LANDING{background:var(--bad);color:#fff}
+.pill.TAKEOFF,.pill.ARMED_GROUND{background:var(--warn);color:#fff}
+
+/* Status strip: the running totals. `auto-fit` drops the column count as the
+   width does, so a tile never gets too narrow to hold its label on one line.
+   現在値の帯。`auto-fit` により幅が狭まると列数が減るので、見出しが 1 行に
+   収まらないほど細いタイルにはならない。 */
+#status{display:grid;gap:8px;margin-bottom:12px;
+        grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+#status .card{display:flex;flex-direction:column;gap:3px}
+#status .k{color:var(--muted);font-size:11px;line-height:1.2}
+#status .v{font-size:18px;font-weight:bold;line-height:1.25}
+
+/* Main split: 3D + map on the left, decisions on the right. Collapses to
+   one column below 900px so a laptop half-screen still reads.
+   主要部: 左に 3D と上から見た図、右に判断。900px 未満では 1 列にし、
+   画面半分の幅でも読めるようにする。 */
+#main{display:grid;gap:12px;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr)}
+@media (max-width:900px){ #main{grid-template-columns:1fr} }
+#canvasWrap{width:100%;aspect-ratio:4/3;position:relative;background:var(--bg);
+            border:1px solid var(--line);border-radius:6px;overflow:hidden}
+#scene{width:100%;height:100%;display:block;cursor:grab}
+#scene:active{cursor:grabbing}
+#mapWrap{margin-top:10px}
+#map{width:100%;height:auto;display:block;background:var(--bg);
+     border:1px solid var(--line);border-radius:6px}
+.hint{font-size:11px;color:var(--muted);margin-top:6px}
+.readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+          gap:8px;margin-top:10px}
+.readouts div{display:flex;flex-direction:column;gap:2px}
+.readouts div span{display:block}
+.readouts .k{font-size:11px;line-height:1.2}
+.readouts .v{font-size:15px;font-weight:bold;line-height:1.25}
+
+/* Decision list: newest on top, one decision per row.
+   判断の一覧: 新しいものが上。1 判断 1 行。 */
+#decisions{max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.dec{border:1px solid var(--line);border-left-width:4px;border-radius:6px;padding:8px 10px}
+.dec.accept{border-left-color:var(--ok)}
+.dec.hover{border-left-color:var(--warn)}
+.dec.land{border-left-color:var(--bad)}
+.dec.discard{border-left-color:var(--drop)}
+.dec .head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;
+           align-items:baseline}
+.dec .t{color:var(--muted);font-size:11px}
+.dec .verdict{font-weight:bold}
+.dec .reason{color:var(--muted);font-size:11px;margin-top:2px;word-break:break-word}
+.dec .cmd{margin-top:4px;font-size:12px}
+.dec .cmd code{background:var(--bar);padding:1px 5px;border-radius:4px}
+.dec .late{color:var(--bad);font-weight:bold}
+.sit{margin-top:5px;font-size:11px;color:var(--muted);word-break:break-word}
+.sit b{color:var(--accent);font-weight:bold}   /* what changed / 変わった区分 */
+
+/* Probability bars for the three safety choices.
+   安全行動 3 択の確率の棒。 */
+.probs{margin-top:5px;display:grid;gap:2px}
+.prob{display:grid;grid-template-columns:62px 1fr 42px;gap:6px;align-items:center;
+      font-size:11px}
+/* Both the track and its fill must be block boxes: they are <span>s, and an
+   INLINE box ignores width and height, so the bar would render 0px wide
+   however large its percentage is.
+   トラックと中身はどちらもブロックにする。いずれも <span> であり、インライン
+   ボックスは width・height を無視するため、割合をいくつにしても棒の幅が 0px
+   になってしまう。 */
+.prob .track{display:block;height:9px;background:var(--bar);
+             border-radius:3px;overflow:hidden}
+.prob .fill{display:block;height:100%;background:var(--accent)}
+.prob.pick .fill{background:var(--ok)}
+.prob .pc{text-align:right;color:var(--muted)}
+.empty{color:var(--muted);padding:16px;text-align:center}
+</style></head><body>
+
+<h1>StampFly autopilot
+ <span class="pill" id="phasePill">--</span>
+ <span class="muted" id="meta">接続中… / connecting</span>
+ <span class="muted" id="ctx"></span>
+</h1>
+
+<div id="status">
+ <div class="card"><span class="k">飛行フェーズ / phase</span><span class="v" id="sPhase">--</span></div>
+ <div class="card"><span class="k">実行中 / step・leg</span><span class="v" id="sStep">--</span></div>
+ <div class="card"><span class="k">判断 / decisions</span><span class="v" id="sDec">0</span></div>
+ <div class="card"><span class="k">待機の連続 / hold</span><span class="v" id="sHold">0.0 s</span></div>
+ <div class="card"><span class="k">往復 p50 / p95</span><span class="v" id="sLat">-- / --</span></div>
+ <div class="card"><span class="k">期限超過 / overdue</span><span class="v" id="sOver">0</span></div>
+</div>
+
+<div id="main">
+ <div>
+  <div class="card">
+   <div class="muted">3D view — SILS GUI・sf telemetry と同一</div>
+   <div id="canvasWrap"><canvas id="scene"></canvas></div>
+   <div class="hint">ドラッグ=回転 / ホイール・ピンチ=ズーム / 右ドラッグ=パン</div>
+   <div class="readouts">
+    <div><span class="k muted">alt [m]</span><span class="v" id="rAlt">--</span></div>
+    <div><span class="k muted">N / E [m]</span><span class="v" id="rPos">--</span></div>
+    <div><span class="k muted">roll/pitch [deg]</span><span class="v" id="rAtt">--</span></div>
+    <div><span class="k muted">battery [%]</span><span class="v" id="rBatt">--</span></div>
+    <div><span class="k muted">ToF [m]</span><span class="v" id="rTof">--</span></div>
+   </div>
+  </div>
+  <div class="card" id="mapWrap">
+   <div class="muted">上から見た図 / horizontal track — 離陸点・包絡 2m・経路</div>
+   <canvas id="map" width="520" height="520"></canvas>
+  </div>
+ </div>
+
+ <div class="card">
+  <div class="muted">判断の流れ / decisions（新しいものが上）</div>
+  <div id="decisions"><div class="empty">判断を待っています… / waiting</div></div>
+ </div>
+</div>
+
+<script type="module">
+// ============================================================================
+// Live view: one SSE stream drives the 3D view, the map and the decision list.
+// ライブ表示: 1 本の SSE が 3D 表示・上から見た図・判断一覧を動かす。
+// ============================================================================
+import { mountStampFly3D } from "/asset/stampfly3d.js";
+
+const R2D = 180 / Math.PI;
+const MAX_DECISIONS = 120;          // keep the DOM small / DOM を小さく保つ
+const ENVELOPE_R_M = 2.0;           // config.py's horizontal envelope / 水平包絡
+const $ = (id) => document.getElementById(id);
+const fmt = (x, d = 2) => (x >= 0 ? "+" : "") + x.toFixed(d);
+
+const view = mountStampFly3D({ canvas: $("scene"), wrap: $("canvasWrap") });
+
+// --- horizontal track (top view) --------------------------------------------
+// Drawn here rather than in the 3D scene because a route is read far better
+// from directly above than from a perspective camera.
+// 上から見た図はここで描く。経路は透視投影より真上から見るほうが読み取り
+// やすいためである。
+const track = [];
+let missionLegs = [], currentLeg = -1;
+
+function drawMap() {
+  const cv = $("map"), ctx = cv.getContext("2d");
+  // Match the backing store to the CSS size times the device pixel ratio,
+  // or the circle, the track and the labels are drawn at one size and then
+  // stretched to another -- which reads as a blurred picture.
+  // バッキングストアを CSS 上の大きさ × 画素比に合わせる。合わせないと、円・
+  // 軌跡・文字をある大きさで描いてから別の大きさへ引き伸ばすことになり、
+  // ぼやけて見える。
+  const cssW = cv.clientWidth || 520;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const want = Math.round(cssW * ratio);
+  if (cv.width !== want) { cv.width = want; cv.height = want; }
+  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+  const style = getComputedStyle(document.body);
+  const line = style.getPropertyValue("--line").trim();
+  const muted = style.getPropertyValue("--muted").trim();
+  const accent = style.getPropertyValue("--accent").trim();
+  const ok = style.getPropertyValue("--ok").trim();
+  ctx.clearRect(0, 0, W, H);
+
+  // Scale so the envelope always fits, growing if the craft leaves it.
+  // A margin is reserved so the envelope's own label is not drawn off the
+  // right edge -- the circle may reach the border, its text must not.
+  // 包絡が常に収まる倍率。機体が外へ出れば広げる。包絡の凡例が右端の外に
+  // 描かれないよう余白を確保する（円は端に達してよいが、その文字は不可）。
+  const margin = 54 * ratio;
+  let reach = ENVELOPE_R_M * 1.15;
+  for (const p of track) reach = Math.max(reach, Math.hypot(p[0], p[1]) * 1.15);
+  for (const leg of missionLegs) reach = Math.max(reach, Math.hypot(leg[0], leg[1]) * 1.15);
+  const scale = (Math.min(W, H) / 2 - margin) / reach;
+  const X = (e) => cx + e * scale;        // east -> right / 東は右
+  const Y = (n) => cy - n * scale;        // north -> up   / 北は上
+
+  ctx.strokeStyle = line; ctx.lineWidth = 1 * ratio;
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy);
+  ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+
+  ctx.setLineDash([5 * ratio, 4 * ratio]); ctx.strokeStyle = muted;
+  ctx.beginPath(); ctx.arc(cx, cy, ENVELOPE_R_M * scale, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = muted;
+  ctx.font = `${11 * ratio}px ui-monospace,monospace`;
+  ctx.textAlign = "left";
+  ctx.fillText(`包絡 ${ENVELOPE_R_M} m`,
+               cx + ENVELOPE_R_M * scale + 4 * ratio, cy - 4 * ratio);
+  ctx.fillText("N", cx + 4 * ratio, 12 * ratio);
+
+  if (missionLegs.length) {
+    ctx.strokeStyle = muted; ctx.lineWidth = 1.5 * ratio;
+    ctx.beginPath(); ctx.moveTo(X(0), Y(0));
+    missionLegs.forEach((leg) => ctx.lineTo(X(leg[1]), Y(leg[0])));
+    ctx.stroke();
+    missionLegs.forEach((leg, i) => {
+      ctx.fillStyle = i === currentLeg ? accent : muted;
+      ctx.beginPath();
+      ctx.arc(X(leg[1]), Y(leg[0]), (i === currentLeg ? 5 : 3) * ratio, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  if (track.length > 1) {
+    ctx.strokeStyle = accent; ctx.lineWidth = 2 * ratio; ctx.beginPath();
+    track.forEach((p, i) => (i ? ctx.lineTo(X(p[1]), Y(p[0])) : ctx.moveTo(X(p[1]), Y(p[0]))));
+    ctx.stroke();
+  }
+  // Takeoff point, then the craft where it is now.
+  // 離陸点、続いて現在位置。
+  ctx.fillStyle = ok;
+  ctx.beginPath(); ctx.arc(cx, cy, 4 * ratio, 0, Math.PI * 2); ctx.fill();
+  if (track.length) {
+    const last = track[track.length - 1];
+    ctx.fillStyle = accent;
+    ctx.beginPath(); ctx.arc(X(last[1]), Y(last[0]), 5 * ratio, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// Redraw on resize: the backing store is sized from the CSS width, which
+// changes when the column layout does.
+// 大きさが変わったら描き直す。バッキングストアは CSS 上の幅から決めており、
+// 段組みが変われば幅も変わるためである。
+window.addEventListener("resize", () => drawMap());
+
+// --- decisions ---------------------------------------------------------------
+// The situation is shown as the WORDS the code sent to Jev, with whatever
+// changed since the previous decision emphasised: that is the whole input,
+// and seeing it change is what makes a decision explicable.
+// 状況は、コードが Jev に送った**語**で示し、前回から変わった区分を強調する。
+// それが入力の全部であり、その変化が見えることが、判断を説明可能にする。
+let previousSituation = {};
+
+function flatten(state, prefix = "") {
+  const out = {};
+  for (const [k, v] of Object.entries(state || {})) {
+    if (v && typeof v === "object") Object.assign(out, flatten(v, `${prefix}${k}.`));
+    else out[`${prefix}${k}`] = v;
+  }
+  return out;
+}
+
+function situationHtml(state) {
+  const flat = flatten(state);
+  const parts = [];
+  for (const [k, v] of Object.entries(flat)) {
+    const name = k.split(".").pop();
+    const changed = previousSituation[k] !== undefined && previousSituation[k] !== v;
+    parts.push(changed ? `<b>${name}: ${v}</b>` : `${name}: ${v}`);
+  }
+  previousSituation = flat;
+  return parts.join(" · ");
+}
+
+const VERDICT_CLASS = { accept: "accept", hold: "hover", hover: "hover",
+                        land: "land", discard: "discard", override: "discard" };
+
+function probsHtml(answers) {
+  const safety = answers && answers.safety_action;
+  if (!safety || !safety.probabilities) return "";
+  const rows = Object.entries(safety.probabilities)
+    .sort((a, b) => b[1] - a[1])
+    .map(([choice, p]) => {
+      const pick = choice === safety.choice ? " pick" : "";
+      return `<div class="prob${pick}"><span>${choice}</span>`
+           + `<span class="track"><span class="fill" style="width:${(p * 100).toFixed(0)}%"></span></span>`
+           + `<span class="pc">${(p * 100).toFixed(0)}%</span></div>`;
+    });
+  return `<div class="probs">${rows.join("")}</div>`;
+}
+
+function addDecision(ev) {
+  const list = $("decisions");
+  const placeholder = list.querySelector(".empty");
+  if (placeholder) placeholder.remove();
+
+  const verdict = ev.arbiter_verdict || {};
+  const answers = ev.answers || {};
+  const node = document.createElement("div");
+  node.className = "dec " + (VERDICT_CLASS[verdict.action] || "");
+
+  const late = answers.error === "deadline exceeded";
+  const latency = ev.latency_ms === null || ev.latency_ms === undefined
+    ? "--" : `${ev.latency_ms.toFixed(0)} ms`;
+  const abnormal = answers.abnormal && answers.abnormal.noul !== null
+    && answers.abnormal.noul !== undefined
+    ? ` · abnormal ${(answers.abnormal.noul * 100).toFixed(0)}%` : "";
+  const nextMove = answers.next_move
+    ? ` · next_move <b>${answers.next_move.choice}</b>` : "";
+
+  node.innerHTML =
+    `<div class="head"><span class="verdict">${verdict.action || "--"}</span>`
+    + `<span class="t">t=${(ev.t_mono ?? 0).toFixed(1)}s · `
+    + `<span class="${late ? "late" : ""}">${late ? "期限超過 " : ""}${latency}</span></span></div>`
+    + `<div class="reason">${verdict.reason || ""}`
+    + (verdict.source ? ` <span class="muted">[${verdict.source}]</span>` : "") + `</div>`
+    + probsHtml(answers)
+    + (abnormal || nextMove ? `<div class="reason">${abnormal}${nextMove}</div>` : "")
+    + (ev.command ? `<div class="cmd">送信 / sent <code>${ev.command}</code></div>` : "")
+    + `<div class="sit">${situationHtml(ev.state)}</div>`;
+
+  list.prepend(node);                                   // newest on top / 新しいものが上
+  while (list.children.length > MAX_DECISIONS) list.lastChild.remove();
+}
+
+// --- status ------------------------------------------------------------------
+let holdSince = null, holdSeconds = 0;
+
+function renderStatus(ev) {
+  if (ev.phase !== undefined) { $("sPhase").textContent = ev.phase; $("phasePill").textContent = ev.phase; }
+  if (ev.step !== undefined) $("sStep").textContent = ev.step || "—";
+  if (ev.decisions !== undefined) $("sDec").textContent = ev.decisions;
+  if (ev.overdue !== undefined) $("sOver").textContent = ev.overdue;
+  const p50 = ev.latency_p50_ms, p95 = ev.latency_p95_ms;
+  $("sLat").textContent = p50 === null || p50 === undefined
+    ? "-- / --" : `${p50.toFixed(0)} / ${(p95 ?? p50).toFixed(0)} ms`;
+}
+
+function noteHold(action) {
+  const holding = action === "hover" || action === "hold";
+  if (!holding) { holdSince = null; holdSeconds = 0; }
+  else if (holdSince === null) holdSince = performance.now();
+  $("sHold").textContent = holdSince === null
+    ? "0.0 s" : `${((performance.now() - holdSince) / 1000).toFixed(1)} s`;
+}
+setInterval(() => { if (holdSince !== null) noteHold("hover"); }, 200);
+
+// --- the stream --------------------------------------------------------------
+let sampleCount = 0;
+
+const es = new EventSource("/events");
+es.onmessage = (raw) => {
+  const ev = JSON.parse(raw.data);
+  if (ev.kind === "sample") {
+    sampleCount++;
+    view.update({
+      pos_n: ev.pos_n ?? 0, pos_e: ev.pos_e ?? 0, alt: ev.altitude_m ?? 0,
+      roll: ev.roll ?? 0, pitch: ev.pitch ?? 0, yaw: ev.yaw ?? 0,
+    });
+    $("meta").textContent = `t=${(ev.t ?? 0).toFixed(1)}s · samples ${sampleCount}`;
+    if (ev.flight_state) { $("phasePill").textContent = ev.flight_state;
+                           $("phasePill").className = "pill " + ev.flight_state; }
+    $("rAlt").textContent  = ev.altitude_m === undefined ? "--" : fmt(ev.altitude_m);
+    $("rPos").textContent  = ev.pos_n === undefined ? "--"
+      : `${fmt(ev.pos_n, 1)} ${fmt(ev.pos_e ?? 0, 1)}`;
+    $("rAtt").textContent  = ev.roll === undefined ? "--"
+      : `${fmt(ev.roll * R2D, 0)} ${fmt(ev.pitch * R2D, 0)}`;
+    $("rBatt").textContent = ev.battery_pct === undefined ? "--" : ev.battery_pct.toFixed(0);
+    $("rTof").textContent  = ev.tof_m === undefined ? "--" : ev.tof_m.toFixed(2);
+    if (ev.pos_n !== undefined && ev.pos_e !== undefined) {
+      track.push([ev.pos_n, ev.pos_e]);
+      if (track.length > 4000) track.shift();
+      drawMap();
+    }
+    return;
+  }
+  if (ev.kind === "decision") {
+    addDecision(ev);
+    noteHold((ev.arbiter_verdict || {}).action);
+    return;
+  }
+  if (ev.kind === "status") { renderStatus(ev); return; }
+  if (ev.kind === "phase") {
+    if (ev.legs) { missionLegs = ev.legs; }
+    if (ev.leg_index !== undefined) currentLeg = ev.leg_index;
+    if (ev.label) $("sStep").textContent = ev.label;
+    drawMap();
+  }
+};
+es.onerror = () => { $("meta").textContent = "接続が切れました — 再接続中 / reconnecting"; };
+
+// What this flight is, shown once: the scene, the judge, where it records.
+// この飛行が何かを 1 度だけ表示する（場面・判断役・記録先）。
+fetch("/context").then((r) => r.json()).then((ctx) => {
+  const bits = [];
+  if (ctx.command) bits.push(ctx.command);
+  if (ctx.scene) bits.push(`scene=${ctx.scene}`);
+  if (ctx.judge) bits.push(ctx.judge);
+  $("ctx").textContent = bits.join(" · ");
+  if (ctx.legs) { missionLegs = ctx.legs; drawMap(); }
+}).catch(() => {});
+
+drawMap();
+</script>
+</body></html>

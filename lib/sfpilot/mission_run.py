@@ -68,36 +68,47 @@ def prepare(path: str, config=DEFAULT_CONFIG):
 
 
 def fly_in_sils(request: MissionRequest, mission, judge, config=DEFAULT_CONFIG,
-                trace=None, on_event=None):
+                trace=None, on_event=None, recording=None, on_cycle=None,
+                on_decisions=None):
     """Launch the emulator, settle it, fly the mission, shut it down.
 
     The launch is `sfcli.commands.sils`'s, shared with `sf sils fly` and
     `sf pilot run`. Assembling it separately here would let a decision
     tested in one of them fail to reproduce in another.
 
+    `recording` says where the flight-log bundle lands; the caller passes
+    one when it wants the bundle's path back (to print the video command,
+    or to name it in the trace), and omitting it records to a fresh dated
+    directory all the same -- a flight is never left unrecorded.
+
     エミュレータを起動・静定させ、ミッションを飛ばし、終了させる。
 
     起動処理は `sfcli.commands.sils` のもので、`sf sils fly`・`sf pilot run` と
     共有している。ここで別に組み立てると、一方で試した判断が他方で再現しなく
     なる。
+
+    `recording` はフライトログ一式の置き場所を表す。束のパスを受け取りたい側
+    （動画のコマンドを表示する、記録に書き残す）が渡す。省略しても新しい日時の
+    ディレクトリに記録する — 飛行が記録されないままになることはない。
     """
     from sfcli.commands.sils import (
         RealtimeEmuUnavailable, launch_realtime_emu, realtime_emu_env,
     )
-    from sfcli.utils.paths import paths
 
     from .link import SilsLink
+    from .recording import FlightRecording
     from .scenes import get_scene
 
     scene = get_scene(request.scene, config)
-    bundle = paths.root() / "simulator" / "sils" / "viz" / "out_mission"
-    bundle.mkdir(parents=True, exist_ok=True)
     # Record the flight-log bundle: `truth.csv` is how the route's SHAPE is
     # checked afterwards, independently of what the firmware's own estimate
     # believed at the time.
     # フライトログ一式を記録する。経路の**形**を、ファーム自身の推定とは独立に
     # 後から確かめる手段が `truth.csv` だからである。
-    env = realtime_emu_env(bundle, flightlog_dir=bundle, extra_env=scene.env)
+    recording = (recording or FlightRecording("mission")).prepare()
+    env = realtime_emu_env(recording.bundle_dir,
+                           flightlog_dir=recording.flightlog_dir,
+                           extra_env=scene.env)
     total_s = (config.sils.boot_settle_s + request.duration_s
                + config.sils.land_grace_s + 20.0)
     try:
@@ -106,6 +117,7 @@ def fly_in_sils(request: MissionRequest, mission, judge, config=DEFAULT_CONFIG,
         raise SilsUnavailable(str(exc)) from exc
 
     link = SilsLink(proc)
+    outcome = None
     try:
         _settle_boot(link, config, on_event)
         # `command` puts the firmware in SDK mode; the route's own first leg
@@ -113,11 +125,24 @@ def fly_in_sils(request: MissionRequest, mission, judge, config=DEFAULT_CONFIG,
         # `command` はファームを SDK モードにする。離陸は経路自身の最初の区間
         # なので、ここでは送らない。
         link.send_command("command")
-        return fly_mission(link, judge, mission, config, trace=trace,
-                           scene=scene, on_event=on_event)
+        outcome = fly_mission(link, judge, mission, config, trace=trace,
+                              scene=scene, on_event=on_event, on_cycle=on_cycle,
+                              on_decisions=on_decisions)
+        return outcome
     finally:
         link.close()
         _shutdown(proc)
+        # After the process is gone, never before: the emulator flushes and
+        # closes its CSVs as it exits, so bundling any earlier would capture
+        # a half-written flight.
+        # プロセスの終了後に行う（それ以前では決して行わない）。エミュレータは
+        # 終了時に CSV を書き出して閉じるので、それより早く束にすると書きかけの
+        # 飛行を取り込んでしまう。
+        recording.finalize(
+            notes=f"sf pilot mission ({request.mission_path}, "
+                  f"scene={request.scene})",
+            decisions=outcome.decision_rows if outcome else (),
+        )
 
 
 def _settle_boot(link, config, on_event) -> None:

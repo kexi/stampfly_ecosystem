@@ -192,6 +192,12 @@ class MissionOutcome:
     decisions: int = 0
     flown_s: float = 0.0
     latencies: list = field(default_factory=list)
+    # The decision rows themselves, for writing the timeline beside the
+    # flight-log bundle. `decisions` stays the COUNT so the printed
+    # summary is unchanged.
+    # 判断の行そのもの。フライトログ一式の隣に時系列を書き出すために持つ。
+    # `decisions` は**件数**のままとし、表示を変えない。
+    decision_rows: list = field(default_factory=list)
 
     @property
     def completed(self) -> bool:
@@ -605,7 +611,8 @@ def _retry_word(retries: int, config) -> str:
 # =============================================================================
 
 def fly_mission(link, judge, mission: Mission, config=DEFAULT_CONFIG,
-                trace=None, scene=None, on_event=None) -> MissionOutcome:
+                trace=None, scene=None, on_event=None,
+                on_cycle=None, on_decisions=None) -> MissionOutcome:
     """Fly the route, asking Jev what to do at every leg boundary.
 
     The safety layer of use (1) runs throughout, unchanged and unweakened:
@@ -620,7 +627,8 @@ def fly_mission(link, judge, mission: Mission, config=DEFAULT_CONFIG,
     進行中であることは、安全層が止めるはずのものを機体に続けさせる理由に
     ならない。
     """
-    flight = _MissionFlight(link, judge, mission, config, trace, scene, on_event)
+    flight = _MissionFlight(link, judge, mission, config, trace, scene, on_event,
+                            on_cycle=on_cycle, on_decisions=on_decisions)
     return flight.run()
 
 
@@ -641,7 +649,8 @@ class _MissionFlight:
     見えなくなる。
     """
 
-    def __init__(self, link, judge, mission, config, trace, scene, on_event):
+    def __init__(self, link, judge, mission, config, trace, scene, on_event,
+                 on_cycle=None, on_decisions=None):
         from .pilot import Pilot
 
         self.link = link
@@ -649,6 +658,14 @@ class _MissionFlight:
         self.cfg = config
         self.scene = scene
         self.on_event = on_event
+        # Called once per monitor cycle when set (the live browser view uses
+        # it to draw the aircraft). Must not block: it runs at 50Hz.
+        # 設定されていれば監視周期ごとに 1 回呼ばれる（ブラウザのライブ表示が
+        # 機体を描くのに使う）。50Hz で動くのでブロックしてはならない。
+        self.on_cycle = on_cycle
+        # Called once with the Pilot's decision list, before the first leg.
+        # 最初の区間の前に、Pilot の判断の配列を 1 度だけ渡す先。
+        self.on_decisions = on_decisions
         self.walk = MissionWalk(config)
         self.pilot = Pilot(link, judge, config, trace=trace,
                            mission=mission_state(mission, 0, ARRIVAL_UNKNOWN, 0, 0.0, config))
@@ -667,9 +684,34 @@ class _MissionFlight:
 
     # -- the loop / ループ -----------------------------------------------
 
+    def _step_pilot(self, now: float = None) -> None:
+        """One monitor cycle: judge, hold the sticks, feed the live view.
+
+        Every loop in this class goes through here rather than calling
+        `pilot.step()` itself, so a new loop cannot silently be the one
+        that forgets to keep the sticks centred or to update the view.
+
+        監視周期を 1 つ進める（判断し、スティックを中立に保ち、ライブ表示へ渡す）。
+
+        本クラスの全てのループは `pilot.step()` を自分で呼ばず、ここを通る。
+        新しいループが、スティックの中立保持や表示の更新を黙って忘れた 1 つに
+        なりえないようにするためである。
+        """
+        self.pilot.step()
+        self.link.hold_sticks_neutral()
+        if self.on_cycle is not None:
+            self.on_cycle(self.pilot.monitor.latest_sample,
+                          time.monotonic() if now is None else now)
+
     def run(self) -> MissionOutcome:
         """Walk the legs until the route ends or something stops it.
         経路が終わるか、何かが止めるまで区間を進める。"""
+        # Hand the decision list over before the first leg, so a watcher's
+        # totals count from the first decision.
+        # 最初の区間の前に判断の配列を渡す。見ている側の現在値が最初の判断から
+        # 数えられるようにするためである。
+        if self.on_decisions is not None:
+            self.on_decisions(self.pilot.decisions)
         self.started = time.monotonic()
         while self.index < self.mission.total:
             stop = self._check_limits()
@@ -682,6 +724,7 @@ class _MissionFlight:
                 break
         self._land_if_still_flying()
         self.outcome.decisions = len(self.pilot.decisions)
+        self.outcome.decision_rows = list(self.pilot.decisions)
         self.outcome.flown_s = time.monotonic() - self.started
         return self.outcome
 
@@ -772,8 +815,7 @@ class _MissionFlight:
         period = 1.0 / self.cfg.monitor_hz
         while not runner.done:
             cycle_start = time.monotonic()
-            self.pilot.step()
-            self.link.hold_sticks_neutral()
+            self._step_pilot(cycle_start)
             self._drive_scene(cycle_start)
             interrupt = _interrupt_reason(self.pilot)
             if interrupt:
@@ -949,8 +991,7 @@ class _MissionFlight:
         period = 1.0 / self.cfg.monitor_hz
         deadline = time.monotonic() + self.cfg.arbiter.hover_to_land_s
         while time.monotonic() < deadline:
-            self.pilot.step()
-            self.link.hold_sticks_neutral()
+            self._step_pilot()
             fresh = self._judgement_after(started)
             if fresh is not None:
                 return fresh
@@ -1102,8 +1143,7 @@ class _MissionFlight:
         ceiling = (self.cfg.landing.settle_max_s + self.cfg.landing.move_reply_wait_s)
         deadline = time.monotonic() + ceiling
         while self.pilot.executor.approach is not None and time.monotonic() < deadline:
-            self.pilot.step()
-            self.link.hold_sticks_neutral()
+            self._step_pilot()
             time.sleep(period)
         time.sleep(self.cfg.sils.land_grace_s)
 

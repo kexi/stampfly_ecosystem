@@ -18,16 +18,15 @@ WebSocket プロキシの stdlib 等価（モニタに必要なのは一方向�
 """
 
 import json
-import re
 import socket
 import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 from . import telemetry as telem
-from ..utils import console, paths
+from . import web_assets
+from ..utils import console
 
 # Latest decoded packet + arrival bookkeeping, shared between the UDP thread
 # and the HTTP handler threads (GIL-atomic reference swap; no lock needed).
@@ -73,36 +72,13 @@ def _udp_listener(port: int, csv_path=None) -> None:
             csv_file.write(telem.csv_row(pkt))
 
 
-# The dashboard page lives as a sibling asset (it grew a full SILS-GUI-ported 3D
-# view); the STL body parts are the SAME files the SILS GUI and MuJoCo use.
-# ダッシュボードページは隣接アセット（SILS GUI 移植の 3D ビューを含み大きい）。
-# STL 本体パーツは SILS GUI・MuJoCo と「同一ファイル」。
-_PAGE_PATH = Path(__file__).resolve().parent.parent / "assets" / "telemetry_web.html"
-_MESH_DIR = None   # resolved lazily (repo root lookup) / 遅延解決（リポジトリルート探索）
-_VENDOR_DIR = None # three.js, same lazy-resolve pattern as _mesh_dir() / three.js。_mesh_dir()と同じ遅延解決
-
-
-def _mesh_dir() -> Path:
-    global _MESH_DIR
-    if _MESH_DIR is None:
-        _MESH_DIR = paths.root() / "simulator" / "shared" / "assets" / "meshes" / "parts"
-    return _MESH_DIR
-
-
-def _vendor_dir() -> Path:
-    # three.js is vendored (not CDN-loaded): this page's normal use is a PC
-    # whose Wi-Fi is associated 1:1 with the vehicle's own SoftAP (or an
-    # offline workshop LAN), which has no route to any CDN at all -- not an
-    # occasional outage. See simulator/shared/assets/vendor/three/README.md.
-    # three.js はCDNではなくローカル同梱: このページの通常利用はPCのWi-Fiが
-    # 機体自身のSoftAP（またはオフライン講習LAN）に1対1接続された状態で、
-    # CDNへの経路がそもそも無い -- 稀な障害ではない。詳細は
-    # simulator/shared/assets/vendor/three/README.md 参照。
-    global _VENDOR_DIR
-    if _VENDOR_DIR is None:
-        _VENDOR_DIR = paths.root() / "simulator" / "shared" / "assets" / "vendor" / "three"
-    return _VENDOR_DIR
-
+# The dashboard page lives as a sibling asset; the 3D view it mounts, the STL
+# body parts and three.js are all served by `web_assets`, shared with
+# `sf pilot --web` (see that module for the no-CDN rule).
+# ダッシュボードページは隣接アセット。そこに載せる 3D 表示・STL 本体パーツ・
+# three.js はいずれも `web_assets` が配信し、`sf pilot --web` と共有する
+#（CDN を使わない規則は同モジュール参照）。
+_PAGE_PATH = web_assets.ASSET_DIR / "telemetry_web.html"
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -111,50 +87,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
-            body = _PAGE_PATH.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path.startswith("/mesh/"):
-            # StampFly STL part for the 3D view — whitelisted name, no traversal
-            # (same rule as the SILS GUI server).
-            # 3D 用 STL パーツ — 名前を制限しトラバーサル防止（SILS GUI と同じ規則）。
-            name = self.path[len("/mesh/"):]
-            if not re.fullmatch(r"[a-z0-9_]+\.stl", name):
-                self.send_error(400, "bad mesh name")
-                return
-            mesh = _mesh_dir() / name
-            if not mesh.exists():
-                self.send_error(404)
-                return
-            body = mesh.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "model/stl")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path.startswith("/vendor/three/"):
-            # Vendored three.js (see _vendor_dir()) -- whitelisted relative
-            # path, no traversal (same rule as /mesh/ above).
-            # 同梱三js（_vendor_dir()参照） -- 相対パスを許可リスト化しトラバーサル防止
-            # （上の /mesh/ と同じ規則）。
-            rel = self.path[len("/vendor/three/"):]
-            if not re.fullmatch(r"[A-Za-z0-9_./-]+\.js", rel) or ".." in rel.split("/"):
-                self.send_error(400, "bad vendor path")
-                return
-            asset = _vendor_dir() / rel
-            if not asset.exists():
-                self.send_error(404)
-                return
-            body = asset.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/javascript; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        elif self.path == "/events":
+            web_assets.send_page(self, _PAGE_PATH)
+            return
+        if web_assets.serve(self, self.path):
+            return
+        if self.path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -176,8 +113,8 @@ class _Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError,
                     ConnectionAbortedError):   # ConnectionAborted: Windows / Windows系
                 return
-        else:
-            self.send_error(404)
+            return
+        self.send_error(404)
 
 
 def serve(http_port: int, telemetry_port: int, open_browser: bool,

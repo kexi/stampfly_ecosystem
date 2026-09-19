@@ -58,6 +58,32 @@ sf sils gui            # ブラウザが自動で開く（http://127.0.0.1:8765�
 - 「変更をクリア」で全て既定に戻します。
 - 仕組み: 変更は `SILS_EMU_PARAMS_FILE`（`name value` 行）で emu 起動時に `params::set_*` へ適用。
 
+### 自動操縦（`sf pilot`）の飛行を見る
+
+このGUIが扱うのは `sf sils scenario` の実行（`out_scn_<名前>/`）である。自動操縦の飛行は
+`sf pilot` が飛ばすもので、置き場所が異なるため、見方も別になる。
+
+**飛行中に見る** — `--web` を付けると専用のページが開く（このGUIではない）。機体の3D表示に
+加えて、Jev の判断の流れ（確率・採否・送ったコマンド）が並ぶ。
+
+```bash
+sf pilot run --sils --scene drift --fake --web
+```
+
+**飛行後に見る** — SILS 飛行は毎回フライトログ一式を残す。終了時に表示される 1 行がそのまま
+動画にするコマンドである。
+
+```bash
+sf pilot run --sils --scene nominal --fake --duration 20
+#   flight log  : .../simulator/sils/viz/out_pilot/<日時>/sils_pilot_<日時>.sflog.zip
+#   watch it    : sf sils video -m pilot/<日時>
+sf sils video -m pilot/<日時>      # MuJoCo 3D ＋ 状態グラフの動画
+```
+
+一式は `out_pilot/<日時>/`・`out_say/<日時>/`・`out_mission/<日時>/` に飛行ごとに残る
+（上書きされない）。判断の記録 `logs/pilot/<日時>.jsonl` とは同じ日時で対応づく。
+詳細は [`../../../docs/plans/jev-autopilot.md`](../../../docs/plans/jev-autopilot.md) の 4.6 節。
+
 ## 3. 仕組み（開発者向け）
 
 | 部品 | ファイル | 役割 |
@@ -102,6 +128,33 @@ sf sils gui        # opens the browser at http://127.0.0.1:8765
   [`../docs/scenario_tutorial.md`](../docs/scenario_tutorial.md).
 - **Parameters**: the "パラメータ" tab — edit any of the 54 firmware params; only the
   changed ones are applied to the run (no rebuild), via `SILS_EMU_PARAMS_FILE`.
+
+### Watching an autopilot (`sf pilot`) flight
+
+This GUI drives `sf sils scenario` runs (`out_scn_<name>/`). Autopilot flights are flown by
+`sf pilot` and land elsewhere, so they are watched differently.
+
+**During the flight** — `--web` opens a page of its own (not this GUI): the aircraft in 3D
+beside Jev's decisions as they are made (probabilities, the Arbiter's ruling, the command sent).
+
+```bash
+sf pilot run --sils --scene drift --fake --web
+```
+
+**Afterwards** — every SILS flight records a flight-log bundle and prints the line that
+turns it into a video.
+
+```bash
+sf pilot run --sils --scene nominal --fake --duration 20
+#   flight log  : .../simulator/sils/viz/out_pilot/<datetime>/sils_pilot_<datetime>.sflog.zip
+#   watch it    : sf sils video -m pilot/<datetime>
+sf sils video -m pilot/<datetime>      # MuJoCo 3D + state graphs
+```
+
+Bundles accumulate per flight under `out_pilot/<datetime>/`, `out_say/<datetime>/` and
+`out_mission/<datetime>/` (never overwritten), sharing their datetime with the decision
+trace in `logs/pilot/<datetime>.jsonl`. See §4.6 of
+[`../../../docs/plans/jev-autopilot.md`](../../../docs/plans/jev-autopilot.md).
 
 ## 3. How it works
 

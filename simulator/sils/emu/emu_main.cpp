@@ -200,6 +200,23 @@ void on_advance(int64_t now_us)
         std::printf("[emu] 'quit' received via RC-over-stdin — shutting down\n");
         std::fflush(stdout);
         std::fflush(stderr);
+        // Close the flight-log streams before _Exit, exactly as the normal
+        // end-of-run path does (see the call before main()'s own _Exit).
+        // _Exit skips stdio flushing, so without this the buffered rows of
+        // every stream are lost -- and the LOWEST-rate stream (status.csv at
+        // 1Hz) loses even its header, leaving a zero-byte file that
+        // pd.read_csv rejects with "No columns to parse from file". That is
+        // what stopped `sf pilot`'s SILS flights from producing a readable
+        // bundle: they end by sending `quit`, where `sf sils scenario` runs
+        // its duration out and leaves through the normal path.
+        // _Exit の前にフライトログを閉じる（通常終了の経路が main() 内の _Exit の
+        // 前で行っているのと同じ）。_Exit は stdio の書き出しを行わないため、これが
+        // 無いと各ストリームの未書き出し行が失われる。とりわけ最も低速な
+        // status.csv（1Hz）は見出し行さえ失い、0 バイトのファイルが残って
+        // pd.read_csv が "No columns to parse from file" で拒否する。`sf pilot` の
+        // SILS 飛行が読める一式を作れなかった原因がこれである（`quit` で終わる。
+        // `sf sils scenario` は時間を走り切って通常経路から抜ける）。
+        sils_emu_flightlog_close();
         // Same rationale as the normal end-of-run _Exit(0) below: the firmware's
         // static singletons are never destructed on real hardware, so skip
         // static destruction here too (see the long comment at the bottom of

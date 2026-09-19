@@ -77,7 +77,7 @@ sf flash vehicle -m    # 書き込み後にモニタを開く
 | `sf cal gyro/accel/mag` | 各種キャリブレーション |
 | `sf sim list/run` | シミュレータ操作 |
 | `sf blocks` | ブロックプログラミングWeb UI（Blockly、--demo でデモモード）|
-| `sf pilot bench/replay/run/say/mission` | Jev による自動操縦の判断層（`docs/plans/jev-autopilot.md`）。bench=往復時間の実測、replay=飛行ログの再生判断、run=SILS を実際に飛ばして監視（`--sils` 必須。`--scene nominal/battery_drop/drift`）、say=自然言語の指示を手順に変えて飛ぶ（`--sils` 必須。`--dry-run` は変換だけ、`--eval` は期待表との照合）、mission=経路（区間の列）を飛び、区間の境目ごとに次の一手を Jev に問う（`--sils` 必須。同梱経路は `line`／`square`。`--dry-run` は経路の確認だけ）。いずれもキー不要の `--fake` あり |
+| `sf pilot bench/replay/run/say/mission` | Jev による自動操縦の判断層（`docs/plans/jev-autopilot.md`）。bench=往復時間の実測、replay=飛行ログの再生判断、run=SILS を実際に飛ばして監視（`--sils` 必須。`--scene nominal/battery_drop/drift`）、say=自然言語の指示を手順に変えて飛ぶ（`--sils` 必須。`--dry-run` は変換だけ、`--eval` は期待表との照合）、mission=経路（区間の列）を飛び、区間の境目ごとに次の一手を Jev に問う（`--sils` 必須。同梱経路は `line`／`square`。`--dry-run` は経路の確認だけ）。いずれもキー不要の `--fake` あり。run/say/mission は `--web`（`--port`／`--no-browser`）で飛行中の機体と判断の流れをブラウザ表示（127.0.0.1 のみ。3D は `sf telemetry --web` と共有）。SILS 飛行は毎回 `simulator/sils/viz/out_<種別>/<日時>/` にフライトログ一式を残し、`sf sils video -m <種別>/<日時>` で動画にできる |
 
 ### Genesis Simulator
 Genesis物理シミュレータはオプション。`sf setup genesis` で sf CLI の Python に導入し、`sf sim run genesis` で起動する（`simulator/genesis/venv` を手動で作った場合はそちらが優先される）:

@@ -34,12 +34,22 @@ class Trace:
     """Append one JSON object per decision.
     1 判断につき JSON オブジェクトを 1 つ追記する。"""
 
-    def __init__(self, path=None, directory=None):
+    def __init__(self, path=None, directory=None, bus=None):
         self.path = Path(path) if path else _default_path(directory)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self.path.open("a", encoding="utf-8")
         self._counter = 0
         self._started = time.monotonic()
+        # The live view branches from HERE, off the row that was just
+        # written, rather than assembling its own from the same inputs.
+        # Two assemblies would be two chances to disagree about what
+        # happened, and the disagreement would show up only in the flight
+        # someone was actually watching.
+        # ライブ表示は**ここ**から、いま書いた行そのものを分岐させる。同じ入力
+        # から別に組み立てはしない。組み立てが 2 つあれば、起きたことについて
+        # 食い違う機会も 2 つになり、しかもその食い違いは、誰かが実際に見ている
+        # 飛行でしか現れない。
+        self.bus = bus
 
     def write(self, state: dict, judgement, verdict, command: str,
               question_ids=()) -> dict:
@@ -68,6 +78,7 @@ class Trace:
         # でも記録が残る — その飛行の記録こそ最も必要なものである。
         self._file.write(json.dumps(row, ensure_ascii=False) + "\n")
         self._file.flush()
+        self._broadcast(row)
         return row
 
     def write_plan(self, plan, questions: dict) -> dict:
@@ -109,7 +120,46 @@ class Trace:
         }
         self._file.write(json.dumps(row, ensure_ascii=False) + "\n")
         self._file.flush()
+        self._broadcast(row)
         return row
+
+    def write_recording(self, recording) -> dict:
+        """Record where this flight's flight-log bundle landed, as one line.
+
+        Written so the two records of one flight can be paired by reading
+        either of them. They already share a datetime, but that pairing
+        relies on the reader noticing that one spelling is lower-cased;
+        a line naming the path leaves nothing to notice.
+
+        この飛行のフライトログ一式の場所を 1 行で記録する。
+
+        1 回の飛行についての 2 つの記録を、どちらからでも対応づけられるように
+        する。両者は既に日時を共有しているが、その対応づけは「片方が小文字で
+        ある」ことに読み手が気づくことに頼っている。パスを書いた行があれば、
+        気づく必要が無くなる。
+        """
+        self._counter += 1
+        row = {
+            "trace_id": f"{self._counter:06d}",
+            "t_mono": round(time.monotonic() - self._started, 4),
+            "kind": "recording",
+            "flight_log": str(recording.bundle_path) if recording.bundle_path else None,
+            "decisions_csv": str(recording.bundle_dir / f"decisions_{recording.stamp}.csv")
+                             if recording.bundle_path else None,
+            "video_command": recording.video_command(),
+        }
+        self._file.write(json.dumps(row, ensure_ascii=False) + "\n")
+        self._file.flush()
+        return row
+
+    def _broadcast(self, row: dict) -> None:
+        """Send the row just written to the live view, if one is listening.
+        いま書いた行を、ライブ表示が聞いていれば送る。"""
+        if self.bus is None:
+            return
+        from .events import EVENT_DECISION, decision_payload
+
+        self.bus.publish(EVENT_DECISION, decision_payload(row))
 
     def close(self) -> None:
         if not self._file.closed:

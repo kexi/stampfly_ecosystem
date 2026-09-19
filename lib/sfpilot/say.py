@@ -48,6 +48,12 @@ class SayOutcome:
     landed: bool = False
     decisions: int = 0
     flown_s: float = 0.0
+    # The decision rows themselves, for writing the timeline beside the
+    # flight-log bundle. `decisions` stays the COUNT so existing callers
+    # and their printed summaries are unchanged.
+    # 判断の行そのもの。フライトログ一式の隣に時系列を書き出すために持つ。
+    # `decisions` は**件数**のままとし、既存の呼び出し側と表示を変えない。
+    decision_rows: list = field(default_factory=list)
 
     @property
     def finished(self) -> bool:
@@ -339,7 +345,8 @@ class StepRunner:
 
 
 def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
-             scene=None, on_step=None) -> SayOutcome:
+             scene=None, on_step=None, on_cycle=None,
+             on_decisions=None) -> SayOutcome:
     """Fly the plan's steps under the use-(1) safety layer, and report.
 
     The loop below is `sf pilot run`'s loop with one addition: it also
@@ -348,12 +355,25 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
     own rules are untouched -- a plan being under way is not a reason to
     weaken them.
 
+    `on_cycle(sample, now)` is called once per monitor cycle when given; the
+    live browser view uses it to draw the aircraft. It must not block: it
+    runs inside the 50Hz loop.
+
     計画の手順を用途①の安全層の下で飛ばし、結果を返す。
 
     下のループは `sf pilot run` のループに 1 つ足しただけである: 手順の進行も
     見張り、Arbiter の判定が「続行」以外になった時点で進行に停止を伝える。
     Arbiter の規則自体には手を触れない — 計画が進行中であることは、規則を
     緩める理由にならない。
+
+    `on_cycle(sample, now)` は、与えられていれば監視周期ごとに 1 回呼ばれる。
+    ブラウザのライブ表示が機体を描くのに使う。50Hz ループの中で動くため、
+    ブロックしてはならない。
+
+    `on_decisions(rows)` is called once, before the first cycle, with the
+    list the Pilot appends its decisions to.
+    `on_decisions(rows)` は最初の周期の前に 1 度だけ呼ばれ、Pilot が判断を
+    追記していく配列を渡す。
     """
     pilot = Pilot(link, judge, config, trace=trace,
                   operator_instruction=plan.instruction)
@@ -369,12 +389,21 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
     outcome = SayOutcome()
     started = time.monotonic()
     period = 1.0 / config.monitor_hz
+    # Hand the decision list over before the first cycle, so a watcher's
+    # totals count from the first decision rather than from whenever it
+    # first looked.
+    # 最初の周期の前に判断の配列を渡す。見ている側の現在値が、最初に覗いた
+    # 時点からではなく最初の判断から数えられるようにするためである。
+    if on_decisions is not None:
+        on_decisions(pilot.decisions)
     runner.start()
 
     while not runner.done:
         cycle_start = time.monotonic()
         pilot.step()
         link.hold_sticks_neutral()
+        if on_cycle is not None:
+            on_cycle(pilot.monitor.latest_sample, cycle_start)
         _report_progress(runner, outcome, on_step)
         interrupt = _interrupt_reason(pilot)
         if interrupt:
@@ -389,6 +418,7 @@ def fly_plan(link, judge, plan, config=DEFAULT_CONFIG, trace=None,
     outcome.completed = list(runner.sent)
     outcome.landed = pilot.executor.landing
     outcome.decisions = len(pilot.decisions)
+    outcome.decision_rows = list(pilot.decisions)
     outcome.flown_s = time.monotonic() - started
     _finish(link, pilot, outcome, config)
     return outcome
