@@ -9,6 +9,7 @@ from sfpilot.arbiter import Arbiter, VERDICT_HOVER, VERDICT_LAND
 from sfpilot.config import DEFAULT_CONFIG
 from sfpilot.judge import (
     ACT_CONTINUE,
+    ACT_HOLD,
     ACT_LAND,
     Answer,
     Judgement,
@@ -179,3 +180,167 @@ def test_immediate_safety_outranks_the_judge():
     verdict = _decide(Arbiter(), _confident_continue(), assessment=assessment)
     assert verdict.action == VERDICT_LAND
     assert verdict.source == "monitor"
+
+
+# =============================================================================
+# The cautious split: continue vs hold / 慎重な割れ方: continue と hold
+# =============================================================================
+
+def test_an_unconfident_split_between_continue_and_hold_is_held_not_discarded():
+    """Torn between carrying on and waiting, the aircraft waits -- and that
+    counts as an answer.
+
+    Both halves are cautious readings of an unremarkable situation, and
+    hovering is what the Arbiter does with no answer at all, so accepting
+    the cautious half changes nothing about what the aircraft does. What it
+    changes is the bookkeeping: the hold is no longer "no usable opinion",
+    so it does not feed the hover-to-land timer.
+
+    Measured on the `drift` scene against the live Jev (2026-09-19): splits
+    of 0.45/0.40, 0.53/0.36 and 0.45/0.41 between continue and hold, with
+    land a distant 0.11-0.15. Discarding those produced 13 consecutive
+    holds and a landing on a flight that was never in danger.
+
+    「続ける」と「待つ」で迷ったとき、機体は待つ。そしてそれは答えとして数える。
+
+    どちらも「特筆すべきことのない状況」の慎重な読み方であり、答えがまったく
+    無いときに Arbiter が取る行動も待機である。したがって慎重な側を採用しても、
+    機体の動きは何も変わらない。変わるのは数え方で、この待機はもはや「使える
+    意見が無い」ではなくなり、待機継続の計時に入らない。
+
+    Jev 実走の `drift` 場面での実測（2026-09-19）: continue と hold の割れ方は
+    0.45/0.40、0.53/0.36、0.45/0.41 で、land は 0.11〜0.15 と離れていた。これらを
+    破棄したことが、危険でない飛行で 13 回連続の待機と着陸を生んだ。
+    """
+    split = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_CONTINUE, confidence=0.45,
+        probabilities={ACT_CONTINUE: 0.45, ACT_HOLD: 0.40, ACT_LAND: 0.15},
+    )}, latency_ms=10.0)
+
+    verdict = _decide(Arbiter(), split)
+
+    assert verdict.action == VERDICT_HOVER, "the cautious half is what is taken"
+    assert verdict.source == "judge", "it is an answer, not a rejection"
+    assert verdict.accepted_answer == ACT_HOLD, (
+        "the confident-sounding half must not be read into an unsure answer"
+    )
+
+
+def test_a_cautious_split_does_not_run_down_the_hover_to_land_timer():
+    """A held flight that keeps answering is not landed for hovering.
+
+    The hover-to-land timer exists for a situation that is not resolving
+    itself. A model that keeps saying "carry on, or wait" about a steady
+    flight is resolving it -- into waiting -- and landing after ten seconds
+    of that is the behaviour this fixes.
+
+    答え続けている待機中の飛行が、待機を理由に着陸させられないこと。
+
+    待機継続の計時は、自然に解消しない状況のためにある。安定した飛行について
+    「続けるか、待つか」と答え続けるモデルは、その状況を（待機として）解消して
+    いる。それを 10 秒で着陸させるのが、本修正の対象である。
+    """
+    split = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_CONTINUE, confidence=0.45,
+        probabilities={ACT_CONTINUE: 0.45, ACT_HOLD: 0.40, ACT_LAND: 0.15},
+    )}, latency_ms=10.0)
+    arbiter = Arbiter()
+    past_the_timer = DEFAULT_CONFIG.arbiter.hover_to_land_s + 1.0
+
+    for now in (0.0, past_the_timer):
+        verdict = _decide(arbiter, split, now=now)
+
+    assert verdict.action == VERDICT_HOVER, "it must not have become a landing"
+
+
+def test_an_unconfident_split_involving_land_is_still_discarded():
+    """A model torn over ending the flight is not acted on at all.
+
+    `land` in the top two means the model cannot separate carrying on from
+    ending the flight, and neither action may rest on that -- the rule the
+    design states, and the one case the change above deliberately leaves
+    alone.
+
+    飛行の終了で迷っているモデルの答えは、そもそも実行しないこと。
+
+    上位 2 択に `land` があることは、モデルが「続ける」と「終える」を区別できて
+    いないことを意味し、どちらの行動もその上には置けない。設計が述べる規則で
+    あり、上記の変更が意図して手を触れない唯一の場合である。
+    """
+    torn = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_LAND, confidence=0.45,
+        probabilities={ACT_LAND: 0.45, ACT_CONTINUE: 0.40, ACT_HOLD: 0.15},
+    )}, latency_ms=10.0)
+
+    verdict = _decide(Arbiter(), torn)
+
+    assert verdict.action == VERDICT_HOVER
+    assert verdict.source == "arbiter", "it is a rejection, not an accepted answer"
+    assert "確信度" in verdict.reason
+
+
+def test_a_derived_hold_is_marked_apart_from_one_jev_chose():
+    """A hold the Arbiter derived is distinguishable from one Jev asked for.
+
+    Callers that walk a sequence (`say.fly_plan`, `mission`) stop on a hold
+    the model CHOSE, because that is the model asking them to wait. A hold
+    derived from an answer too unsure to act on is not such a request, and
+    the two must be told apart in the verdict rather than by guessing from
+    the reason text.
+
+    Arbiter が導いた待機と、Jev が求めた待機を区別できること。
+
+    手順の列を進める側（`say.fly_plan`・`mission`）は、モデルが**選んだ**待機で
+    止まる。それは待てという要請だからである。確信度が足りない答えから導いた
+    待機はその要請ではなく、両者は理由の文面から推測するのではなく、判定そのもの
+    で区別できなければならない。
+    """
+    chosen = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_HOLD, confidence=0.9,
+        probabilities={ACT_HOLD: 0.9, ACT_CONTINUE: 0.08, ACT_LAND: 0.02},
+    )}, latency_ms=10.0)
+    derived = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_CONTINUE, confidence=0.45,
+        probabilities={ACT_CONTINUE: 0.45, ACT_HOLD: 0.40, ACT_LAND: 0.15},
+    )}, latency_ms=10.0)
+
+    chosen_verdict = _decide(Arbiter(), chosen)
+    derived_verdict = _decide(Arbiter(), derived)
+
+    assert chosen_verdict.action == VERDICT_HOVER
+    assert derived_verdict.action == VERDICT_HOVER
+    assert chosen_verdict.detail["chosen_hold"] is True
+    assert derived_verdict.detail["chosen_hold"] is False
+
+
+def test_a_derived_hold_does_not_interrupt_a_sequence():
+    """A sequence carries on through a hold the model did not ask for.
+
+    Measured on `sf pilot mission` against the live Jev (2026-09-19): the
+    route ended at its last leg on answers that PREFERRED carrying on
+    (continue 0.63-0.72 against hold 0.23-0.30), because every derived hold
+    read as an interrupt.
+
+    モデルが求めていない待機では、手順の列が止まらないこと。
+
+    Jev 実走の `sf pilot mission` での実測（2026-09-19）: むしろ継続を選好して
+    いた答え（continue 0.63〜0.72 対 hold 0.23〜0.30）で経路が最後の区間で
+    終わった。導かれた待機がすべて中断として読まれていたためである。
+    """
+    from sfpilot.say import _interrupt_reason
+
+    class _Pilot:
+        def __init__(self, verdict):
+            self.decisions = [{"verdict": verdict}]
+
+    derived = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_CONTINUE, confidence=0.45,
+        probabilities={ACT_CONTINUE: 0.45, ACT_HOLD: 0.40, ACT_LAND: 0.15},
+    )}, latency_ms=10.0)
+    chosen = Judgement(answers={Q_SAFETY: Answer(
+        kind="choice", choice=ACT_HOLD, confidence=0.9,
+        probabilities={ACT_HOLD: 0.9, ACT_CONTINUE: 0.08, ACT_LAND: 0.02},
+    )}, latency_ms=10.0)
+
+    assert _interrupt_reason(_Pilot(_decide(Arbiter(), derived))) == ""
+    assert _interrupt_reason(_Pilot(_decide(Arbiter(), chosen))) != ""

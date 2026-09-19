@@ -72,7 +72,7 @@ _WORDS = {
     "危険": "dangerously low",
     # battery trend / 電池の傾向
     "ゆるやかに低下": "falling gradually",
-    "この 10 秒で急に低下": "fell sharply in the last few seconds",
+    "急に低下": "fell sharply in the last few seconds",
     # flight phase / 飛行段階
     "飛行中": "flying",
     "不明": "unknown",

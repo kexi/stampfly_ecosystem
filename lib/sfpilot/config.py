@@ -61,6 +61,13 @@ class JudgeConfig:
     # 次の周期で自然に問い直される。
     model: str = "jev-latest"
 
+    # The macOS keychain service name the API key is stored under, when it
+    # is not in the environment. Overridable per machine through
+    # SF_TYPESAFE_KEYCHAIN_SERVICE (see credentials.py).
+    # 環境変数に無い場合に API キーを引く、macOS キーチェーンのサービス名。
+    # マシンごとに SF_TYPESAFE_KEYCHAIN_SERVICE で変更できる（credentials.py）。
+    keychain_service: str = "typesafe-api-key"
+
 
 @dataclass(frozen=True)
 class EnvelopeConfig:
@@ -114,8 +121,104 @@ class MonitorConfig:
     # 電池の区分 [%]。"danger" は Jev を待たず着陸する。
     battery_low_pct: float = 30.0
     battery_danger_pct: float = 15.0
-    battery_drop_fast_pct: float = 5.0   # this much within the window / 窓内でこれだけ低下
-    battery_trend_window_s: float = 10.0
+
+    # The battery TREND is judged on pack VOLTAGE, not on the percentage.
+    #
+    # The percentage is a linear map of the instantaneous, LOADED voltage
+    # (link.battery_percent), so it moves for two reasons that have nothing
+    # to do with energy spent: the motors spinning up, and the ADC's 0.01 V
+    # quantisation. Measured in SILS on 2026-09-19: `takeoff` alone drops
+    # the reading 4.19 V -> 3.79 V inside one second, which is 99% -> 55%,
+    # a 44-point fall with the pack essentially full. Against the old
+    # `battery_drop_fast_pct = 5.0` over a 10 s window, that guaranteed
+    # "fell sharply" on every healthy flight -- and a steady hover alone
+    # drains 0.35 pct/s, reaching 8.9 points in the worst 10 s window, over
+    # the threshold again. This is why `run nominal` landed at 7.4 s.
+    #
+    # Volts avoid the amplification: the same steady hover moves 0.0033 V/s,
+    # so the window below sees about 0.07 V of honest drain against a
+    # threshold of 0.25 V, while a genuinely failing pack (the
+    # `battery_drop` scene walks 4.05 V -> 3.35 V) crosses it.
+    #
+    # 電池の**傾向**はパック電圧で判定する。百分率では判定しない。
+    #
+    # 百分率は、その瞬間の**負荷がかかった**電圧を線形に写したものであり
+    #（link.battery_percent）、消費エネルギーとは無関係な 2 つの理由で動く:
+    # モータの起動と、ADC の 0.01V 量子化である。2026-09-19 の SILS 実測:
+    # `takeoff` だけで読みが 1 秒以内に 4.19V → 3.79V、すなわち 99% → 55% まで
+    # 落ちる。パックはほぼ満充電なのに 44 ポイントの低下である。従来の
+    # 10 秒窓・`battery_drop_fast_pct = 5.0` に対し、これは健全な飛行すべてで
+    # 「急に低下」を確定させていた。加えて定常ホバリングだけでも 0.35 pct/s
+    # 減り、最悪の 10 秒窓で 8.9 ポイントに達してやはり閾値を超える。
+    # `run nominal` が 7.4 秒で着陸した原因がこれである。
+    #
+    # 電圧ならこの増幅が無い。同じ定常ホバリングは 0.0033V/s なので、下の窓が
+    # 見るのは約 0.07V の正直な消費であり、閾値 0.25V に対して十分小さい。
+    # 一方、本当に弱っているパック（`battery_drop` の場面は 4.05V → 3.35V を
+    # 歩く）はこれを超える。
+    # Measured over this window, on the recorded flights themselves rather
+    # than from an average rate: the WORST 20 s drop an ordinary hover
+    # produces is 0.120 V (fixtures/nominal_hover_states.jsonl), while the
+    # LEAST the `battery_drop` scene produces once it is under way is
+    # 0.230 V. The threshold sits between those two measured extremes.
+    #
+    # It is placed nearer the healthy side's worst case than the midpoint,
+    # because the cost of the two errors is not symmetric: calling a healthy
+    # pack "falling sharply" ends a good flight (which is exactly what
+    # happened on 2026-09-19), while being a few seconds late to call a
+    # failing one loses nothing -- the LEVEL bands ("running low",
+    # "dangerously low") are what actually land the aircraft, and they do
+    # not depend on the trend at all.
+    #
+    # この窓での実測。平均速度からの計算ではなく、記録した飛行そのものから
+    # 取った値である: 通常のホバリングが生む 20 秒あたりの**最大**の低下は
+    # 0.120V（fixtures/nominal_hover_states.jsonl）、`battery_drop` の場面が
+    # 進行してから生む**最小**の低下は 0.230V。閾値はこの実測の両極の間に置く。
+    #
+    # 中点ではなく健全側の最悪値寄りに置くのは、2 種類の誤りの代償が対称で
+    # ないからである。健全なパックを「急に低下」と呼べば良好な飛行を終わらせる
+    #（2026-09-19 に実際そうなった）一方、弱ったパックの判定が数秒遅れても失う
+    # ものは無い。機体を実際に着陸させるのは**残量**の区分（「残り少ない」
+    #「危険」）であり、そちらは傾向に一切依存しない。
+    battery_drop_fast_v: float = 0.18
+    battery_trend_window_s: float = 20.0
+
+    # How much history to keep BEYOND the trend window. Trimming to exactly
+    # the window puts the history's span on the "is the window full?"
+    # threshold, where the oldest sample falls in and out each cycle and
+    # the answer flips with it -- measured, about twice a second on a pack
+    # that was simply draining. With the margin, `Monitor._trend_window`
+    # always has a sample comfortably older than the window to measure from.
+    # 傾向の窓より、どれだけ長く履歴を残すか。窓ちょうどに刈り込むと、履歴の
+    # 長さが「窓が満ちたか」の判定境界に乗り、最古のサンプルが毎周期出入りする
+    # たびに答えが反転する。実測では、ただ放電しているだけのパックで毎秒 2 回
+    # 反転した。余裕があれば `Monitor._trend_window` は常に、窓より十分に古い
+    # サンプルを測定の起点にできる。
+    battery_window_margin_s: float = 2.0
+
+    # A gradual fall needs this much too, so that quantisation noise alone
+    # (one 0.01 V step either way) is reported as "steady" rather than as a
+    # battery that is going down. Set above the 0.120 V worst case an
+    # ordinary hover actually produces over this window, for the same reason
+    # as the band above: a normal flight should read "steady", not
+    # "falling". An earlier value of 0.10 V sat just UNDER that worst case,
+    # and a healthy hover reported "falling gradually" for three seconds.
+    # 「ゆるやかに低下」にもこれだけの低下を要求する。量子化の揺らぎだけ
+    #（0.01V 1 段の上下）で「低下している」と言わず「安定」と言うためである。
+    # 値は、通常のホバリングがこの窓で実際に生む最悪値 0.120V より上に置く。
+    # 理由は上の区分と同じで、通常の飛行は「低下」ではなく「安定」と読めるべき
+    # だからである。以前の 0.10V はその最悪値のすぐ**下**にあり、健全な
+    # ホバリングが 3 秒間「ゆるやかに低下」と報告される原因になっていた。
+    battery_drop_gradual_v: float = 0.14
+
+    # The load transient at takeoff is not a discharge, so the trend window
+    # is not allowed to start inside it. Measured: the reading settles
+    # within about a second of the motors reaching hover thrust, so a
+    # sample older than this is only kept once a steadier one exists.
+    # 離陸時の負荷による電圧降下は放電ではないため、傾向の窓をその中から
+    # 始めさせない。実測では、モータがホバリング推力に達してから約 1 秒で
+    # 読みは落ち着く。
+    battery_settle_s: float = 3.0
 
     # ToF (ground distance sensor) plausibility [m]. Outside this the
     # reading is reported as unreliable rather than used.
@@ -126,6 +229,31 @@ class MonitorConfig:
     # How stale a sample may be before the link counts as lost [s].
     # サンプルがこれ以上古くなったら通信断とみなす [s]。
     sample_timeout_s: float = 0.5
+
+    # A classification must hold for this long before it REPLACES the one
+    # being reported. Every band above has an edge, and a quantity sitting
+    # on one crosses it back and forth at the sample rate: measured on the
+    # `battery_drop` scene, the battery trend alternated 510 times in 60 s
+    # because the window's oldest sample fell in and out of it each cycle.
+    #
+    # Each of those flips is a new situation signature, and the Arbiter
+    # discards any answer whose signature changed while it was in flight
+    # (arbiter.py), so flapping alone threw away 7 of 11 answers in the
+    # `run nominal` flight on 2026-09-19. Holding a classification briefly
+    # costs at most this much delay in reporting a genuine change, which is
+    # well inside the 1 Hz at which the Judge is asked anyway.
+    #
+    # 区分は、この時間続いて初めて、報告中の区分を**置き換える**。上の区分には
+    # どれも境目があり、境目上にある量はサンプル周期で行き来する。`battery_drop`
+    # の場面での実測では、窓の最古のサンプルが毎周期出入りするため、電池の傾向が
+    # 60 秒で 510 回入れ替わった。
+    #
+    # その 1 回ごとが新しい状況の指紋になり、Arbiter は「応答の往復中に指紋が
+    # 変わった答え」を破棄する（arbiter.py）。そのため、ばたつきだけで
+    # 2026-09-19 の `run nominal` は 11 件中 7 件の答えを捨てていた。区分を
+    # 短く保持する代償は、本物の変化の報告がこの時間だけ遅れることだけであり、
+    # どのみち Judge へ問うのは 1Hz なので、その内側に収まる。
+    classification_hold_s: float = 1.0
 
 
 @dataclass(frozen=True)

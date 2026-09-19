@@ -252,25 +252,24 @@ def _reply_count(link) -> int:
 
 
 def _command_count(link) -> int:
-    """How many commands have been sent, if the link records them.
+    """How many commands that expect an answer have been sent.
 
-    A link that records neither (a stand-in in a test) reports 0 for both,
-    which reads as "no move is running" -- the approach then goes straight
-    to `stop`, which is correct for a link that cannot have a move running.
+    Read from the link where it is maintained, so this module and
+    `say.StepRunner` agree on what "a move is still running" means -- two
+    separate reckonings of the same thing is how they came to disagree.
+    A link that cannot say (a stand-in in a test) reports 0, which reads as
+    "no move is running": the approach then goes straight to `stop`, which
+    is correct for a link that cannot have a move running.
 
-    これまでに送った指令の数（リンクが記録していれば）。
+    応答を求める指令を、これまでに何件送ったか。
 
-    どちらも記録しないリンク（試験の代役）は双方 0 を返し、「実行中の移動は
-    無い」と読める。手順はそのまま `stop` へ進むが、移動を実行しえないリンクに
-    とってそれは正しい。
+    維持しているリンクから読む。本モジュールと `say.StepRunner` が「移動が
+    まだ実行中である」の意味について一致するためである。同じものを別々に
+    数えたことが、両者の食い違いの原因だった。判定できないリンク（試験の
+    代役）は 0 を返し、「実行中の移動は無い」と読める。手順はそのまま `stop`
+    へ進むが、移動を実行しえないリンクにとってそれは正しい。
     """
-    sent = getattr(link, "sent", None)
-    if sent is None:
+    outstanding = getattr(link, "replies_outstanding", None)
+    if outstanding is None:
         return 0
-    # Only blocking verbs get a reply; `rc` does not. Counting every sent
-    # line against the reply count would make an `rc`-heavy flight look as
-    # though a move were permanently outstanding.
-    # 応答が返るのはブロックする verb だけで、`rc` には返らない。送った行を
-    # すべて応答数と比べると、`rc` の多い飛行では移動が永久に実行中であるかの
-    # ように見えてしまう。
-    return sum(1 for line in sent if not line.startswith("rc "))
+    return _reply_count(link) + outstanding

@@ -337,3 +337,86 @@ def test_a_broken_pipe_ends_the_flight_instead_of_raising():
 
     link.send_command("land")   # must not raise / 例外にならないこと
     assert "land" in link.sent, "the attempt is still recorded"
+
+
+# =============================================================================
+# Outstanding replies / 未応答の指令
+# =============================================================================
+#
+# A blocking verb answers only when its move is REACHED, so callers wait on
+# the reply. The link has to say more than HOW MANY replies arrived: it has
+# to say whether one is still owed. Counting alone let a reply that arrived
+# late -- after the NEXT command had gone out -- satisfy that command's
+# wait instantly, which is how a mission leg was declared finished the
+# moment it started (say.StepRunner, measured 2026-09-19).
+#
+# ブロックする verb は移動の**到達時**にのみ応答するので、呼び出し側は応答を
+# 待つ。リンクは「応答が何件届いたか」以上のことを言えなければならない。
+# 「まだ返っていない応答があるか」である。個数だけでは、遅れて届いた応答 ——
+# **次の**指令を送った後に届いたもの —— がその指令の待ちを即座に満たしてしまう。
+# ミッションの区間が始まった瞬間に「終わった」と宣言されたのはこれである
+# （say.StepRunner。2026-09-19 実測）。
+
+def test_a_command_that_expects_a_reply_is_outstanding_until_it_arrives():
+    """`replies_outstanding` tracks the answer a blocking verb still owes.
+    ブロックする verb がまだ返していない応答を `replies_outstanding` が追うこと。"""
+    link = _settled_link(_FakeProc())
+    assert link.replies_outstanding == 0
+
+    link.send_command("forward 60")
+    assert link.replies_outstanding == 1, "the vehicle has not answered yet"
+
+    link._replies += 1                     # the reply arrives / 応答が届く
+    assert link.replies_outstanding == 0
+
+
+def test_rc_never_counts_as_outstanding():
+    """`rc` is fire-and-forget, so it is never waited for.
+
+    `rc` is sent at 20Hz and the neutral sticks at 50Hz. If either counted,
+    a flight would look as though hundreds of moves were permanently
+    unanswered and every wait would run to its ceiling.
+
+    `rc` は応答待ちをしないので、待つ対象にならないこと。
+
+    `rc` は 20Hz、中立スティックは 50Hz で送られる。どちらかを数えれば、飛行は
+    数百件の移動が永久に未応答であるかのように見え、あらゆる待ちが上限まで
+    走ってしまう。
+    """
+    link = _settled_link(_FakeProc())
+
+    for _ in range(50):
+        link.send_rc(0, 0, 0, 0)
+    link.hold_sticks_neutral()
+
+    assert link.replies_outstanding == 0
+
+
+def test_a_late_reply_cannot_be_credited_to_the_next_command():
+    """The reply owed by one command does not satisfy the next one.
+
+    This is the mission fault in miniature: `takeoff`'s reply arrived 0.7 s
+    after `forward 60` had been sent, so a wait that only watched the reply
+    COUNT ended immediately and the leg was judged to have stopped short of
+    a target it had not begun flying towards.
+
+    ある指令が負っている応答が、次の指令の待ちを満たさないこと。
+
+    ミッションの不具合を小さくしたものである。`takeoff` の応答が `forward 60`
+    送信の 0.7 秒**後**に届いたため、応答の**個数**だけを見る待ちは即座に終わり、
+    区間は「向かってもいない終点の手前で止まった」と判定された。
+    """
+    link = _settled_link(_FakeProc())
+    link.send_command("takeoff")
+
+    # The next command goes out while the first is still unanswered.
+    # 最初の指令が未応答のまま、次の指令が出る。
+    link.send_command("forward 60")
+    assert link.replies_outstanding == 2
+
+    # `takeoff` finally answers. `forward 60` is still owed one.
+    # ここで `takeoff` がようやく応答する。`forward 60` の応答はまだである。
+    link._replies += 1
+    assert link.replies_outstanding == 1, (
+        "the late reply belongs to takeoff, not to the move now in flight"
+    )

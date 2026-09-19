@@ -160,12 +160,89 @@ class StepRunner:
             for step in self.steps:
                 if self._stop.is_set():
                     return
+                # Take the count AFTER draining any reply still owed by an
+                # earlier command, so this step waits for its OWN reply.
+                # See `_drain_stale_replies`.
+                # 直前の指令がまだ返していない応答を捨ててから数える。この手順が
+                # **自分の**応答を待つようにするためである（`_drain_stale_replies`）。
+                self._drain_stale_replies()
                 answered_before = self._reply_count()
                 self.link.send_command(step.command())
                 self.sent.append(step)
                 self._await_step(step, answered_before)
         finally:
             self._done.set()
+
+    def _drain_stale_replies(self) -> None:
+        """Wait out a reply an earlier command has not delivered yet.
+
+        The vehicle answers every blocking verb, but the answer reaches
+        this side through the emulator's stdout, and it can arrive AFTER
+        the next command has already gone out. `_await_step` only watches a
+        COUNT, so such a late reply satisfies the next step's wait
+        immediately: the step is declared finished the moment it starts,
+        and `classify_arrival` then correctly reports the craft as having
+        stopped short of a target it never flew towards.
+
+        Measured 2026-09-19 (`sf pilot mission line --sils`): `takeoff`'s
+        reply arrived 0.7 s after `forward 60` had been sent, and legs 3
+        and 4 each "flew" in about a second and were reported `stopped
+        short`, which cost two retries apiece and skipped both legs. Under
+        FakeJudge the same route took 52.6 s with every leg `as planned`;
+        the difference was purely the timing the Jev round trip introduced.
+
+        Bounded, because a reply that is never coming must not stall the
+        route: the ceiling is the one the landing already uses for the same
+        question (`move_reply_wait_s`).
+
+        直前の指令がまだ返していない応答を待って捨てる。
+
+        機体はブロックする verb すべてに応答するが、その応答はエミュレータの
+        stdout を通ってこちらへ届くため、**次の指令を送った後**に届きうる。
+        `_await_step` が見ているのは**個数**だけなので、その遅れた応答が次の手順の
+        待ちを即座に満たしてしまう。手順は始まった瞬間に「終わった」と宣言され、
+        `classify_arrival` は（正しく）「向かってもいない終点の手前で止まった」と
+        報告する。
+
+        2026-09-19 実測（`sf pilot mission line --sils`）: `takeoff` の応答が
+        `forward 60` 送信の 0.7 秒**後**に届き、区間 3 と 4 はそれぞれ約 1 秒で
+        「飛び」、`stopped short` と報告された。その結果それぞれ 2 回やり直し、
+        双方とも飛ばされた。同じ経路を FakeJudge で飛ばすと 52.6 秒かかり、全区間が
+        `as planned` だった。差は、Jev の往復が持ち込んだ時間だけである。
+
+        上限を設ける。来ない応答が経路を止めてはならないためで、上限は同じ問いに
+        ついて着陸が既に使っているもの（`move_reply_wait_s`）と同じにする。
+        """
+        deadline = time.monotonic() + self.cfg.landing.move_reply_wait_s
+        while time.monotonic() < deadline:
+            if self._stop.is_set():
+                return
+            if not self._reply_outstanding():
+                return
+            time.sleep(self.POLL_S)
+
+    def _reply_outstanding(self) -> bool:
+        """Whether the vehicle still owes a reply to something already sent.
+
+        Counted on the LINK rather than on this runner, because a mission
+        builds a new runner per leg while the link and its counters span
+        the whole flight -- a reply owed by the previous leg is exactly the
+        one this must not let the next leg consume.
+
+        A link that cannot say (a recording stand-in in a test) reports
+        nothing outstanding, which skips the drain entirely -- correct for
+        a link whose commands are never answered at all.
+
+        機体が、既に送った指令に対してまだ応答を返していないか。
+
+        この runner ではなく**リンク**で数える。ミッションは区間ごとに新しい
+        runner を作る一方、リンクとその計数は飛行全体にまたがるからである。次の
+        区間に消費させてはならないのは、まさに前の区間が負っている応答である。
+
+        判定できないリンク（試験の記録用の代役）は「未応答なし」を返し、待ちは
+        丸ごと省かれる。そもそも応答が返らないリンクにとってそれが正しい。
+        """
+        return getattr(self.link, "replies_outstanding", 0) > 0
 
     def _await_step(self, step, answered_before: int) -> None:
         """Wait until the vehicle answers this step, or the ceiling is hit.
@@ -361,7 +438,20 @@ def _interrupt_reason(pilot) -> str:
         return ""
     verdict = pilot.decisions[-1]["verdict"]
     is_unsafe = verdict.action in (VERDICT_LAND, VERDICT_STOP)
-    is_chosen_hold = verdict.action == VERDICT_HOVER and verdict.source == "judge"
+    # Only a hold Jev actually CHOSE stops the sequence. The Arbiter also
+    # reports a hold derived from an answer it was not confident enough to
+    # act on (arbiter.py), and that is not the model asking to wait -- such
+    # an answer often PREFERRED carrying on. Treating it as an interrupt
+    # ended a mission at its last leg on answers of continue 0.63-0.72
+    # against hold 0.23-0.30 (measured 2026-09-19).
+    # 手順を止めるのは、Jev が**選んだ**待機だけである。Arbiter は、確信度が
+    # 足りず行動の根拠にしなかった答えから導いた待機も報告するが（arbiter.py）、
+    # それはモデルが待てと言っているのではない。そうした答えはむしろ継続を
+    # 選好していることが多い。これを中断として扱った結果、continue 0.63〜0.72 対
+    # hold 0.23〜0.30 の答えでミッションが最後の区間で終わった（2026-09-19 実測）。
+    is_chosen_hold = (verdict.action == VERDICT_HOVER
+                      and verdict.source == "judge"
+                      and verdict.detail.get("chosen_hold", True))
     if not (is_unsafe or is_chosen_hold):
         return ""
     return f"{verdict.action}: {verdict.reason}"

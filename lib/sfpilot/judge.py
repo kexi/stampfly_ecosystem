@@ -36,16 +36,15 @@ httpx の素の設定で足りる。SDK に依存すると `sf pilot` 全体が�
 """
 
 import json
-import os
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Protocol
 
 from .config import JudgeConfig, DEFAULT_CONFIG
+from .credentials import API_KEY_ENV, MissingApiKey, resolve_api_key
 from .summarizer import assert_no_numbers
 
 API_URL = "https://api.typesafe.ai/v1/systemone"
-API_KEY_ENV = "TYPESAFE_API_KEY"
 
 # Choice labels. Code compares against these constants, never against a
 # literal string, so a renamed option cannot silently stop matching.
@@ -183,8 +182,24 @@ _MOVE_CRITERIA = {
     STEP_DOWN: "Descend straight down, staying over the same spot on the "
                "floor, without touching down.",
     STEP_FORWARD: "Travel horizontally in the direction the nose is pointing.",
+    # `back` and `return_home` are the pair the model confuses, because in
+    # Japanese "戻る" (go back / return) reads as either one. They are told
+    # apart here by CONTRAST and by example, as the Choice guidance asks:
+    # `back` is about a DIRECTION of travel and ends somewhere new, while
+    # `return_home` is about a DESTINATION and undoes the whole flight so
+    # far. Measured 2026-09-19: "一メートル前に進んで戻ってきて" was read as
+    # `back`, flying `back 50` instead of returning to the takeoff point.
+    # `back` と `return_home` はモデルが取り違える組である。日本語の「戻る」が
+    # どちらにも読めるためである。Choice の指針に従い、**対比**と**例**で
+    # 区別する: `back` は進む**向き**の話で、終点は新しい場所である。
+    # `return_home` は**行き先**の話で、それまでの飛行を帳消しにする。
+    # 2026-09-19 実測:「一メートル前に進んで戻ってきて」が `back` と読まれ、
+    # 離陸点へ戻る代わりに `back 50` を飛んだ。
     STEP_BACK: "Travel horizontally away from the direction the nose is "
-               "pointing, without turning around first.",
+               "pointing, without turning around first, ending up somewhere "
+               "it has not been. This is reversing or backing away by some "
+               "amount, as in 'back up a little' or 'move backwards'. It is "
+               "NOT going back to where the flight started.",
     STEP_LEFT: "Travel horizontally sideways to the left, still facing the "
                "same way.",
     STEP_RIGHT: "Travel horizontally sideways to the right, still facing the "
@@ -193,8 +208,13 @@ _MOVE_CRITERIA = {
                      "without travelling anywhere.",
     STEP_TURN_LEFT: "Rotate anticlockwise on the spot to face a new "
                     "direction, without travelling anywhere.",
-    STEP_RETURN_HOME: "Fly back to the point it took off from, whatever route "
-                      "it has taken since.",
+    STEP_RETURN_HOME: "Fly back to the point it took off from, whatever "
+                      "route it has taken since, cancelling the travel of "
+                      "the whole flight rather than moving by some amount. "
+                      "This is coming back, returning, or going home, as in "
+                      "'come back here' or 'return to where you started'. "
+                      "Choose this whenever the instruction says to come "
+                      "back, without naming a direction or a distance.",
     STEP_LAND: "Descend and touch down, ending the flight.",
     STEP_NONE: "There is no such action: the instruction has fewer actions "
                "than this, or it does not ask the aircraft to fly at all.",
@@ -329,12 +349,11 @@ class JevJudge:
 
     def __init__(self, config=DEFAULT_CONFIG, api_key: str = None):
         self.cfg: JudgeConfig = config.judge
-        self._api_key = api_key or os.environ.get(API_KEY_ENV)
-        if not self._api_key:
-            raise MissingApiKey(
-                f"environment variable {API_KEY_ENV} is not set "
-                f"（環境変数 {API_KEY_ENV} が設定されていません）"
-            )
+        # One resolution path for every entry point, so there is one place
+        # where a key is read and one place to audit. See credentials.py.
+        # どの入口も取得経路は 1 本にする。キーを読む場所も点検する場所も 1 つ
+        # で済む。credentials.py 参照。
+        self._api_key = api_key or resolve_api_key(config)
         self._client = _open_client(self.cfg.deadline_s)
 
     def ask(self, state: dict, question_ids=SAFETY_ONLY) -> Judgement:
@@ -404,11 +423,6 @@ class JevJudge:
 
     def close(self) -> None:
         self._client.close()
-
-
-class MissingApiKey(RuntimeError):
-    """The API key environment variable is absent.
-    API キーの環境変数が無い。"""
 
 
 class ApiError(RuntimeError):

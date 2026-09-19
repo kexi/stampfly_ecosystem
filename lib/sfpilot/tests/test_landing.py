@@ -30,10 +30,15 @@ class _RecordingLink:
     """A link that records lines and can pretend a move is outstanding.
     行を記録し、移動が実行中であるかのように振る舞えるリンク。"""
 
-    def __init__(self, reply_count: int = 0):
+    def __init__(self, reply_count: int = 0, outstanding: int = 0):
         self.sent: list = []
         self.rc: list = []
         self.reply_count = reply_count
+        # How many sent commands the vehicle has not answered, which is how
+        # a real link reports "a move is still running" (link.py).
+        # 送信済みで機体がまだ応答していない指令の数。実際のリンクが「移動が
+        # まだ実行中である」を伝える手段である（link.py）。
+        self.replies_outstanding = outstanding
 
     def send_command(self, line: str) -> None:
         self.sent.append(line)
@@ -238,7 +243,7 @@ def test_an_urgent_landing_does_not_wait_for_a_running_move():
     優先経路はまさにこのためにあり、危険域の電池には、100cm の移動が自然に
     終わるのを待つ時間が無い。
     """
-    link = _RecordingLink(reply_count=0)
+    link = _RecordingLink(reply_count=0, outstanding=1)
     link.sent.append("forward 100")     # a move is outstanding / 移動が実行中
     approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped,
                                urgent=True)
@@ -261,7 +266,7 @@ def test_an_ordinary_landing_waits_for_a_running_move_to_answer():
     移動に割り込む `land` は誘導目標を立てたまま残す。降下が始まり、位置保持は
     切れており、機体は誰も取り消さない目標へ向かって加速する。
     """
-    link = _RecordingLink(reply_count=0)
+    link = _RecordingLink(reply_count=0, outstanding=1)
     link.sent.append("forward 100")
     approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped)
 
@@ -275,7 +280,7 @@ def test_an_ordinary_landing_waits_for_a_running_move_to_answer():
 def test_a_move_that_never_answers_is_overridden_at_its_own_ceiling():
     """Waiting for a wedged move must not prevent the landing entirely.
     詰まった移動を待つことが、着陸そのものを妨げてはならないこと。"""
-    link = _RecordingLink(reply_count=0)
+    link = _RecordingLink(reply_count=0, outstanding=1)
     link.sent.append("forward 100")
     approach = LandingApproach(link, DEFAULT_CONFIG, speed_probe=_stopped)
     wait_s = DEFAULT_CONFIG.landing.move_reply_wait_s

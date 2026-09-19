@@ -7,6 +7,7 @@ test_judge.py - モデルがモータ停止を提案できないこと、質問�
 
 import pytest
 
+from sfpilot import credentials
 from sfpilot import judge as judge_module
 from sfpilot.judge import (
     ACT_CONTINUE,
@@ -131,10 +132,20 @@ def test_answer_parsing_matches_the_live_response_shape():
 
 
 def test_missing_api_key_is_a_clear_error(monkeypatch):
-    """Constructing JevJudge without the key fails with a named error
+    """With no key in either source, JevJudge fails with a named error
     rather than a stack trace from deep inside an HTTP library.
-    キー無しで JevJudge を作ると、HTTP ライブラリ内部の例外ではなく、
-    名前のついたエラーで失敗すること。"""
+
+    The keychain is stubbed out as well as the environment: on a developer
+    machine that actually holds the key, leaving it in place would make
+    this test assert the opposite of what it says.
+
+    どちらの取得元にもキーが無いとき、JevJudge が HTTP ライブラリ内部の例外では
+    なく、名前のついたエラーで失敗すること。
+
+    環境変数だけでなくキーチェーンも差し替える。実際にキーを持つ開発機では、
+    そのままにすると本試験が題目と逆のことを確かめてしまうためである。
+    """
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.setattr(credentials, "read_keychain_key", lambda service: "")
     with pytest.raises(judge_module.MissingApiKey):
         judge_module.JevJudge()

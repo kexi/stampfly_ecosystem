@@ -101,27 +101,72 @@ class Arbiter:
             return self._hover(rejection, now)
 
         answer = judgement.answers[Q_SAFETY]
-        is_outside_envelope, envelope_reason = self._envelope_breach(answer.choice, assessment)
+        choice = self._effective_choice(answer)
+        is_outside_envelope, envelope_reason = self._envelope_breach(choice, assessment)
         if is_outside_envelope:
             return self._hover(envelope_reason, now)
 
         self._hover_since = None
-        action = VERDICT_CONTINUE if answer.choice == ACT_CONTINUE else answer.choice
-        if answer.choice == ACT_HOLD:
+        action = VERDICT_CONTINUE if choice == ACT_CONTINUE else choice
+        if choice == ACT_HOLD:
             # Jev choosing to wait is still waiting; count it toward the
             # hover-to-land timer, or a model that always says "hold"
             # would keep the aircraft up indefinitely.
             # Jev が待機を選んだ場合も待機である。待機継続の計時に含める。
             # そうしないと、常に「待機」と答えるモデルが機体を浮かせ続ける。
-            return self._hover("Jev が待機を選択", now, source="judge",
-                               accepted=answer.choice)
+            #
+            # A hold DERIVED from an unsure answer is marked apart from one
+            # Jev actually chose. Callers that walk a sequence stop on a
+            # chosen hold, because the model asked them to wait -- but an
+            # unsure answer is not a request to stop, and treating it as
+            # one would end a route over an answer that mildly PREFERRED
+            # carrying on (measured on the mission: continue 0.63-0.72
+            # against hold 0.23-0.30 ended a route at its last leg).
+            # 確信度の低い答えから**導いた**待機は、Jev が実際に選んだ待機と
+            # 区別して印を付ける。手順の列を進める側は、選ばれた待機では止まる
+            # （モデルが待てと言っているため）。しかし確信度の低い答えは停止の
+            # 要請ではなく、それを停止として扱えば、むしろ継続をやや選好して
+            # いた答えで経路を終わらせることになる（ミッションでの実測:
+            # continue 0.63〜0.72 対 hold 0.23〜0.30 で、最後の区間が終わった）。
+            was_chosen = answer.choice == ACT_HOLD
+            reason = "Jev が待機を選択" if was_chosen else "確信度が低いため待機"
+            verdict = self._hover(reason, now, source="judge", accepted=choice)
+            verdict.detail["chosen_hold"] = was_chosen
+            return verdict
         return Verdict(
             action=action,
             reason="Jev の判断を採用",
             source="judge",
-            accepted_answer=answer.choice,
+            accepted_answer=choice,
             detail={"confidence": answer.confidence},
         )
+
+    def _effective_choice(self, answer) -> str:
+        """The choice actually acted on, which may be more cautious than Jev's.
+
+        An unconfident answer torn between `continue` and `hold` is accepted
+        as `hold`: `_reject` lets it through precisely because both halves
+        are cautious, and taking the confident-sounding half of an answer
+        the model was unsure about would be reading more into it than it
+        said. Holding is what the Arbiter does with no answer at all, so
+        this changes nothing about the aircraft -- it only stops the hold
+        being counted as "no usable opinion", which is what turned a drifting
+        but safe flight into a landing (`_reject`).
+
+        実際に行動の根拠とする選択。Jev の選択より慎重な側になることがある。
+
+        確信度が低く `continue` と `hold` で割れた答えは `hold` として採用する。
+        `_reject` がそれを通すのは、まさに両側とも慎重だからであり、モデルが
+        迷っていた答えから自信のありそうな側だけを取れば、言われていないことを
+        読み取ることになる。待機は、答えがまったく無いときに Arbiter が取る行動
+        そのものなので、これで機体の動きは変わらない。変わるのは、その待機が
+        「使える意見が無い」と数えられなくなることだけである。それこそが、
+        流されてはいるが安全な飛行を着陸に変えていた（`_reject` 参照）。
+        """
+        is_unconfident = answer.confidence < self.min_confidence
+        if not is_unconfident:
+            return answer.choice
+        return ACT_HOLD
 
     # -- rejection rules / 却下規則 -------------------------------------
 
@@ -148,12 +193,51 @@ class Arbiter:
 
         is_unconfident = answer.confidence < self.min_confidence
         if is_unconfident:
+            # An unconfident answer split between `continue` and `hold` is
+            # not the model failing to tell safe from unsafe: both of those
+            # are cautious readings of an unremarkable situation, and the
+            # Arbiter's own response to "no usable answer" is to hover,
+            # which IS `hold`. So the answer is downgraded to the cautious
+            # half of what it was torn between, rather than discarded.
+            #
+            # Measured on the `drift` scene: the splits were 0.45/0.40,
+            # 0.53/0.36 and 0.45/0.41 between continue and hold, with land
+            # a distant 0.11-0.15. Discarding those is what produced 13
+            # consecutive holds and a landing on a flight that was never in
+            # danger. Anything involving `land` keeps the old treatment --
+            # a model that cannot separate carrying on from ending the
+            # flight is not one to act on.
+            #
+            # 確信度の低い答えが `continue` と `hold` で割れている場合、それは
+            # モデルが安全と危険を区別できていないのではない。どちらも「特筆
+            # すべきことのない状況」の慎重な読み方であり、そもそも Arbiter が
+            # 「使える答えが無い」ときに取る行動は待機、すなわち `hold` そのもの
+            # である。したがって答えを破棄せず、迷っていた 2 つのうち慎重な側へ
+            # 格下げして採用する。
+            #
+            # `drift` 場面での実測: continue と hold の割れ方は 0.45/0.40、
+            # 0.53/0.36、0.45/0.41 で、land は 0.11〜0.15 と大きく離れていた。
+            # これらを破棄したことが、危険でない飛行で 13 回連続の待機と着陸を
+            # 生んだ。`land` が絡む拮抗は従来どおり扱う — 飛行の継続と終了を
+            # 区別できていないモデルの答えは、行動の根拠にしない。
+            is_cautious_split = self._is_top_two(
+                answer.probabilities, {ACT_CONTINUE, ACT_HOLD})
+            if is_cautious_split:
+                return None
             return f"確信度が閾値未満（{answer.confidence:.2f}）"
 
         if self._is_continue_land_tie(answer.probabilities):
             return "「継続」と「着陸」が拮抗"
 
         return None
+
+    def _is_top_two(self, probabilities: dict, expected: set) -> bool:
+        """Whether the two most likely options are exactly `expected`.
+        最も確からしい 2 つの選択肢が、ちょうど `expected` と一致するか。"""
+        if not probabilities or len(probabilities) < 2:
+            return False
+        ranked = sorted(probabilities.items(), key=lambda kv: kv[1], reverse=True)
+        return {ranked[0][0], ranked[1][0]} == expected
 
     def _is_continue_land_tie(self, probabilities: dict) -> bool:
         """True when continue and land are the top two and close together.

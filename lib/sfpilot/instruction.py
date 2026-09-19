@@ -324,17 +324,42 @@ def build_plan(instruction: str, judgement, on_ground: bool = True,
 
 
 def _read_verbs(judgement, config) -> tuple:
-    """The moves, truncated at the first `none`, plus any unsure step.
+    """The moves, truncated where the instruction ends, plus any unsure step.
 
-    Everything after the first `none` is discarded rather than kept: the
-    model was told `none` means the instruction has no such action, so a
-    move answered after one is an answer about a step that does not exist.
+    Two things end the list, and everything after either is discarded:
 
-    最初の `none` で打ち切った動作の列と、確信度の低い手順。
+      - the first `none`. The model was told `none` means the instruction
+        has no such action, so a move answered after one is an answer about
+        a step that does not exist.
+      - the first `land`. Landing ends the flight, and there is no such
+        thing as an action after it -- the aircraft is on the ground.
 
-    `none` の後ろは残さず捨てる。`none` は「その番号の動作は無い」という意味だと
-    モデルに伝えてあるので、その後に出た動作は、存在しない手順についての答えで
-    ある。
+    Why `land` needs its own rule: the questions are a fan-out and cannot
+    see each other's answers (judge.py), so each one is asked in full about
+    its own position and none of them knows the flight has already ended.
+    Asked for "action number 5" of an instruction with four actions, the
+    model may answer `land` again as the most plausible continuation rather
+    than `none`, which is a reasonable reading of the sentence and not a
+    mistake to correct in the criteria. Measured 2026-09-19: "上がって前に
+    進んで戻ってきて着陸して" produced `land` at both step 4 and step 5 and
+    flew `[..., 'land', 'land']`.
+
+    指示が終わる位置で打ち切った動作の列と、確信度の低い手順。
+
+    列を終わらせるものは 2 つあり、どちらの後ろも捨てる:
+
+      - 最初の `none`。`none` は「その番号の動作は無い」という意味だとモデルに
+        伝えてあるので、その後に出た動作は、存在しない手順についての答えである。
+      - 最初の `land`。着陸で飛行は終わり、その後の動作というものは存在しない
+        （機体は地上にある）。
+
+    `land` に専用の規則が要る理由: 質問は fan-out であり互いの答えを見られない
+    （judge.py）。そのため各質問は自分の位置について完結して問われ、どれも
+    「飛行が既に終わっている」ことを知らない。動作が 4 つの指示について
+    「5 番目の動作」を問われたモデルは、`none` ではなく最ももっともらしい続きと
+    して再び `land` と答えうる。これは文の妥当な読み方であって、criteria で正す
+    べき誤りではない。2026-09-19 実測:「上がって前に進んで戻ってきて着陸して」が
+    手順 4 と手順 5 の双方で `land` を返し、`[..., 'land', 'land']` を飛ばした。
     """
     verbs: list = []
     unsure: list = []
@@ -348,6 +373,9 @@ def _read_verbs(judgement, config) -> tuple:
         if is_unsure:
             unsure.append((index, answer.choice, answer.confidence))
         verbs.append((index, answer.choice, answer.confidence))
+        is_end_of_flight = answer.choice == STEP_LAND
+        if is_end_of_flight:
+            break
     return verbs, unsure
 
 

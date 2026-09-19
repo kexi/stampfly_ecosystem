@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（本物の Jev による初回実走と、その結果見つかった 5 件の不具合の修正を 4.5 節に追記）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -24,9 +24,9 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 | P1 | `lib/sfpilot` の中核（Monitor / Summarizer / Judge / Arbiter / Executor）、FakeJudge、ReplayLink | **実装済み** |
 | P2a | テレメトリ拡張（UDP:5005 を 140B の v2 に。電池電圧・下向き ToF・フロー・地磁気・気圧高度を追加。様式は `firmware/vehicle/docs/detailed_design.md` §10） | **実装済み**（実機未確認） |
 | P2b | 前方 ToF の駆動（`sensor_tof_front` 新設、`SensorSnapshot` へのミラー、テレメトリ bit1 の供給）。**実機確認必須。バッテリー電源必須**（USB 給電では前方 ToF が立ち上がらない事例がある） | 未着手 |
-| P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**（Jev 実走は未実施） |
-| P3 | `sf pilot say`（自然言語の指示） | **実装済み**（Jev 実走は未実施。下記「P3 の結果」参照） |
-| P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**（Jev 実走は未実施。下記「P4 の結果」参照）|
+| P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**。Jev 実走で 3 場面すべて確認済み（下記 4.5）|
+| P3 | `sf pilot say`（自然言語の指示） | **実装済み**。Jev 実走で 7/10 → 原因を特定して修正 → **10/10**（下記 4.5）|
+| P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**。Jev 実走で応答計数の競合を発見して修正し、**全 6 区間が `as planned` で完走**（下記 4.5）|
 | P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。**P2b の後**に着手する — 前方 ToF が駆動していない現行ファームでは前提が成立しない | 未着手（P2b 待ち）|
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
@@ -298,7 +298,7 @@ cm・度への対応は `config.py` の表が持つ。
 （または効きが弱い）ように見える。`sf pilot say` の追加とは無関係で、`land` を直接
 送るだけで再現する。実機の着陸精度に影響しうるため、別途の調査を推奨する。
 
-### Jev での評価（キーが要る。未実施）
+### Jev での評価（キーが要る。**実施済み: 4.5 節を参照**）
 
 指示 10 例（単純・複数手順・数値つき・曖昧・範囲外・飛行と無関係を含む）と、想定する
 手順を `lib/sfpilot/tests/say_eval_cases.yaml` に置いた。実行:
@@ -450,7 +450,7 @@ Jev が答えるのは `next_move` の 1 問（`next_step` / `hold` / `redo_step
 **2. 降下中の横流れ**（4.2 節で報告済み）。本節の着陸前手順で軽減したが、根治は
 ファーム側の判断事項である。
 
-### Jev での評価（キーが要る。未実施）
+### Jev での評価（キーが要る。**実施済み: 4.5 節を参照**）
 
 ユーザーが後で実行するコマンド（3 場面）:
 
@@ -467,6 +467,110 @@ TYPESAFE_API_KEY=... sf pilot mission line --sils --yes --scene drift         # 
 `redo_step` を選ぶか、電池が「残り少ない」ときに何を選ぶか（コードは進む系を
 `return_home` に置き換えるので、Jev の生の選択との差が集計に出る）。ミッション
 質問 3 問同梱時のトークン数も、このとき初めて実測できる。
+
+## 4.5 本物の Jev による初回実走の結果（2026-09-19）
+
+### 要旨
+
+**判断層（Jev と Arbiter）ではなく、state を作るコードに 5 件の不具合があった。**
+Jev の判断は、与えられた state に対しては終始妥当だった。誤っていたのは state の
+ほうである。最も重い症状は `run nominal` が 7.4 秒で着陸したことだが、その直前の
+state は、完璧に保持されたホバリングを「目標より低い」と書き、ほぼ満充電のパックを
+「この数秒で急に低下」と書いていた。それを見た Jev が `land`（確率 0.74）を選ぶのは
+正しい読み方である。
+
+**なぜ既存の試験が 1 件も捕まえられなかったか**: `FakeJudge` は state の**言葉を
+読まない**。何を渡されても固定の答えを返すので、警告だらけの state も正しい state も、
+まったく同じ「全件成功」になった。試験一式のどこにも、生成された**言葉そのもの**を
+見るものが無かった。これが本件の最大の教訓であり、対策として実測サンプルを
+Monitor → Summarizer に通して語を検査する試験を追加した
+（`lib/sfpilot/tests/test_nominal_flight_words.py`、実測サンプルは
+`lib/sfpilot/tests/fixtures/`）。
+
+### 原因と対処
+
+| # | 症状 | 原因（実測による） | 対処 |
+|---|------|------------------|------|
+| 1 | 健全なホバリング中ずっと `altitude: "below target"` | `Pilot` が `Monitor(config)` を目標高度なしで生成し、`Monitor` の既定値 0.8m が使われていた。ファームは自動離陸の上昇が**到達した高度をそのまま**保持する（`api_task.cpp` は FLYING 到達時の姿勢から誘導目標を作る。定数ではない）。実測のホバリングは 0.441〜0.483m で、誤差 0.35m は許容幅 0.15m の 2 倍以上 | 固定値をやめ、**機体が実際に保持している高度を採用する**（`Monitor._adopt_target_if_unset`）。採用は FLYING かつ上昇が水平になってからに限る（地上では高度が完璧に安定した 0 であり、それを採ると以後の全飛行が「目標より高い」になる） |
+| 2 | 異常が無いのに `battery.trend` が「急に低下」へ | 傾向を**百分率**で判定していた。百分率は瞬時の**負荷がかかった**電圧の線形写像なので、消費と無関係に動く。実測: 離陸だけで 1 秒以内に 4.19V → 3.79V、すなわち 99% → 55% の 44 ポイント低下。さらに定常ホバリングだけでも 0.35 pct/s 減り、10 秒窓の最悪値は 8.9 ポイントで、いずれも閾値 5.0 を超える | 判定を**電圧**に変更（`battery_drop_fast_v = 0.15V` / 20 秒窓）。実測の分離: 通常ホバリング 0.066V 対 `battery_drop` 場面 0.233V。加えて離陸時の負荷段差を窓に入れない（`battery_settle_s`） |
+| 3 | 11 判断中 7 回が「質問時から状況の区分が変わった」で破棄 | 区分が境目でばたついていた。実測: `battery_drop` 場面で電池の傾向が 60 秒に **510 回**入れ替わる。窓の最古のサンプルが毎周期出入りするため | 全区分に最小保持時間を導入（`classification_hold_s = 1.0s`、`Monitor._held`）。新しい区分が報告中のものを置き換えるのは、それが続いた後だけにした。実測で 510 回 → **2 回** |
+| 4 | ミッションの区間 3・4 が `stopped short` になり、各 2 回やり直して飛ばされた | **応答計数の競合**。`StepRunner._await_step` は応答の**個数**の増加だけを待つ。実測: `takeoff` の応答が `forward 60` 送信の 0.7 秒**後**に届き、次の区間の待ちを即座に満たした。区間は始まった瞬間に「終わった」と宣言され、`classify_arrival` は（正しく）「向かってもいない終点の手前で止まった」と報告した。同じ経路を FakeJudge で飛ばすと 52.6 秒・全区間 `as planned`、Jev では 33.1 秒。差は往復時間が持ち込んだ**時間**だけである | リンクが「未応答の件数」を持つようにし（`SilsLink.replies_outstanding`）、次の移動を送る前に前の応答を待って捨てる（`StepRunner._drain_stale_replies`）。`landing.py` の重複した計数も同じ 1 か所へ寄せた |
+| 5 | `say`: 「…戻ってきて着陸して」の末尾に `land` が 2 回 | `_read_verbs` は最初の `none` で打ち切るが、`land` では打ち切らない。質問は fan-out で互いの答えを見られないため、動作 4 つの指示の「5 番目」を問われたモデルは、`none` ではなく最ももっともらしい続きとして再び `land` と答えた。文の妥当な読み方であって、criteria で争うべき誤りではない | 最初の `land` でも打ち切る（着陸で飛行は終わり、その後の動作は存在しない） |
+
+### 併せて直したもの
+
+| 内容 | 理由 |
+|------|------|
+| `say`: 「戻ってきて」が `return_home` ではなく `back 50` になる | `back` と `return_home` の criteria に**対比**と**例**を書いた（日本語の「戻る」がどちらにも読めるため）。`back` は進む向きの話で終点は新しい場所、`return_home` は行き先の話でそれまでの飛行を帳消しにする、と明示 |
+| 事例集の「ちょっと移動して」の期待を `expect_refusal: true` に変更 | 向きの指定が無く、どの水平移動も等しくありうるため、モデルはどれにも高い確信を持てない（実測 0.46）。**拒否が望ましい挙動**であり、期待のほうが誤っていた。`expect_refusal` は既存の形式でそのまま書ける |
+| 電池の傾向の区分名から窓の長さを除去 | 区分が「この 10 秒で急に低下」という文字列で、summarizer の変換表がそれを鍵にしていた。窓を 20 秒に変えた瞬間に引きが外れ、**訳されない日本語が Jev へ渡る**ところだった。しかもどこも失敗しない。区分名を定数化し（`BATTERY_TREND_*`）、変換漏れを検出する試験を追加した |
+| Arbiter: 上位 2 択が `continue` と `hold` の低確信は破棄せず `hold` として採用 | `drift` の待機 13 回連続と着陸の原因。詳細は下記「`drift` の低確信への対処」。閾値は下げていない |
+| 電池の傾向の窓が判定境界でばたついていた | 履歴を窓ちょうどに刈り込んでいたため、最古のサンプルが毎周期出入りして「窓が満ちたか」の答えが反転していた（実測 60 秒で 510 回）。窓より長く保持し、測る範囲を明示的に選ぶようにした（`Monitor._trend_window`）|
+| API キーの取得を 1 か所へ集約 | `lib/sfpilot/credentials.py` を新設。環境変数 → macOS キーチェーン（`security find-generic-password`）の順で解決する。6 節参照 |
+
+### Jev による再確認（2026-09-19）
+
+`sf pilot run --sils --scene nominal --duration 60`:
+
+| 項目 | 修正前（`…112337`） | 修正後（`…120119`） |
+|------|------------------|------------------|
+| 結末 | **7.4 秒で誤着陸** | **60 秒飛び切る（着陸しない）** |
+| 判断 | 11 件（continue 3 / hover 7 / land 1） | 61 件（**continue 60** / hover 1） |
+| 鮮度切れによる破棄 | **11 件中 7 件** | **0 件** |
+| `safety_action` の確信度 | 0.67〜0.78 | **0.97〜0.98** |
+| state の高度 | 終始 `below target` | 終始 `on target` |
+| state の電池の傾向 | `steady`→`falling gradually`→`fell sharply` | 終始 `steady` |
+| 往復時間 | p50 237ms / max 461ms | p50 216ms / p95 326ms / max 521ms |
+
+確信度が 0.67〜0.78 から 0.97〜0.98 へ上がった点が本質である。**state を直しただけで、
+Jev の判断は迷いのないものに変わった。** 質問文（`safety_action` の instructions と
+criteria）は一切変更していない。
+
+### 残る 4 件の Jev 再確認（全て実施済み）
+
+| 実行 | 結果 |
+|------|------|
+| `run --scene battery_drop --duration 70`（`…123257`） | **正しく着陸を選んだ。** 電池が健全な間は確信度 0.97〜0.98・abnormal 0.04 で `continue` を続け、傾向が `fell sharply` になった瞬間に `land`（確信度 0.84、abnormal 0.79）。24.3 秒で着陸 |
+| `run --scene drift --duration 60`（`…123648`） | **60 秒飛び切る。** 62 判断のうち continue 51 / hover 11。下記の Arbiter 規則により、continue と hold で割れた 3 件が破棄されず待機として採用された |
+| `mission line --sils --yes`（`…124014`） | **全 6 区間が `as planned` で完走。** 区間 1〜4 は `next_step`（確信度 0.89〜0.98）。修正前は区間 3・4 が `stopped short` で 2 回ずつやり直したうえ飛ばされていた |
+| `say --eval`（10 例） | **10/10 一致**（修正前 7/10）。3 件の不一致はいずれも上表の対処で解消した |
+
+### `drift` の低確信への対処 — Arbiter の規則を 1 つ追加
+
+記録の `probabilities` を読むと、閾値未満の答えは **`continue` と `hold` で割れて**
+いた（実測 0.45/0.40、0.53/0.36、0.45/0.41。`land` は 0.11〜0.15 と大きく離れている）。
+これはモデルが安全と危険を区別できていないのではない。**どちらも「特筆すべきことの
+ない状況」の慎重な読み方**であり、そもそも Arbiter が「使える答えが無い」ときに取る
+行動は待機、すなわち `hold` そのものである。
+
+そこで、**上位 2 択が `continue` と `hold` のときに限り、確信度が閾値未満でも
+`hold` として採用する**規則を足した（`land` が絡む拮抗は従来どおり破棄する — 飛行の
+継続と終了を区別できていないモデルの答えは行動の根拠にしない）。**閾値は下げていない。**
+
+この待機は「Jev が選んだ待機」とは区別して記録する（`chosen_hold`）。手順の列を進める
+側は前者では止まるが、後者では止まらない。この区別を入れる前は、むしろ**継続を選好
+していた**答え（continue 0.63〜0.72 対 hold 0.23〜0.30）でミッションが最後の区間で
+終わっていた。
+
+### 往復時間について（本修正とは無関係の観測）
+
+作業中、`api.typesafe.ai` への接続が一時的に失われ（`curl` で connect が成立せず
+タイムアウト。同時刻に `docs.typesafe.ai` は 95ms で応答）、その前後で往復時間が
+p50 216ms から 511ms まで悪化した。その間の実行は全判断が期限超過となり、場面の
+確認にならなかった（`…120257`、`…120408`）。接続回復後の再実行が上表である。
+
+外的要因ではあるが、**p50 が 216ms から 511ms へ動くだけで全判断が失われる**という
+事実自体は、期限 500ms の余裕が薄いことを示している。4 節の「期限 500ms を変えない」
+判断は、この観測を踏まえて再検討する価値がある（本作業では変更していない。根拠が
+1 回の悪化しかないため）。
+
+キー不要の確認も完了しており、修正の効果は SILS で再現する:
+
+| 実行 | 結果 |
+|------|------|
+| `run --scene nominal --fake`（`…115901`） | 41 判断すべて `continue`。state は 37 件が `on target / steady`、残りは値が揃う前の 4 件のみ |
+| `mission line --fake`（`…120011`） | **全 6 区間が `as planned` で完走**（修正前の Jev 実走では区間 3・4 が `stopped short` で飛ばされた） |
+| `pytest simulator/tests lib/sfpilot lib/sfcli lib/sflog` | 元の 368 passed / 1 skipped に対し、**393 passed / 1 skipped（追加 25 件）** |
 
 ## 5. 置き場所
 
@@ -522,13 +626,53 @@ HTTP API（`POST https://api.typesafe.ai/v1/systemone`、Bearer 認証）を htt
 
 判断の記録は `logs/pilot/<日時>.jsonl` に 1 判断 1 行の JSON で書く（`trace_id`・`t_mono`・`state`・`questions`・`answers`（確率つき）・`latency_ms`・`arbiter_verdict`・`command`）。`grep` と `jq` で追える形にしてある。`logs/` は `.gitignore` 済み（`logs/*`）である。
 
-API キーは環境変数 `TYPESAFE_API_KEY` のみで渡す。リポジトリ・記録・state・コマンドの出力には書かない。記録は利用者が不具合報告に添付するものなので、伏せ字なしで共有して安全であることを試験で確認している。CI と pytest は `FakeJudge` だけを使い、キー無しで通る。
+API キーはリポジトリ・記録・state・コマンドの出力・例外メッセージのいずれにも書かない。記録は利用者が不具合報告に添付するものなので、伏せ字なしで共有して安全であることを試験で確認している。CI と pytest は `FakeJudge` だけを使い、キー無しで通る。
+
+### キーの取得元（`lib/sfpilot/credentials.py`）
+
+取得経路は 1 本にまとめてある。`sf pilot bench`・`run`・`say`・`mission` はすべて `resolve_api_key()` を通り、次の順で解決する。
+
+| 順 | 取得元 | 備考 |
+|----|--------|------|
+| 1 | 環境変数 `TYPESAFE_API_KEY` | 1 回の実行だけ別のキーを試せるよう、常に最優先 |
+| 2 | macOS のログインキーチェーン | `security find-generic-password -a "$USER" -s <サービス名> -w` を呼ぶ。サービス名の既定は `typesafe-api-key`（`JudgeConfig.keychain_service`）で、環境変数 `SF_TYPESAFE_KEYCHAIN_SERVICE` で変更できる。**macOS 以外では試さない**（`security` は macOS のプログラムであり、他環境で呼べば「キーが未設定」が分かりにくい異常終了に化ける） |
+| — | どちらも無い場合 | 設定方法 2 通りを添えた `MissingApiKey` を投げる。メッセージにキーは含めない |
+
+キーチェーンへの登録（値は対話入力されるのでシェルの履歴に残らない）:
+
+```bash
+security add-generic-password -U -a "$USER" -s typesafe-api-key -w
+```
+
+**`.env` ファイルを使わない理由**: `.env` はリポジトリの隣に置かれた平文であり、`git add .` 1 回、あるいは書庫の共有 1 回で公開されうる。追跡しない約束のファイルは、誰かのエディタが別の場所へ書き出すまでしか追跡されない。環境変数もキーチェーンも、秘密を作業ツリーの外に置く。
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 208 件。キー不要・通信不要で通る。加えて
+`lib/sfpilot/tests/` に 233 件。キー不要・通信不要で通る。加えて
 `simulator/tests/test_mission_sils.py` に SILS の実飛行 6 件（`--fake`。エミュレータの
 ビルドが無ければ自動で飛ばす）。
+
+### FakeJudge では捕まえられない誤り（2026-09-19 の教訓）
+
+**`FakeJudge` は state の言葉を読まない。** 何を渡されても宣言された答えを返すので、
+「state が健全な飛行を異常として**記述する**」種類の誤りに対しては、まったく無力である。
+2026-09-19 の Jev 実走で見つかった 5 件のうち 3 件（高度の目標・電池の傾向・区分の
+ばたつき）はこの種類であり、208 件の試験がすべて成功したまま、実走で初めて表に出た。
+
+そこで、**実測サンプルを Monitor → Summarizer に通し、出てきた語そのものを検査する**
+試験を追加した（`test_nominal_flight_words.py`）。確認するのは次の 5 点である。
+
+| 確認内容 | 意図 |
+|---------|------|
+| 健全なホバリングの間、異常を示す語（`below target`・`fell sharply`・`drifting` 等）が 1 つも現れないこと | 7.4 秒の誤着陸を直接防ぐ |
+| 目標高度が、機体が実際に保持している高度から採られていること | コード内の定数に戻ることを防ぐ |
+| ホバリングが静定した後、指紋が一度も変わらないこと | 鮮度切れによる答えの取りこぼしを防ぐ |
+| 離陸時の電圧降下が「急に低下」にならないこと | 負荷による降下を放電と取り違えることを防ぐ |
+| `battery_drop` の電圧推移では「残り少ない」「危険」「急に低下」に確実に達すること | 上の 4 点の対策で傾向が鈍感になっていないことを担保する |
+
+サンプルは手で書かず、実際の SILS 飛行から採取したものを使う
+（`lib/sfpilot/tests/fixtures/`。理由は同ディレクトリの README を参照 —— 手で書いた
+サンプルは、コードと同じ誤った前提を埋め込んでしまう）。
 
 | 観点 | 確認内容 |
 |------|---------|
@@ -580,9 +724,9 @@ P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 | P1 | `lib/sfpilot` core (Monitor / Summarizer / Judge / Arbiter / Executor), FakeJudge, ReplayLink | **Done** |
 | P2a | Telemetry extension (UDP:5005 becomes the 140B v2 packet, adding battery voltage, downward ToF, optical flow, magnetometer and pressure altitude; format in `firmware/vehicle/docs/detailed_design.md` §10) | **Done** (not verified on hardware) |
 | P2b | Drive the forward ToF (add `sensor_tof_front`, mirror into `SensorSnapshot`, supply telemetry bit1). **Requires hardware verification and battery power** (the forward ToF has been seen not to come up on USB power) | Not started |
-| P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done** (not yet exercised against the live Jev API) |
-| P3 | `sf pilot say` (natural-language instruction) | **Done** (not yet exercised against the live Jev API; see "P3 Results") |
-| P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done** (not yet exercised against the live Jev API; see "P4 Results") |
+| P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done**. All three scenes confirmed against the live Jev (§4.5) |
+| P3 | `sf pilot say` (natural-language instruction) | **Done**. 7/10 against the live Jev, all three misses diagnosed and fixed, now **10/10** (§4.5) |
+| P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done**. A reply-count race found and fixed during the live-Jev flights; **all six legs now complete `as planned`** (§4.5) |
 | P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). Starts **after P2b**: the premise does not hold while the current firmware leaves the forward ToF undriven | Not started (waiting on P2b) |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
@@ -699,7 +843,7 @@ Implemented: `lib/sfpilot/instruction.py` (figure extraction across half-width, 
 
 **Problem found (out of scope here, reported rather than worked around): the craft drifts sideways during a descent.** A `land` from a stationary hover drifts 0.000 m, but a `land` issued shortly after a move drifts 0.3–0.9 m while descending, as though position hold is not holding (or holds weakly) during the descent. This predates `sf pilot say` and reproduces by sending `land` directly. It could affect real-world landing accuracy, so a separate investigation is recommended.
 
-**Evaluation against the live Jev (needs a key; not yet run):** ten instructions — simple, multi-step, with figures, vague, out of range, and not about flying at all — with their expected steps are in `lib/sfpilot/tests/say_eval_cases.yaml`, run with `TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml`. The assembly rules, the figure extraction and the envelope check are code and are pinned without a key by `pytest lib/sfpilot`; what this table measures is only the remainder — whether Jev picks the right move and size from a Japanese sentence. Where an expectation may itself be too narrow (a vague instruction names no direction), the case says so.
+**Evaluation against the live Jev (needs a key; now run — see §4.5):** ten instructions — simple, multi-step, with figures, vague, out of range, and not about flying at all — with their expected steps are in `lib/sfpilot/tests/say_eval_cases.yaml`, run with `TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml`. The assembly rules, the figure extraction and the envelope check are code and are pinned without a key by `pytest lib/sfpilot`; what this table measures is only the remainder — whether Jev picks the right move and size from a Japanese sentence. Where an expectation may itself be too narrow (a vague instruction names no direction), the case says so.
 
 ## 4.3 P4 Results (`sf pilot mission`)
 
@@ -764,7 +908,7 @@ Repeating a move on the same axis is unaffected, as is a vertical move after a h
 
 The sideways drift during a descent reported in §4.2 is reduced by the approach above, but fixing it at the root remains a vehicle-side judgement.
 
-### Evaluation against the live Jev (needs a key; not yet run)
+### Evaluation against the live Jev (needs a key; now run — see §4.5)
 
 ```bash
 TYPESAFE_API_KEY=... sf pilot mission line --sils --yes                       # nominal
@@ -773,6 +917,82 @@ TYPESAFE_API_KEY=... sf pilot mission line --sils --yes --scene drift         # 
 ```
 
 Add `--fake` for a keyless run (the rule-based stand-in takes over), or `--dry-run` to check a route without flying. What to read: whether Jev picks `next_step` at a boundary, `redo_step` after a leg that did not arrive, and what it picks once the battery reads "running low" -- the code replaces any going-on answer with `return_home` there, so the summary shows the difference between its choice and what flew. The token count with the third mission question included is measurable for the first time here.
+
+## 4.5 Results of the First Flights Against the Live Jev (2026-09-19)
+
+### Summary
+
+**Five faults, all of them in the code that BUILDS the state, none in the judging layer.** Jev's judgements were sound throughout, given what they were given; it was the state that was wrong. The worst symptom was `run nominal` landing after 7.4 seconds, but the state it landed on described a perfectly held hover as "below target" and a nearly full pack as having "fell sharply in the last few seconds". Choosing `land` (probability 0.74) on that reading is correct.
+
+**Why no existing test caught any of it:** `FakeJudge` does not READ the words in a state. It returns a fixed answer whatever it is handed, so a state full of alarming words produced exactly the same green test run as a correct one. Nothing in the suite ever looked at the words that were generated. That is the main lesson here, and the remedy is a test that runs measured samples through Monitor → Summarizer and inspects the words themselves (`lib/sfpilot/tests/test_nominal_flight_words.py`, with the samples in `lib/sfpilot/tests/fixtures/`).
+
+### Causes and fixes
+
+| # | Symptom | Cause (measured) | Fix |
+|---|---------|------------------|-----|
+| 1 | `altitude: "below target"` throughout a healthy hover | `Pilot` built `Monitor(config)` with no target, so the `Monitor` default of 0.8 m was used. The firmware holds WHATEVER the auto-takeoff climb reached (`api_task.cpp` seeds the guidance target from the pose at FLYING, not from a constant). The measured hover was 0.441-0.483 m, so the 0.35 m error was more than twice the 0.15 m tolerance | Drop the constant and **adopt the altitude the aircraft is actually holding** (`Monitor._adopt_target_if_unset`), only once FLYING and once the climb has levelled off (on the ground the altitude is a perfectly steady zero, and adopting it would make the whole flight read "above target") |
+| 2 | `battery.trend` reaching "fell sharply" with nothing wrong | The trend was judged on the PERCENTAGE, which is a linear map of the instantaneous, LOADED voltage and so moves for reasons unrelated to energy spent. Measured: takeoff alone drops the reading 4.19 V → 3.79 V within a second, i.e. 99% → 55%, a 44-point fall; and a steady hover alone drains 0.35 pct/s, reaching 8.9 points in the worst 10 s window. Both cross the 5.0 threshold | Judge on VOLTAGE (`battery_drop_fast_v = 0.15 V` over a 20 s window). Measured separation: 0.066 V for an ordinary hover against 0.233 V for the `battery_drop` scene. The takeoff load step is also kept out of the window (`battery_settle_s`) |
+| 3 | 7 of 11 judgements discarded as "the situation changed since the question" | The classifications flapped on their band edges. Measured: the battery trend alternated **510 times in 60 s** on the `battery_drop` scene, because the window's oldest sample fell in and out of it each cycle | A minimum hold time on every classification (`classification_hold_s = 1.0 s`, `Monitor._held`): a new value replaces the reported one only after it has held. Measured: 510 → **2** |
+| 4 | Mission legs 3 and 4 reported `stopped short`, retried twice each, then skipped | A **reply-count race**. `StepRunner._await_step` waits only for a COUNT to move. Measured: `takeoff`'s reply arrived 0.7 s AFTER `forward 60` had been sent and satisfied that leg's wait instantly. The leg was declared finished the moment it began, and `classify_arrival` then correctly reported it as short of a target it had not begun flying towards. The same route under FakeJudge took 52.6 s with every leg `as planned`; under Jev, 33.1 s. The difference was purely the timing the round trip introduced | The link now tracks how many replies are still owed (`SilsLink.replies_outstanding`), and a move waits out the previous reply before being sent (`StepRunner._drain_stale_replies`). `landing.py`'s duplicate reckoning of the same thing now reads the one source |
+| 5 | `say`: two trailing `land`s for "...戻ってきて着陸して" | `_read_verbs` truncates at the first `none` but not at the first `land`. The questions are a fan-out and cannot see each other's answers, so asked for the 5th action of a 4-action instruction the model answered `land` again as the most plausible continuation rather than `none` -- a fair reading of the sentence, not something to argue with in the criteria | Truncate at the first `land` too: landing ends the flight, so there is no action after it |
+
+### Fixed alongside
+
+| Change | Why |
+|--------|-----|
+| `say`: "戻ってきて" read as `back 50` rather than `return_home` | The criteria for `back` and `return_home` now carry a CONTRAST and examples, because the Japanese "戻る" reads as either. `back` is about a direction of travel and ends somewhere new; `return_home` is about a destination and cancels the flight so far |
+| The eval case "ちょっと移動して" now expects `expect_refusal: true` | No direction is given, so every horizontal move is equally plausible and the model cannot be confident in any (measured 0.46). **The refusal is the wanted behaviour** and the expectation was wrong. `expect_refusal` already existed, so no new format was needed |
+| The window length removed from the battery-trend classification name | The classification was the string "この 10 秒で急に低下" and the summarizer's table keyed on it. Widening the window to 20 s would have missed the lookup and **sent untranslated Japanese to Jev**, with nothing failing. The names are now constants (`BATTERY_TREND_*`) and a test catches a missing translation |
+| Arbiter: an unconfident answer whose top two are `continue` and `hold` is accepted as `hold` rather than discarded | The cause of `drift`'s 13 consecutive holds and its landing. See "What the `drift` low confidence turned out to be" below. The threshold was not lowered |
+| The battery trend's window was flapping on its own threshold | The history was trimmed to exactly the window, so the oldest sample fell in and out each cycle and the "is the window full?" answer flipped with it (measured: 510 times in 60 s). The history is now kept longer than the window and the span to measure is chosen explicitly (`Monitor._trend_window`) |
+| API key resolution gathered into one place | New `lib/sfpilot/credentials.py`: the environment variable first, then the macOS keychain. See §6 |
+
+### Re-checked against Jev (2026-09-19)
+
+`sf pilot run --sils --scene nominal --duration 60`:
+
+| Item | Before (`…112337`) | After (`…120119`) |
+|------|--------------------|-------------------|
+| Outcome | **landed by mistake at 7.4 s** | **flew the full 60 s, never landed** |
+| Judgements | 11 (continue 3 / hover 7 / land 1) | 61 (**continue 60** / hover 1) |
+| Discarded as stale | **7 of 11** | **0** |
+| `safety_action` confidence | 0.67-0.78 | **0.97-0.98** |
+| State altitude | `below target` throughout | `on target` throughout |
+| State battery trend | `steady`→`falling gradually`→`fell sharply` | `steady` throughout |
+| Round trip | p50 237 ms / max 461 ms | p50 216 ms / p95 326 ms / max 521 ms |
+
+The confidence moving from 0.67-0.78 to 0.97-0.98 is the substantive result: **correcting the state alone turned a hesitant judgement into an unambiguous one.** The question text (the `safety_action` instructions and criteria) was not changed at all.
+
+### The other four Jev re-checks (all run)
+
+| Run | Result |
+|-----|--------|
+| `run --scene battery_drop --duration 70` (`…123257`) | **Chose to land, correctly.** While the pack was healthy it kept answering `continue` at 0.97-0.98 with abnormal 0.04, and the moment the trend read `fell sharply` it chose `land` (confidence 0.84, abnormal 0.79). Landed at 24.3 s |
+| `run --scene drift --duration 60` (`…123648`) | **Flew the full 60 s.** 62 judgements, continue 51 / hover 11. The three answers split between continue and hold were accepted as holds rather than discarded, under the Arbiter rule below |
+| `mission line --sils --yes` (`…124014`) | **All six legs `as planned`, route completed.** Legs 1-4 chose `next_step` at 0.89-0.98. Before the fix, legs 3 and 4 were `stopped short`, retried twice each and skipped |
+| `say --eval` (10 cases) | **10/10 matched** (7/10 before). All three misses were resolved by the fixes in the table above |
+
+### What the `drift` low confidence turned out to be — one new Arbiter rule
+
+Reading the `probabilities` in the trace, the answers below the threshold were split between **`continue` and `hold`** (measured 0.45/0.40, 0.53/0.36, 0.45/0.41, with `land` a distant 0.11-0.15). That is not the model failing to tell safe from unsafe: **both halves are cautious readings of an unremarkable situation**, and the Arbiter's own response to "no usable answer" is to hover, which IS `hold`.
+
+So a rule was added: **when the top two are `continue` and `hold`, an answer below the confidence threshold is accepted as `hold`** rather than discarded. Anything involving `land` keeps the old treatment — a model that cannot separate carrying on from ending the flight is not one to act on. **The threshold itself was not lowered.**
+
+Such a hold is recorded apart from one Jev actually chose (`chosen_hold`). Callers that walk a sequence stop on the latter but not the former; before that distinction existed, a mission ended at its last leg on answers that actually **preferred carrying on** (continue 0.63-0.72 against hold 0.23-0.30).
+
+### On the round trip (an observation unrelated to these fixes)
+
+Partway through the work the connection to `api.typesafe.ai` was lost for a while (`curl` never completed the connect, while `docs.typesafe.ai` answered in 95 ms at the same moment), and around that the round trip degraded from a p50 of 216 ms to 511 ms. Runs during that window lost every judgement to the deadline and exercised nothing (`…120257`, `…120408`); the table above is from the re-runs after it recovered.
+
+External though it is, the fact that **a p50 moving from 216 ms to 511 ms loses every judgement** does show how little margin the 500 ms deadline has. The "do not change the 500 ms deadline" decision in §4 is worth revisiting in light of it; it was not changed here, because one episode of degradation is not enough evidence.
+
+The keyless checks were completed too, and the fixes reproduce in SILS:
+
+| Run | Result |
+|-----|--------|
+| `run --scene nominal --fake` (`…115901`) | All 41 judgements `continue`; the state reads `on target / steady` for 37 of them, the rest being the cycles before every field had a value |
+| `mission line --fake` (`…120011`) | **All six legs `as planned`, route completed** (before the fix, the live-Jev run skipped legs 3 and 4 as `stopped short`) |
+| `pytest simulator/tests lib/sfpilot lib/sfcli lib/sflog` | Against the original 368 passed / 1 skipped: **393 passed / 1 skipped, including 25 new tests** |
 
 ## 5. Placement
 
@@ -788,11 +1008,45 @@ The HTTP API (`POST https://api.typesafe.ai/v1/systemone`, Bearer auth) is calle
 
 Decisions are written to `logs/pilot/<datetime>.jsonl`, one JSON object per line, readable with `grep` and `jq`. `logs/` is already covered by `.gitignore`.
 
-The API key is passed only through the environment variable `TYPESAFE_API_KEY`, and never written to the repository, a trace, a state or any command output -- a test asserts this, since users attach trace files to bug reports. CI and pytest use `FakeJudge` only and pass without a key.
+The API key is never written to the repository, a trace, a state, any command output or an exception message -- a test asserts this, since users attach trace files to bug reports. CI and pytest use `FakeJudge` only and pass without a key.
+
+### Where the key comes from (`lib/sfpilot/credentials.py`)
+
+There is one resolution path. `sf pilot bench`, `run`, `say` and `mission` all go through `resolve_api_key()`, which tries these in order:
+
+| Order | Source | Notes |
+|-------|--------|-------|
+| 1 | the environment variable `TYPESAFE_API_KEY` | always first, so a different key can be tried for one command without disturbing the stored one |
+| 2 | the macOS login keychain | calls `security find-generic-password -a "$USER" -s <service> -w`. The service name defaults to `typesafe-api-key` (`JudgeConfig.keychain_service`) and can be changed with `SF_TYPESAFE_KEYCHAIN_SERVICE`. **Not attempted off macOS** — `security` is a macOS program, and calling it elsewhere would turn "no key configured" into an obscure crash |
+| — | neither | raises `MissingApiKey` naming both ways to set one. The message never contains a key |
+
+To store it in the keychain (the value is read from a prompt, so it stays out of the shell history):
+
+```bash
+security add-generic-password -U -a "$USER" -s typesafe-api-key -w
+```
+
+**Why not a `.env` file:** a `.env` is plain text living next to the repository, so the key is one `git add .` or one shared archive away from being published, and a file that is meant to stay untracked is only untracked until somebody's editor writes it somewhere else. The environment variable and the keychain both keep the secret out of the working tree entirely.
 
 ## 7. Tests
 
-208 tests in `lib/sfpilot/tests/`, all passing without a key or a network, plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+### The class of fault FakeJudge cannot catch (the lesson of 2026-09-19)
+
+**`FakeJudge` does not read the words in a state.** It returns its declared answer whatever it is handed, so it is entirely blind to faults where the state DESCRIBES a healthy flight as an unhealthy one. Three of the five faults found on 2026-09-19 (the altitude target, the battery trend, the flapping classifications) are of exactly that kind, and they surfaced only in a live flight while all 208 tests stayed green.
+
+The remedy is a test that runs **measured samples through Monitor → Summarizer and inspects the words that come out** (`test_nominal_flight_words.py`). It checks five things:
+
+| Check | Intent |
+|-------|--------|
+| No alarming word (`below target`, `fell sharply`, `drifting`, ...) appears anywhere during a healthy hover | directly prevents the 7.4 s landing |
+| The hold altitude is taken from the altitude the aircraft is actually holding | prevents a return to a constant in the code |
+| The signature never changes once the hover has settled | prevents answers being lost to staleness |
+| The takeoff voltage drop is not reported as a battery falling sharply | prevents a load step being mistaken for a discharge |
+| The `battery_drop` voltage walk still reaches "running low", "dangerously low" and "fell sharply" | ensures the four fixes above did not make the trend blind |
+
+The samples are recorded from a real SILS flight rather than written by hand (`lib/sfpilot/tests/fixtures/`; the README there gives the reason — a hand-written sample would encode the same wrong assumptions the code did).
+
+233 tests in `lib/sfpilot/tests/`, all passing without a key or a network, plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
 
 P3 adds: figure extraction across half-width, full-width and kanji numerals in m, cm and degrees; every assembly rule (everything after the first `none` is dropped, a takeoff and a landing are supplied, an unspecified amount takes the default band, a spoken figure outranks the band); that the envelope pre-check refuses an over-reaching plan and names the offending step; that a low-confidence step is not flown; the `return_home` computation including a turn along the way; that the hovering `rc` is withheld while a plan drives the vehicle but `land` is not; that waiting for an answer does not interrupt the sequence while a hold Jev chose does; that a step waits for the vehicle's reply and for the craft to settle; and that a non-interactive session will not fly without `--yes`.
 

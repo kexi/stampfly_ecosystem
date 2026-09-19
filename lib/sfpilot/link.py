@@ -628,6 +628,22 @@ API_PREFIX = "api "
 # ことで、ブロックする移動の到達を呼び出し側が知る。
 REPLY_MARKER = "reply: "
 
+# The one verb that is answered by nothing. `rc a b c d` is fire-and-forget
+# (api_task.cpp cmdRc); every other verb the API accepts replies exactly
+# once, whether it succeeded or not. Naming it here keeps the rule in the
+# same place as the marker it is the exception to.
+# 応答が返らない唯一の verb。`rc a b c d` は応答待ちをしない（api_task.cpp の
+# cmdRc）。API が受け付ける他の verb は、成否にかかわらずちょうど 1 回応答する。
+# 例外の規則を、例外先であるマーカーと同じ場所に置く。
+NO_REPLY_VERB = "rc"
+
+
+def expects_reply(line: str) -> bool:
+    """Whether this command line will be answered with a `reply:`.
+    この指令行に `reply:` が返るかどうか。"""
+    verb = line.strip().split(" ", 1)[0]
+    return verb != NO_REPLY_VERB
+
 
 class SilsLink:
     """Fly a real-time SILS emulator through its stdin/stdout pipes.
@@ -683,6 +699,12 @@ class SilsLink:
         # 値の増加を待つ側は、移動に要する時間だけをちょうど待てる。所要時間を
         # 推測する必要がない。
         self._replies = 0
+        # How many commands that DO answer have been sent. Compared with
+        # `_replies` to tell whether the vehicle still owes an answer --
+        # see `replies_outstanding`.
+        # 応答を返す指令を何件送ったか。`_replies` と比べて「機体がまだ応答を
+        # 返していないか」を判定する（`replies_outstanding` 参照）。
+        self._awaiting = 0
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
 
@@ -763,8 +785,31 @@ class SilsLink:
         """Send one API command line (`command`, `takeoff`, `land`, ...).
         API のコマンド行を 1 行送る（`command`・`takeoff`・`land` 等）。"""
         self.sent.append(line)
+        if expects_reply(line):
+            self._awaiting += 1
         self._write(API_PREFIX + line)
         self.hold_sticks_neutral()
+
+    @property
+    def replies_outstanding(self) -> int:
+        """How many sent commands have not been answered yet.
+
+        The difference between the commands that ask for an answer and the
+        `reply:` lines seen so far. A caller that is about to send a
+        blocking verb uses this to tell "the vehicle is still working on
+        the last one" from "everything sent so far has been answered" --
+        which a bare reply COUNT cannot express, and whose absence let a
+        late reply satisfy the next move's wait (say.StepRunner).
+
+        送信済みで、まだ応答が返っていない指令の数。
+
+        応答を求める指令の数と、これまでに見た `reply:` 行の数との差である。
+        これから移動を送る側は、この値で「機体がまだ前の指令を処理中」と「送った
+        ものはすべて応答済み」を区別する。応答の**個数**だけではこれを表せず、
+        表せなかったために、遅れて届いた応答が次の移動の待ちを満たしていた
+        （say.StepRunner）。
+        """
+        return max(0, self._awaiting - self._replies)
 
     def priority(self, line: str) -> None:
         """Same path as send_command: the pipe has no reply to overtake.

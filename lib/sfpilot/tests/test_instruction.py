@@ -150,6 +150,33 @@ def test_everything_after_the_first_none_is_dropped():
     assert _verbs(plan) == [STEP_TAKEOFF, STEP_FORWARD, STEP_LAND]
 
 
+def test_everything_after_the_first_land_is_dropped():
+    """Landing ends the flight, so there is no action after it.
+
+    The questions are a fan-out and cannot see each other's answers, so
+    each is asked in full about its own position and none knows the flight
+    has already ended. Asked for the 5th action of a 4-action instruction,
+    the model may answer `land` again as the most plausible continuation
+    rather than `none` -- a fair reading of the sentence, not a mistake to
+    argue with in the criteria. Measured against the live Jev on
+    2026-09-19: "上がって前に進んで戻ってきて着陸して" answered `land` at
+    both step 4 and step 5, and the aircraft was sent `land` twice.
+
+    着陸で飛行は終わるので、その後の動作は存在しないこと。
+
+    質問は fan-out で互いの答えを見られないため、各質問は自分の位置について
+    完結して問われ、どれも飛行が既に終わったことを知らない。動作 4 つの指示に
+    ついて 5 番目を問われたモデルは、`none` ではなく最ももっともらしい続きとして
+    再び `land` と答えうる。文の妥当な読み方であって、criteria で争うべき誤りでは
+    ない。2026-09-19 の Jev 実測:「上がって前に進んで戻ってきて着陸して」が手順 4
+    と手順 5 の双方で `land` を返し、機体へ `land` が 2 回送られた。
+    """
+    plan = _plan([STEP_FORWARD, STEP_LAND, STEP_LAND])
+
+    assert _verbs(plan) == [STEP_TAKEOFF, STEP_FORWARD, STEP_LAND]
+    assert plan.command_lines().count("land") == 1
+
+
 def test_a_takeoff_is_added_when_the_aircraft_is_on_the_ground():
     """A move sent to a grounded vehicle is refused by the firmware, so the
     takeoff the instruction left implicit is supplied.

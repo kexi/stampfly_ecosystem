@@ -13,10 +13,23 @@ from sfpilot.summarizer import assert_no_numbers, signature, summarize
 
 
 def _assessment(**fields):
+    """One assessment of a hover, with the hold altitude already known.
+
+    The target is given rather than adopted, so these tests exercise the
+    summarizer rather than the Monitor's takeoff bookkeeping: without one
+    the altitude is reported as unknown and omitted from the state
+    (monitor.Monitor.target_altitude_m).
+
+    ホバリング 1 件の評価。保持高度は既知としてある。
+
+    目標は採用させず与える。本試験の対象は summarizer であって、Monitor の
+    離陸時の処理ではないためである。目標が無ければ高度は「不明」となり、
+    state から省かれる（monitor.Monitor.target_altitude_m）。
+    """
     values = {"t": 0.0, "altitude_m": 0.8, "vel_n": 0.0, "vel_e": 0.0, "vel_d": 0.0,
               "roll": 0.0, "pitch": 0.0, "battery_pct": 80.0, "tof_m": 0.8}
     values.update(fields)
-    return Monitor().update([Sample(**values)])
+    return Monitor(target_altitude_m=0.8).update([Sample(**values)])
 
 
 def test_state_contains_no_numbers_at_all():
@@ -61,6 +74,40 @@ def test_state_words_are_english():
     state = summarize(_assessment())
     assert state["flight"]["altitude"] == "on target"
     assert state["battery"]["level"] == "plenty left"
+
+
+def test_every_classification_the_monitor_emits_has_a_translation():
+    """No classification reaches Jev as untranslated Japanese.
+
+    `_word` falls back to returning its input, so a classification missing
+    from the table is not an error -- it is Japanese quietly sent to a
+    model documented to be most accurate in English, with nothing failing.
+    That happened: the "fell sharply" classification had its window length
+    formatted into it ("この 10 秒で急に低下"), so widening the window to
+    20 s changed the string, missed the lookup, and would have sent the
+    Japanese through untouched.
+
+    Monitor が出しうるどの区分も、訳されずに Jev へ届かないこと。
+
+    `_word` は表に無ければ入力をそのまま返すため、表から漏れた区分はエラーに
+    ならない。英語で最も正確だと文書化されたモデルへ、日本語が静かに送られる
+    だけで、どこも失敗しない。実際にそうなった:「急に低下」の区分は窓の長さを
+    文字列に埋め込んでいた（「この 10 秒で急に低下」）ため、窓を 20 秒に広げた
+    時点で文字列が変わって引きが外れ、日本語がそのまま送られるところだった。
+    """
+    import sfpilot.monitor as monitor_module
+    from sfpilot.summarizer import _WORDS
+
+    emitted = {
+        value for name, value in vars(monitor_module).items()
+        if name.startswith("BATTERY_TREND_") and isinstance(value, str)
+    }
+    assert emitted, "no battery trend constants were found to check"
+
+    untranslated = sorted(word for word in emitted if word not in _WORDS)
+    assert not untranslated, (
+        f"these classifications would reach Jev as Japanese: {untranslated}"
+    )
 
 
 def test_operator_instruction_is_passed_through_unchanged():

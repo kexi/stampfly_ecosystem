@@ -64,13 +64,21 @@ cases:
 
   # -- 曖昧 / Vague -----------------------------------------------------------
   - instruction: "ちょっと移動して"
-    expect_steps: ["takeoff", "forward 20", "land"]
+    expect_refusal: true
     note: |
-      向きの指定が無い曖昧な指示。forward 以外（left/right/back）を選んでも
-      「間違い」とは言い切れないため、不一致なら期待のほうを見直す候補。
-      Direction is unspecified; another horizontal move would not be clearly
-      wrong, so a mismatch here is a candidate for revising the expectation
-      rather than the code.
+      向きの指定が無い曖昧な指示。どの水平移動（forward / left / right / back）も
+      等しくありうるため、モデルはどれにも高い確信を持てない。2026-09-19 の実測は
+      forward・確信度 0.46 で、`min_step_confidence` 0.60 に届かず拒否された。
+      これは望ましい挙動である —— 行き先を当てずっぽうで決めて飛ぶより、操作者に
+      言い直してもらうほうがよい。したがって期待は「拒否」であり、ここで手順が
+      組まれてしまうほうが不具合である。
+      The direction is unspecified, so every horizontal move is equally
+      plausible and the model cannot be confident in any of them: measured
+      2026-09-19 at forward with confidence 0.46, below the 0.60
+      `min_step_confidence` gate, and refused. That is the wanted behaviour --
+      better to ask the operator to rephrase than to guess a direction and
+      fly it. The expectation is therefore a refusal, and building a
+      sequence here would be the defect.
 
   # -- 範囲外 / Outside the envelope -------------------------------------------
   - instruction: "前に10m進んで"
