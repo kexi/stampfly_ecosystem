@@ -76,13 +76,89 @@ class EnvelopeConfig:
 
     Any action that would leave this box is refused by the Arbiter,
     whoever proposed it. 提案者が誰であれ、この範囲を出る行動は Arbiter が却下する。
+
+    **Where each of these stands against the vehicle's own limits** (§4.13).
+    The rule is that this program does not get to be stricter than the
+    thing it is flying, so each figure has to say which it is:
+
+      - altitude 0.3-1.5 m sits INSIDE the vehicle's own API clamp of
+        0.2-2.0 m (`api_task.cpp` kAltMinM / kAltMaxM). It is narrower, and
+        deliberately so: the vehicle CLAMPS silently at its own edges while
+        this band is what the Monitor classifies "on target" against, and a
+        judging layer with no band has nothing to judge. It is not a
+        refusal to fly -- an excursion produces `stop`, and the craft keeps
+        flying inside the vehicle's own range.
+      - radius 2.0 m has NO counterpart in the firmware. The vehicle bounds
+        one move (`kMoveMaxCm` 300 cm) and never the distance from a
+        takeoff point, because it has no notion of one. This is PC-side
+        work, not a stricter version of a vehicle rule.
+      - speed 0.5 m/s is ABOVE the vehicle's own `position.stick_vel`
+        (0.4 m/s, params.cpp), which is the full-scale an `rc` of ±100 maps
+        to. So this ceiling does not bind at all: asking for 0.5 m/s sends
+        rc 100 and the craft flies at 0.4 m/s. Left as it is rather than
+        lowered to 0.4 -- lowering it would be this program limiting the
+        craft below what the craft allows, which is the thing §4.13
+        forbids, and raising it would change nothing.
+      - climb 0.3 m/s is BELOW the vehicle's `altitude.climb_rate`
+        (0.5 m/s). See the note on the field itself.
+
+    **これらが機体自身の制限に対してどこに立つか**（§4.13）。この処理が、飛ばして
+    いる当の機体より厳しくてはならないという原則があるので、各値はそのどれに
+    あたるかを述べる必要がある:
+
+      - 高度 0.3〜1.5m は、機体自身の API クランプ 0.2〜2.0m
+        （`api_task.cpp` の kAltMinM / kAltMaxM）の**内側**にある。意図して狭い。
+        機体は自分の端で**黙って**クランプするのに対し、この帯域は Monitor が
+        「目標どおり」を判定する当のものであり、帯域の無い判断層には判断する
+        ものが無い。飛行の拒否ではない —— 逸脱が生むのは `stop` であり、機体は
+        機体自身の範囲の内側で飛び続ける。
+      - 半径 2.0m にはファーム側の対応物が**無い**。機体が上限を持つのは 1 回の
+        移動（`kMoveMaxCm` 300cm）であって、離陸点からの距離ではない。離陸点と
+        いう概念を持たないからである。これは PC 側の仕事であって、機体の規則を
+        厳しくしたものではない。
+      - 速度 0.5m/s は、機体自身の `position.stick_vel`（0.4m/s、params.cpp）より
+        **上**である。これは `rc` の ±100 が対応する満舵の値である。したがって
+        この上限はそもそも効かない。0.5m/s を求めれば rc 100 が出て、機体は
+        0.4m/s で飛ぶ。0.4 へ下げずこのままにする —— 下げることは、機体が許して
+        いる範囲より下にこの処理が機体を制限することであり、§4.13 が禁じている
+        当のものである。上げても何も変わらない。
+      - 上昇 0.3m/s は機体の `altitude.climb_rate`（0.5m/s）より**下**である。
+        項目自身の注記を参照。
     """
 
     altitude_min_m: float = 0.3
     altitude_max_m: float = 1.5
     radius_max_m: float = 2.0        # from the takeoff point / 離陸点からの半径
     speed_max_mps: float = 0.5       # horizontal command ceiling / 水平指令の上限
-    climb_rate_max_mps: float = 0.3  # vertical command ceiling / 垂直指令の上限
+
+    # BELOW the vehicle's own `altitude.climb_rate` (0.5 m/s, params.cpp),
+    # which is what an `rc` of ±100 on the vertical channel maps to. So this
+    # one DOES bind: it scales the stick, sending rc 60 where the operator
+    # asked for the vehicle's full rate.
+    #
+    # Kept anyway, and it is the one deliberate exception to "no stricter
+    # than the vehicle". A climb is the one axis where the judging layer
+    # cannot recover from being wrong quickly: the Monitor's altitude bands
+    # are 0.15/0.40 m wide and it needs `trend_hold_s` (0.6 s) to call a
+    # climb a climb, so at the vehicle's 0.5 m/s the craft crosses the whole
+    # deviation band before the trend is even reported. At 0.3 m/s it does
+    # not. This is a limit on how fast THIS PROGRAM may command a climb, not
+    # a limit on the vehicle: a person on the transmitter still gets the
+    # full 0.5 m/s, because INV-2 gives their stick immediate priority.
+    #
+    # 機体自身の `altitude.climb_rate`（0.5m/s、params.cpp）より**下**である。
+    # それは鉛直チャンネルの `rc` ±100 が対応する値なので、こちらは実際に効く。
+    # スティックを縮小し、操作者が機体の全速を求めたところへ rc 60 を送る。
+    #
+    # それでも残す。「機体より厳しくしない」に対する、唯一の意図した例外である。
+    # 上昇は、判断層が誤りから素早く立ち直れない唯一の軸である。Monitor の高度の
+    # 帯域は 0.15/0.40m の幅しかなく、上昇を上昇と呼ぶには `trend_hold_s`（0.6 秒）
+    # が要る。機体の 0.5m/s では、傾向が報告されるより前に機体は逸脱の帯域を
+    # まるごと通り抜ける。0.3m/s では通り抜けない。これは**この処理が**上昇を
+    # 指令してよい速さの上限であって、機体の上限ではない。送信機を持つ人には
+    # 0.5m/s がそのまま出る。INV-2 がそのスティックに即時の優先権を与えるからで
+    # ある。
+    climb_rate_max_mps: float = 0.3
 
 
 @dataclass(frozen=True)
@@ -117,10 +193,51 @@ class MonitorConfig:
     # 推定が発散したとみなす。
     estimate_diverged_speed_mps: float = 5.0
 
-    # Battery bands [%]. "danger" lands without waiting for Jev.
-    # 電池の区分 [%]。"danger" は Jev を待たず着陸する。
+    # Battery bands [%], on `link.battery_percent`'s linear 3.3-4.2 V map.
+    # "danger" lands WITHOUT waiting for Jev, so it is the one band here
+    # that ends a flight, and it is set from the vehicle's own decision
+    # rather than chosen (§4.13).
+    #
+    # `battery_danger_pct` is the vehicle's 3.4 V warning expressed as a
+    # percentage: (3.4 - 3.3) / (4.2 - 3.3) = 11.1%. That is the voltage at
+    # which the vehicle itself says the pack is low -- it does not land on
+    # it, and neither did the earlier 15% here, which sat at 3.435 V, ABOVE
+    # the vehicle's own warning. Landing there meant this program ended
+    # flights the vehicle had not yet remarked on at all.
+    #
+    # Why not the vehicle's 3.0 V auto-land instead: that is the vehicle's
+    # LAST resort, taken with no margin left, and the PC-side landing needs
+    # time the vehicle's does not -- `LandingConfig.urgent_settle_max_s`
+    # plus the descent. Landing at the vehicle's warning means the PC's
+    # slower landing finishes before the vehicle's own would begin, and if
+    # it does not, the vehicle still lands the craft at 3.0 V underneath.
+    # The two are layered, not competing.
+    #
+    # `battery_low_pct` is a WORD, not an action: it reaches Jev as "running
+    # low" and Jev decides what to do with it. Left where it was, because a
+    # band that only informs cannot be stricter than anything.
+    #
+    # 電池の区分 [%]。`link.battery_percent` の 3.3〜4.2V 線形写像による。
+    #「危険」は Jev を待たずに着陸するので、ここで飛行を終わらせる唯一の区分で
+    # ある。したがって、選ぶのではなく機体自身の判断から決める（§4.13）。
+    #
+    # `battery_danger_pct` は、機体の 3.4V 警告を百分率で表したものである:
+    #（3.4 − 3.3）/（4.2 − 3.3）= 11.1%。機体自身が「パックが低い」と言う電圧で
+    # ある。機体はそこで着陸はしないが、以前の 15% も着陸しはしなかった —— それは
+    # 3.435V にあたり、機体自身の警告より**上**だった。そこで着陸するということは、
+    # 機体がまだ何も言っていない飛行を、この処理が終わらせていたということである。
+    #
+    # 機体の 3.0V 自動着陸に合わせない理由: あれは機体の**最後の**手段であり、
+    # 余裕が尽きた時点で取るものである。一方 PC 側の着陸には、機体側には要らない
+    # 時間が要る（`LandingConfig.urgent_settle_max_s` と降下）。機体の警告値で
+    # 着陸すれば、PC 側の遅い着陸は、機体自身の着陸が始まるより前に終わる。終わら
+    # なくても、その下で機体が 3.0V で降ろす。両者は競合ではなく層である。
+    #
+    # `battery_low_pct` は行動ではなく**語**である。「残り少ない」として Jev に
+    # 届き、どうするかは Jev が決める。知らせるだけの区分は何に対しても厳しく
+    # なりえないので、元の値のままにする。
     battery_low_pct: float = 30.0
-    battery_danger_pct: float = 15.0
+    battery_danger_pct: float = 11.1
 
     # The battery TREND is judged on pack VOLTAGE, not on the percentage.
     #
@@ -1060,6 +1177,30 @@ class RealEnvelopeConfig(EnvelopeConfig):
     半径 2m は判断層を十分に働かせるために選んだ値である。部屋では代償が機体と、
     その部屋にいる人になる。最初の実機飛行は人手で 2m 空けた場所で飛ばす（確認の
     第 5 項がまさにそれを求める）ので、機体はその半分に留める。
+
+    **These are not stricter versions of firmware rules** (§4.13). They
+    describe the ROOM, and the firmware has no notion of a room: it does not
+    know where the aircraft took off from, how far the walls are or who is
+    standing there. Nothing here overrides a decision the vehicle makes --
+    they bound what THIS PROGRAM commands inside limits the vehicle would
+    allow, which is the one thing §4.13 says the PC side is for.
+
+    Worth stating plainly, because the numbers look severe next to the
+    vehicle's: today `sf pilot run --real` flies a HOVER and commands no
+    move at all, so the radius and the horizontal speed are not reached by
+    anything this stage does. They are the bounds the next stage inherits.
+
+    **これらはファームの規則を厳しくしたものではない**（§4.13）。これらが述べて
+    いるのは**部屋**であり、ファームに部屋という概念は無い。機体がどこから離陸した
+    か、壁がどれだけ離れているか、誰がそこに立っているかを、ファームは知らない。
+    ここにあるものは、機体が下す判断を覆さない。機体が許す範囲の内側で、**この
+    処理が**指令するものに上限を与えるだけであり、それこそ §4.13 が「PC 側の役割」
+    として挙げている唯一のものである。
+
+    はっきり書いておく価値がある。機体側の数値と並べると厳しく見えるからである。
+    現状の `sf pilot run --real` が飛ばすのは**ホバリング**であり、移動を一切
+    指令しない。したがって半径も水平速度も、この段階が行うことでは到達しない。
+    これらは次の段階が引き継ぐ上限である。
     """
 
     # 0.3-0.8 m: above the ground effect the craft hovers in and below the
@@ -1145,38 +1286,49 @@ class RealFlightConfig:
     # つないでいる）であり、そのとき到達率はほぼ 0 である。
     telemetry_rate_min: float = 0.40
 
-    # The pack voltage the aircraft must have before it takes off [V].
+    # There is deliberately NO take-off voltage threshold here.
     #
-    # 3.85 V, chosen to agree with the bands the Monitor already uses rather
-    # than as a new opinion about batteries: `link.battery_percent` maps
-    # 3.3-4.2 V onto 0-100%, so `MonitorConfig.battery_low_pct = 30` is
-    # 3.57 V and `battery_danger_pct = 15` is 3.435 V. Taking off at 3.57 V
-    # would mean starting the flight already inside the band whose whole
-    # purpose is to end one. 3.85 V is about 61%, which leaves the flight
-    # the margin those bands assume exists.
+    # The vehicle already owns this decision, in three layers of its own:
+    # `requestArm` refuses an ARM at or below `safety.battery.usb_v`
+    # (`state_manager.cpp`, 3.3 V by default), `failsafe.cpp` warns at
+    # `low_battery_v` (3.4 V) without ending the flight, and it LANDS ITSELF
+    # at `critical_battery_v` (3.0 V, `state_manager.cpp` LOW_BATTERY /
+    # EMERGENCY -> LANDING). A PC-side gate on top of that can only be one of
+    # two things: a duplicate of a rule the vehicle already applies, or a
+    # STRICTER rule that refuses flights the vehicle is willing to make.
     #
-    # Measured on the ground for context, not as the basis: `takeoff` alone
-    # pulls the READING down 4.19 -> 3.79 V within a second (§4.5, the load
-    # transient, not discharge), so a pack starting at 3.85 V under no load
-    # will read close to the low band the moment the motors spin up. That is
-    # expected and is why the trend is judged on volts over a 20 s window
-    # rather than on the instantaneous reading (MonitorConfig).
+    # An earlier version of this field was the second kind. It sat at 3.85 V,
+    # invented rather than measured, and refused most of a cell's usable
+    # range while the vehicle's own lamp reported it fit to fly. That is the
+    # failure this absence prevents, and it is why the preflight now REPORTS
+    # the voltage without judging it (`preflight.py`): the number is worth
+    # showing to the person holding the transmitter, and the decision that
+    # follows from it is the vehicle's.
     #
-    # 離陸前に機体が持っていなければならないパック電圧 [V]。
+    # What the PC side keeps is the part the vehicle does NOT do: the TREND
+    # over a 20 s window and the bands derived from it (`MonitorConfig`).
+    # The vehicle judges an instantaneous voltage against fixed thresholds
+    # and nothing else.
     #
-    # 3.85V は、電池についての新しい見解ではなく、Monitor が既に使っている区分に
-    # 合わせて選んだ値である。`link.battery_percent` は 3.3〜4.2V を 0〜100% に
-    # 写すので、`MonitorConfig.battery_low_pct = 30` は 3.57V、
-    # `battery_danger_pct = 15` は 3.435V にあたる。3.57V で離陸することは、飛行を
-    # 終わらせるためにある当の区分の中から飛行を始めることを意味する。3.85V は
-    # 約 61% で、それらの区分が前提としている余裕を飛行に残す。
+    # ここには離陸時の電圧しきい値を**意図して置かない**。
     #
-    # 地上での実測は根拠ではなく文脈として: `takeoff` だけで**読み**が 1 秒以内に
-    # 4.19V → 3.79V まで落ちる（§4.5。放電ではなく負荷による降下）。したがって
-    # 無負荷で 3.85V から始まるパックは、モータが回った瞬間に低い区分の近くを
-    # 指す。それは想定どおりであり、傾向を瞬時の読みではなく 20 秒窓の電圧で
-    # 判定している理由でもある（MonitorConfig）。
-    battery_min_v: float = 3.85
+    # この判断は既に機体が、自前の 3 層で持っている。`requestArm` は
+    # `safety.battery.usb_v`（`state_manager.cpp`、既定 3.3V）以下で ARM を拒否し、
+    # `failsafe.cpp` は `low_battery_v`（3.4V）で警告するが飛行は終えず、
+    # `critical_battery_v`（3.0V）では**自ら着陸に入る**（`state_manager.cpp` の
+    # LOW_BATTERY / EMERGENCY → LANDING）。その上に PC 側の関門を置いても、
+    # なりうるのは 2 つだけである。機体が既に適用している規則の複製か、機体が応じる
+    # 気のある飛行を拒む**より厳しい**規則かである。
+    #
+    # 以前のこの項目は後者だった。3.85V に置かれ、実測ではなく思いつきであり、機体
+    # 自身のランプが飛行可能を示しているのにセルの使える範囲の大半を拒んでいた。
+    # この不在が防ぐのはその失敗であり、飛行前点検がいま電圧を**判定せず表示する**
+    # 理由でもある（`preflight.py`）。その数値は送信機を持つ人に見せる価値があり、
+    # そこから従う判断は機体のものである。
+    #
+    # PC 側が持ち続けるのは、機体が**やっていない**ほう —— 20 秒窓での**傾向**と、
+    # そこから導く区分である（`MonitorConfig`）。機体が見るのは瞬時の電圧と固定の
+    # しきい値だけである。
 
     # -- preflight: round trips / 飛行前点検: 往復時間 --------------------
 
@@ -1225,6 +1377,19 @@ class RealFlightConfig:
     # 大きくし、1 回遅かった応答を失敗ではなく「遅い」として測れるようにする。
     # 予算が 0.2 秒のリンクで 1 秒返らない応答は、遅いのではなく届いていない。
     command_timeout_s: float = 1.0
+
+    # How long to wait for `takeoff` to answer [s]. Set from the vehicle's
+    # own patience: `cmdTakeoff` gives up after kTakeoffTimeoutMs = 12 s and
+    # answers `error takeoff timeout` (api_task.cpp), so waiting a little
+    # longer is what lets that answer arrive. Why not shorter: giving up
+    # first would leave us unable to tell a refusal from a slow climb, which
+    # is exactly the distinction this wait exists to make.
+    # `takeoff` の応答を待つ時間 [s]。機体自身の待ちに合わせる: `cmdTakeoff` は
+    # kTakeoffTimeoutMs = 12 秒で諦めて `error takeoff timeout` を返す
+    #（api_task.cpp）ので、それより少し長く待つことでその応答が届く。短くしない
+    # 理由: こちらが先に諦めると、拒否と上昇の遅さを区別できなくなる。その区別
+    # こそが、この待ちの存在理由である。
+    takeoff_timeout_s: float = 14.0
 
     # Jev round trips taken during the preflight, and the p95 they must come
     # in under [s]. Three, because this repeats a measurement `sf pilot

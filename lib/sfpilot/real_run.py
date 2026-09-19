@@ -62,6 +62,23 @@ from .safety import KEY_HELP_LINE, KeyListener, LandGuard, LoopWatchdog, apply_k
 # そのまま当てはまる。
 
 
+class TakeoffRefused(RuntimeError):
+    """The vehicle did not take off, and said so.
+
+    Its own class rather than a bare RuntimeError so the caller can report a
+    refusal as what it is -- a flight that never began -- instead of as a
+    crash in the pilot. LandGuard still lands on it, which costs nothing on
+    a machine that never left the floor and is right if it somehow did.
+
+    機体が離陸せず、そう答えた。
+
+    素の RuntimeError にしないのは、呼び出し側が拒否を「始まらなかった飛行」
+    として報告できるようにするためである（自動操縦の異常終了としてではなく）。
+    LandGuard はこれでも着陸を送るが、床にいる機体には無害であり、万一浮いて
+    いたのなら正しい。
+    """
+
+
 @dataclass
 class RealOutcome:
     """How the flight ended and what it measured.
@@ -387,22 +404,44 @@ def _duration(requested, config) -> float:
 
 
 def _take_off(link, config, announce) -> None:
-    """`command`, `takeoff`, then wait out the climb.
+    """`command`, `takeoff`, then wait out the climb. Raises if it refuses.
 
     The wait is not a courtesy: the Monitor adopts its altitude target from
     the hover the climb settles into, and judging during the climb would
     classify it as a deviation (see the note at the top of this module).
 
-    `command`・`takeoff` を送り、上昇を待ち切る。
+    `takeoff` is sent with `send`, which waits for the vehicle's reply, not
+    with the fire-and-forget `send_command`. Why not fire-and-forget: the
+    vehicle refuses to ARM on a low pack and answers `error takeoff timeout`
+    (api_task.cpp, kTakeoffTimeoutMs = 12 s). Unheard, this program would
+    watch a machine sitting on the floor and report a flight. Preflight no
+    longer judges the voltage -- the vehicle decides -- so hearing the
+    vehicle's decision is how that decision reaches us.
+
+    `command`・`takeoff` を送り、上昇を待ち切る。拒まれたら例外を投げる。
 
     この待ちは気遣いではない。Monitor は、上昇が落ち着いたホバリングから高度の
     目標を採用するのであり、上昇中に判定させればそれを逸脱と区分してしまう
     （本モジュール冒頭の注記を参照）。
+
+    `takeoff` は撃ちっぱなしの `send_command` ではなく、応答を待つ `send` で
+    送る。撃ちっぱなしにしない理由: 電圧の低いパックでは機体が ARM を拒み、
+    `error takeoff timeout` を返す（api_task.cpp、kTakeoffTimeoutMs = 12 秒）。
+    それを聞かなければ、この処理は床に置かれたままの機体を監視し、飛行したと
+    報告する。飛行前点検はもう電圧を判定せず機体に委ねているのだから、機体の
+    判断がこちらへ届く経路はこの応答である。
     """
     announce("command を送信 / entering SDK mode")
     link.send("command", config.real.command_timeout_s)
     announce("takeoff を送信 / taking off")
-    link.send_command("takeoff")
+    status, text = link.send("takeoff", config.real.takeoff_timeout_s)
+    took_off = status == "ok"
+    if not took_off:
+        raise TakeoffRefused(
+            f"機体が離陸しなかった（{status}: {text or '応答なし'}）。"
+            f"電池・ARM の可否・機体の状態を確認する"
+            f" / the vehicle did not take off ({status}: {text or 'no reply'})"
+        )
     settle_s = config.sils.takeoff_settle_s
     announce(f"上昇の静定を {settle_s:g}s 待つ / letting the climb settle")
     deadline = time.monotonic() + settle_s

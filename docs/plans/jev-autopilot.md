@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P5 第 1 段階: `sf pilot run --real` を実装。実機で離陸→ホバリング→監視→着陸まで。**実機ではまだ飛ばしていない** — 内容・手順・未実施の項目は 4.12 節）。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-20（PC 側のしきい値を全面的に見直し、**ファームより厳しい制約を課さない**という原則を 4.13 節に明文化。離陸時の電圧判定を撤去し、即時着陸の区分を機体の警告値にそろえた。P5 第 1 段階の `sf pilot run --real` は**実機でまだ飛ばしていない** — 内容・手順・未実施の項目は 4.12 節）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -1437,7 +1437,7 @@ t=23.7  n=+0.919  alt=0.13   vx=+0.242   ← 接地直前。0.72m 前進して�
 
 | 対象 | 内容 |
 |------|------|
-| `lib/sfpilot/preflight.py` | 飛行前点検 5 項目（下記 4.12.2）。判定と、その根拠になった測定値を組で返す |
+| `lib/sfpilot/preflight.py` | 飛行前点検。判定を行う 4 項目と、電圧を表示するだけの 1 項目（下記 4.12.2・4.13）。判定と、その根拠になった測定値を組で返す |
 | `lib/sfpilot/safety.py` | `LandGuard`（例外・Ctrl-C・SIGTERM・正常終了）、`LoopWatchdog`（別スレッドの番人）、`KeyListener`／`apply_key`（`l`／`e`／`h`） |
 | `lib/sfpilot/real_run.py` | 実機の飛行そのもの。点検 → 離陸 → 50Hz ループ → 着陸。`RecordingLink` が送出した指令列を記録する |
 | `lib/sfpilot/config.py` | `RealEnvelopeConfig`（実機の飛行領域）、`RealFlightConfig`（実機だけが要る値）、`real_config()` |
@@ -1451,7 +1451,7 @@ t=23.7  n=+0.919  alt=0.13   vx=+0.242   ← 接地直前。0.72m 前進して�
 | # | 項目 | 合格条件 | なぜ警告ではなく拒否か |
 |---|------|---------|---------------------|
 | (a) | テレメトリ | 140B の v2 が届き、受信率が下限（既定 40%）以上 | 無ければ Monitor は何も区分できず、即時安全則が一度も働かない。104B の v1 は**拒否する**（電池を 1/10 の周期でしか与えず、前方距離は皆無。回避しない） |
-| (b) | 電池電圧 | 見えた最低値が `battery_min_v`（既定 3.85V ≒ 61%）以上 | 下回れば、飛行を終わらせるためにある区分（`battery_low_pct = 30%` は 3.57V）の中から飛行を始めることになる |
+| (b) | 電池電圧 | **常に通る（判定しない）。** 見えた最低値を表示し、機体自身のしきい値（ARM 拒否 3.3V / 自動着陸 3.0V）を添える | **これは点検ではなく報告である。** 飛ぶ・降りるの判断は機体が 3 層で持っており（§4.13）、PC 側の関門は複製か上書きにしかならない。かつてここに 3.85V の下限があり、機体が飛べると判断している飛行を拒んでいた。表の印も `PASS` ではなく `INFO` |
 | (c) | 機体との往復 | `command` を 10 回送り、全件応答、p95 が `command_p95_max_s`（既定 200ms）以内 | §2 のとおり**機体は PC の指令が途絶えても着陸しない**。こちらから届かない `land` とは、PC からは誰も終わらせられない飛行のことである |
 | (d) | Jev への疎通 | 3 回問い、p95 が Judge の期限（500ms）以内。`--fake` では「問い合わせない」と記録 | 届かなければ判断層は毎周期待機し、待機継続の計時がどのみち着陸させる。どちらにせよ終わるなら地上で終わるほうがよい |
 | (e) | 機体の状態 | `IDLE_GROUND` | 他の状態は、機体が操作者の思っている場所に居ないことを意味する |
@@ -1618,15 +1618,16 @@ sf pilot run --real --duration 20
 | PC↔機体の往復時間 | **未計測**（段階 0 で埋まる）。`command_p95_max_s = 0.2s` は実測ではなく、用途から選んだ上限である |
 | 飛行中の UDP:5005 の受信率 | 未計測。§4.8.2 の 58% は机上の 1 回で、飛行中（モータ回転・機体の姿勢変化）では違いうる |
 | `telemetry_silence_land_s = 1.5s` の妥当性 | 上に依存する。実測の欠損の塊（0.08〜0.20 秒）の約 7 倍という以上の根拠は無い |
-| `battery_min_v = 3.85V` で 20 秒飛べるか | 未確認。区分との整合（4.12.2）から選んだ値であり、消費の実測ではない |
+| どの電圧から 20 秒飛べるか | 未確認。PC 側の電圧下限は 4.13 節で撤去したので、離陸の可否を決めるのは機体の ARM 判定（3.3V）だけである。そこから 20 秒のホバリングが成立するかは、放電の実測が無く分かっていない |
 | 実機の前方 ToF のノイズ | 未計測（段階 1 で埋まる） |
 | `emergency` を `e` で送る経路 | **実機で試していない**（モータが止まるため、飛行中にしか試せない） |
 
-### 4.12.9 試験（キー不要・実機不要、54 件）
+### 4.12.9 試験（キー不要・実機不要、65 件）
 
 | ファイル | 固定していること |
 |---------|----------------|
-| `lib/sfpilot/tests/test_preflight.py`（17 件） | 5 項目それぞれが自分の条件でだけ通ること、104B の v1 の拒否、到達率の下限、最低電圧、往復の予算、`IDLE_GROUND` 以外の拒否、**点検が送るのは `command` だけ**であること |
+| `lib/sfpilot/tests/test_preflight.py`（20 件） | 判定を行う 4 項目それぞれが自分の条件でだけ通ること、104B の v1 の拒否、到達率の下限、往復の予算、`IDLE_GROUND` 以外の拒否、**点検が送るのは `command` だけ**であること、そして**電圧は報告するだけで飛行を拒否しないこと**（4.13）|
+| `lib/sfpilot/tests/test_not_stricter_than_firmware.py`（8 件・新設） | **ファームの原文（`params.cpp`・`api_task.cpp`・`failsafe.hpp`）を読み、PC 側の値がそれより厳しくないことを突き合わせる**（4.13）|
 | `lib/sfpilot/tests/test_real_safety.py`（16 件） | `land` が 1 回だけ送られること、応答が無ければ 2 回目を送り**`emergency` は送らないこと**、番人の発火、`l`／`e`／`h`、閉じたリンクでも例外にしないこと |
 | `lib/sfpilot/tests/test_real_run.py`（14 件） | 点検に落ちたら離陸しないこと、**例外でも `land` が出ること**、実機の飛行領域が狭く Arbiter が却下すること、飛行領域以外は SILS と同一であること、指令列の記録 |
 | `lib/sfpilot/tests/test_scenes_and_cli.py`（追加 7 件） | 飛ばす先の未指定・同時指定の拒否、`--preflight-only` が `--real` 専用であること、`say`／`mission`／`explore` の `--real` 拒否 |
@@ -1652,6 +1653,100 @@ sf pilot run --real --duration 20
 | `--fake` での Jev 点検 | 「Jev への疎通（`bench` 相当を 3 回）」 | 規則ベースの judge では**問い合わせず**、そう記録する | `FakeJudge` は表から即答するので、計時すれば 0ms の「往復時間」が出る。表を読む人には網の点検が通ったように見える —— この点検が防ぐためにある、まさにその読み違いである |
 | `--duration` の上限超過 | 「`--duration` 上限（既定 20 秒、最大 60 秒）」 | 拒否せず**切り詰める** | `--duration 120` は「もっと長く飛ばしたい」という要望であって誤りではない。拒否すれば、得られる飛行を得るためにコマンドを打ち直させることになる |
 | 確認の `--yes` | 「`--yes` で省略不可」 | 同左に加え、**非対話では実行しない** | 無言は同意ではなく、非対話のセッションには、送信機を手に持っている人がそもそも居ない |
+
+## 4.13 PC 側はファームより厳しい制約を課さない（2026-09-19）
+
+### 原則
+
+**飛んでよいか・降りるべきかの判断は機体（ファーム）が持つ。PC 側（`lib/sfpilot`）が持つのは、ファームが見ていないことだけである。**
+
+具体的には次の 3 つに限る。
+
+| PC 側が持つもの | ファームが見ていない理由 |
+|-----------------|--------------------------|
+| PC が黙ったときの着陸 | 機体の COMM_LOST が見るのは送信機の ESP-NOW リンクだけで、PC の沈黙では発火しない（§2）。PC が黙っても機体は位置を保ち続ける |
+| 前方の壁 | 機体は前方 ToF を制御にも安全則にも使っていない。停止の判断は PC 側にしかない（§4.9） |
+| **傾向**の判断 | 機体が見るのは瞬時の値と固定のしきい値だけである。20 秒窓での電圧の低下や、高度の推移といった「時間をかけて分かること」を機体は判定しない |
+
+これ以外で PC 側が数値を持つときは、**ファームの値以上に緩い**か、**ファームに対応物が無い**か、**実測に基づく例外として明記されている**か、のいずれかでなければならない。
+
+### なぜこの原則が要るのか（実際に起きたこと）
+
+離陸の電圧下限が `3.85V` に置かれていた。実測ではなく思いつきの値である。機体は 3.4V で警告を出すだけで飛び続け、3.0V ではじめて自ら着陸に入る。つまり **機体自身が「飛べる」と判断し、機体の LED もそれを示している状態で、PC 側が離陸を拒んでいた。** セルの使える範囲（3.0〜4.2V）の大半が、この 1 行で使えなくなっていた。
+
+一般化するとこうなる。PC 側がファームより厳しい数値を置くと、
+
+- その数値は**機体の判断を上書きする**（機体は飛べると言っているのに飛べない）
+- しかも**根拠が無い**ことが多い。ファーム側の値には設計文書と実測の裏付けがあるが、PC 側で後から足した数値にはそれが無い
+- **誰も気づかない**。拒否の理由は「PC 側の下限を下回る」としか出ず、機体が何と言っていたかは表示されない
+
+### 洗い出しの結果
+
+`lib/sfpilot` の全しきい値を、対応するファーム側の値と突き合わせた。ファーム側の出典は `params.cpp`（パラメータ表）・`api_task.cpp`（API 引数の範囲）・`failsafe.hpp` / `failsafe.cpp`（フェイルセーフ）・`state_manager.cpp`（ARM 判定・alert の処理）である。
+
+#### (1) 是正したもの
+
+| 項目 | 変更前 | 変更後 | ファーム側 | 分類 | 根拠 |
+|------|--------|--------|-----------|------|------|
+| `RealFlightConfig.battery_min_v`（離陸時の電圧判定） | 3.85V で離陸拒否 | **項目ごと撤去。点検 (b) は電圧を表示するだけで判定しない** | ARM 拒否 3.3V（`state_manager.cpp` `requestArm`、param `safety.battery.usb_v`）／警告 3.4V（飛び続ける）／**自動着陸 3.0V**（`state_manager.cpp` LOW_BATTERY EMERGENCY → LANDING） | ファームより厳しい・**思いつき** | 機体が 3 層で判断しており、PC 側の関門は複製か上書きにしかならない。オーナー判断で撤去 |
+| `MonitorConfig.battery_danger_pct`（Jev を待たない即時着陸） | 15.0%（= **3.435V**） | **11.1%**（= 機体の警告 3.4V と同値） | 警告 3.4V | ファームより厳しい・**思いつき** | 3.435V は機体自身の警告**より上**。機体がまだ何も言っていない飛行を PC 側が終わらせていた。機体の警告値に合わせる。3.0V の自動着陸に合わせないのは、PC 側の着陸には静定と降下の時間が要るためで、その下に機体の 3.0V が層として残る |
+
+#### (2) ファームに対応が無い（PC 側固有。原則どおり残す）
+
+| 項目 | 値 | なぜファームに無いか |
+|------|-----|---------------------|
+| `RealFlightConfig.telemetry_silence_land_s` | 1.5s | 機体は PC の沈黙で着陸しない（§2）。この規則自体が PC 側の存在理由 |
+| `RealFlightConfig.watchdog_stall_s` / `watchdog_period_s` | 0.5s / 0.1s | 監視ループが止まったことは、そのループ自身には検出できない |
+| `ForwardConfig` 一式（停止距離・後退・ヒステリシス） | §4.9.10 | 機体は前方 ToF を使っていない。係数 4.0s は SILS 8 回の実測の上側包絡（§4.9.10.1） |
+| `MonitorConfig` の傾向系（`battery_drop_fast_v` 0.18V / 窓 20s ほか） | §4.12 | 機体が見るのは瞬時値のみ。低下の**速さ**は誰も見ていない |
+| `EnvelopeConfig.radius_max_m` / `RealEnvelopeConfig.radius_max_m` | 2.0m / 1.0m | 機体は離陸点という概念を持たない。1 回の移動の上限（`kMoveMaxCm` 300cm）しか持たない |
+| `ArbiterConfig.hover_to_land_s` | 10.0s | 「待機が続いている」は Jev との往復の履歴であり、機体には見えない |
+| `LandingConfig` 一式 | §4.3 | 機体は降下中に水平位置を保持しない（設計どおり）。その前に静定させるのは PC 側の仕事 |
+| `JudgeConfig` 一式（期限 0.5s・確信度 0.6 ほか） | §4 | Jev との通信の性質であり、機体とは無関係 |
+
+#### (3) ファームと同値（そろえたまま維持。試験で固定した）
+
+| 項目 | 値 | ファーム側の出典 |
+|------|-----|-----------------|
+| `InstructionConfig.move_min_cm` / `move_max_cm` | 10 / 300cm | `api_task.cpp` `kMoveMinCm` / `kMoveMaxCm` |
+| `MissionConfig.arrival_tolerance_m` | 0.25m（`kReachRadiusM` 0.15m の外側） | `api_task.cpp` `kReachRadiusM` |
+| `preflight.VEHICLE_ARM_REFUSED_V` / `VEHICLE_AUTO_LAND_V` | 3.3V / 3.0V | `params.cpp` `safety.battery.usb_v` / `failsafe.hpp` `critical_battery_v` |
+
+#### (4) ファームより厳しいが、残すもの（理由を明記）
+
+| 項目 | PC 側 | ファーム側 | 残す理由 |
+|------|-------|-----------|---------|
+| `EnvelopeConfig.climb_rate_max_mps` | 0.3m/s | `altitude.climb_rate` 0.5m/s | **唯一の意図した例外。** Monitor の高度帯域は 0.15/0.40m、傾向の判定には `trend_hold_s` 0.6 秒が要る。0.5m/s では傾向が報告される前に逸脱帯域を通り抜けるが、0.3m/s では通り抜けない。**これは「この処理が上昇を指令してよい速さ」の上限であって機体の上限ではない** — 送信機を持つ人には 0.5m/s がそのまま出る（INV-2 がスティックに即時の優先権を与える） |
+| `EnvelopeConfig` の高度帯域 | 0.3〜1.5m（実機 0.3〜0.8m） | API クランプ 0.2〜2.0m（`kAltMinM`/`kAltMaxM`） | 機体は自分の端で**黙って**クランプする。判定の帯域が無ければ Monitor は何も判定できない。**逸脱が生むのは `stop` であって飛行の拒否ではなく**、機体は機体自身の範囲の内側で飛び続ける |
+| `RealEnvelopeConfig` の半径・速度 | 1.0m / 0.15m/s | 対応物なし（速度は `position.stick_vel` 0.4m/s より下） | これらが述べているのは**部屋**である。機体は壁の位置も人の位置も知らない。なお現状の `sf pilot run --real` はホバリングのみで移動を指令しないため、いずれも到達しない。次の段階が引き継ぐ上限 |
+
+#### (5) 効かない（＝厳しくない）ことを確認したもの
+
+| 項目 | PC 側 | ファーム側 | 備考 |
+|------|-------|-----------|------|
+| `EnvelopeConfig.speed_max_mps` | 0.5m/s | `position.stick_vel` 0.4m/s（`rc` ±100 の満舵） | PC 側のほうが**緩い**ので効かない。0.5m/s を求めても rc 100 が出て機体は 0.4m/s で飛ぶ。0.4 へ下げない — 下げれば機体が許す範囲より下に押さえることになり、本節の原則に反する |
+
+#### (6) 判断を仰ぎたいもの（変更していない）
+
+| 項目 | 値 | 論点 |
+|------|-----|------|
+| `PreflightConfig` 相当の `telemetry_rate_min` | 0.40 | 実測 58%（§4.8.2）より下に置いた「質的失敗の検出用」の値。ファームに対応物は無いので原則違反ではないが、**実測は 1 部屋 1 回**である。飛行前点検で電波環境の悪い日の飛行を拒む可能性は残る |
+| `RealFlightConfig.command_p95_max_s` | 0.2s | **未実測**（§4.12.8）。ファームに対応物は無い。実機の p50/p95 を測って見直す必要がある |
+| `RealFlightConfig.max_duration_s` | 60s | ファームに飛行時間の上限は無い。運用上の上限であり、電池の持ちとの関係は未実測 |
+| `MonitorConfig.battery_low_pct` | 30%（= 3.57V） | 行動を起こさず Jev に「残り少ない」という**語**を渡すだけなので原則違反ではないが、機体の警告 3.4V より上にある。語の妥当性は飛行ログで見直す余地がある |
+| ファーム側 `critical_battery_v` = 3.0V | — | **今回は触らない（オーナー判断）。** この値の妥当性（着陸に要する時間と電力、セルの放電終止電圧との関係）は、飛行ログの実測で別途見直す |
+
+### 実装への反映
+
+- `lib/sfpilot/config.py`: `RealFlightConfig.battery_min_v` を撤去（不在の理由をコメントで明記）。`MonitorConfig.battery_danger_pct` を 11.1 へ。`EnvelopeConfig` の各値に「ファーム側のどれに対してどう立つか」を併記
+- `lib/sfpilot/preflight.py`: 点検 (b) を判定から**表示**へ。`VEHICLE_ARM_REFUSED_V` / `VEHICLE_AUTO_LAND_V` を定数として持ち、行に「飛行可否は機体が判断する」と明示。表の印は `PASS` ではなく **`INFO`**（不合格になりえない行に、なりえた行と同じ印を付けない）
+- `lib/sfpilot/tests/test_not_stricter_than_firmware.py`（新設・8 件）: **ファームの原文を正規表現で読み、PC 側の値と突き合わせる。** 値を転記しないのは、両側を書き写した試験が永遠に自分自身と一致するからである。ファームの書き方が変わって値が見つからなくなった場合は、読み飛ばさず**不合格**にする（黙って検査をやめる検査は、検査が無いことより悪い）
+
+### 試験
+
+`pytest lib/sfpilot lib/sfcli lib/sflog` = **532 passed / 1 skipped**（変更前の基準 521 に対し、飛行前点検 +3、新設のファーム突き合わせ +8）。
+
+新設の試験が実際に regression を捕らえることも確認した。`battery_danger_pct` を 15.0 に、`speed_max_mps` を 0.3 に戻すと、該当の 2 件が期待どおり失敗する。
 
 ## 5. 置き場所
 
@@ -1679,7 +1774,7 @@ sf pilot run --real --duration 20
 | `lib/sfpilot/landing.py` | 着陸前手順（移動を終える → `stop` → 静定待ち → `land`）| 実装済み（P4） |
 | `lib/sfpilot/events.py` | 出来事の流れ（`EventBus`）。記録とライブ表示の分岐点 | 実装済み（P4c） |
 | `lib/sfpilot/recording.py` | SILS 飛行のフライトログ一式の置き場所と命名 | 実装済み（P4c） |
-| `lib/sfpilot/preflight.py` | 飛行前点検 5 項目（テレメトリ・電圧・機体との往復・Jev・機体の状態）| 実装済み（P5 第 1 段階 / 4.12）|
+| `lib/sfpilot/preflight.py` | 飛行前点検（テレメトリ・機体との往復・Jev・機体の状態の 4 判定 ＋ 電圧の表示）| 実装済み（P5 第 1 段階 / 4.12、電圧の扱いは 4.13）|
 | `lib/sfpilot/safety.py` | `LandGuard`（例外・シグナル・終了）、`LoopWatchdog`（別スレッドの番人）、キー操作 | 実装済み（P5 第 1 段階 / 4.12）|
 | `lib/sfpilot/real_run.py` | 実機の飛行（点検 → 離陸 → 50Hz ループ → 着陸）と送信した指令列の記録 | 実装済み（P5 第 1 段階 / 4.12。**実機未飛行**）|
 | `lib/sfcli/commands/pilot_web.py` | `--web` の HTTP・SSE サーバ（127.0.0.1 のみ） | 実装済み（P4c） |
@@ -1740,7 +1835,7 @@ security add-generic-password -U -a "$USER" -s typesafe-api-key -w
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 395 件（ライブ表示 14 件・記録 6 件・探索 43 件・実機 54 件を含む。実機のものは 4.12.9）。キー不要・通信不要で
+`lib/sfpilot/tests/` に 406 件（ライブ表示 14 件・記録 6 件・探索 43 件・実機 65 件を含む。実機のものは 4.12.9）。キー不要・通信不要で
 通る。ブラウザ表示の共有部分は `lib/sfcli/commands/test_web_assets.py` に 10 件
 （3D シーンの切り出しで `sf telemetry --web` が壊れていないことの確認を含む）。加えて
 `simulator/tests/test_mission_sils.py` に SILS の実飛行 6 件（`--fake`。エミュレータの
@@ -2857,7 +2952,7 @@ the `--preflight-only` check could not be run against hardware.
 
 | Target | Contents |
 |--------|----------|
-| `lib/sfpilot/preflight.py` | The five preflight checks (§4.12.2). Each returns its verdict together with the measurement it was reached from |
+| `lib/sfpilot/preflight.py` | The preflight: four checks that judge, plus the voltage, which is reported only (§4.12.2, §4.13). Each returns its verdict together with the measurement it was reached from |
 | `lib/sfpilot/safety.py` | `LandGuard` (exceptions, Ctrl-C, SIGTERM, normal exit), `LoopWatchdog` (a watchdog on its own thread), `KeyListener` / `apply_key` (`l` / `e` / `h`) |
 | `lib/sfpilot/real_run.py` | The real flight itself: preflight, take off, 50 Hz loop, land. `RecordingLink` records the command sequence that was transmitted |
 | `lib/sfpilot/config.py` | `RealEnvelopeConfig` (the real flight area), `RealFlightConfig` (what only a real flight needs), `real_config()` |
@@ -2866,12 +2961,12 @@ the `--preflight-only` check could not be run against hardware.
 
 ### 4.12.2 What the preflight checks
 
-All five must pass or nothing takes off. One missing check refuses the flight.
+All four judging checks must pass or nothing takes off; one missing check refuses the flight. The fifth row, the pack voltage, is reported and never refuses one (§4.13).
 
 | # | Check | Passes when | Why refusal rather than a warning |
 |---|-------|-------------|-----------------------------------|
 | (a) | Telemetry | The 140-byte v2 packet arrives, at or above the delivery floor (40% by default) | Without it the Monitor classifies nothing and the immediate safety rules never fire. A 104-byte v1 stream is **refused**, not worked around: it supplies the battery at a tenth of the rate and no forward distance at all |
-| (b) | Pack voltage | The lowest reading seen is at or above `battery_min_v` (3.85 V ≈ 61% by default) | Below it the flight starts inside the band whose purpose is to end one (`battery_low_pct = 30%` is 3.57 V) |
+| (b) | Pack voltage | **Always passes (it judges nothing).** Shows the lowest reading seen, beside the vehicle's own thresholds (ARM refused at 3.3 V, auto-land at 3.0 V) | **A report, not a check.** Whether to fly or come down is the vehicle's decision, taken in three layers of its own (§4.13), so a PC-side gate could only duplicate or override it. A 3.85 V minimum once sat here and refused flights the vehicle judged itself fit to make. The table's mark is `INFO`, not `PASS` |
 | (c) | Vehicle round trip | `command` sent 10 times, all answered, p95 within `command_p95_max_s` (200 ms by default) | Per §2 **the vehicle does not land itself when the PC goes quiet**. A `land` this side cannot deliver is a flight nobody can end from the PC |
 | (d) | Jev reachability | Asked 3 times, p95 within the Judge's deadline (500 ms). With `--fake`, recorded as not asked | Without it the judging layer hovers every cycle and the hover-to-land timer lands the aircraft anyway. If the flight ends either way, better on the ground |
 | (e) | Vehicle state | `IDLE_GROUND` | Any other state means the aircraft is not where the operator believes it is |
@@ -3061,15 +3156,16 @@ reported, or the values jump. All three are the same symptom as the
 | PC↔vehicle round trip | **Unmeasured** (stage 0 fills it). `command_p95_max_s = 0.2 s` is a bound chosen from what the number is for, not a measurement |
 | UDP:5005 delivery rate in flight | Unmeasured. §4.8.2's 58% is one bench measurement, and flight (spinning motors, changing attitude) may differ |
 | Whether `telemetry_silence_land_s = 1.5 s` is right | Depends on the above. Its only basis is being about seven times the measured loss burst (0.08–0.20 s) |
-| Whether 20 s is flyable from `battery_min_v = 3.85 V` | Unverified. The figure was chosen to agree with the Monitor's bands (§4.12.2), not from a discharge measurement |
+| What voltage 20 s is flyable from | Unverified. The PC-side minimum was removed in §4.13, so the only gate on take-off is the vehicle's own ARM threshold (3.3 V). Whether a 20 s hover follows from there is unknown, for want of a discharge measurement |
 | The real forward-ToF noise | Unmeasured (stage 1 fills it) |
 | The `e` → `emergency` path on hardware | **Untried**: it cuts the motors, so it can only be tried in flight |
 
-### 4.12.9 Tests (no key, no hardware — 54 of them)
+### 4.12.9 Tests (no key, no hardware — 65 of them)
 
 | File | What it pins |
 |------|--------------|
-| `lib/sfpilot/tests/test_preflight.py` (17) | Each of the five checks passes only on the condition it names; the 104-byte v1 refusal; the delivery floor; the voltage minimum; the round-trip budget; refusing anything but `IDLE_GROUND`; and that **the preflight sends only `command`** |
+| `lib/sfpilot/tests/test_preflight.py` (20) | Each of the four judging checks passes only on the condition it names; the 104-byte v1 refusal; the delivery floor; the round-trip budget; refusing anything but `IDLE_GROUND`; that **the preflight sends only `command`**; and that **the voltage is reported and never refuses a flight** (§4.13) |
+| `lib/sfpilot/tests/test_not_stricter_than_firmware.py` (8, new) | **Parses the firmware's own sources (`params.cpp`, `api_task.cpp`, `failsafe.hpp`) and matches the PC-side values against them, so none is stricter** (§4.13) |
 | `lib/sfpilot/tests/test_real_safety.py` (16) | `land` sent exactly once; a second attempt when unacknowledged and **never `emergency`**; the watchdog firing; `l` / `e` / `h`; a closed link not turning an exit into a traceback |
 | `lib/sfpilot/tests/test_real_run.py` (14) | A failing preflight takes off nothing; **an exception still lands the aircraft**; the real flight area is narrower and the Arbiter enforces it; everything but the envelope matches SILS; the command sequence |
 | `lib/sfpilot/tests/test_scenes_and_cli.py` (7 added) | Refusing no target and both targets; `--preflight-only` being `--real`-only; the `--real` refusals on `say` / `mission` / `explore` |
@@ -3096,6 +3192,100 @@ fourth came out of a readability review of the finished code.
 | The Jev check under `--fake` | "Jev reachability (`bench`-equivalent, 3 times)" | A rule-based judge is **not asked**, and that is recorded | `FakeJudge` answers instantly from a table, so timing it produces a 0 ms "round trip" that reads as a passing network check — the exact misreading this check exists to prevent |
 | `--duration` above the ceiling | "`--duration` ceiling (20 s default, 60 s maximum)" | **Clamped**, not refused | `--duration 120` is a request for a longer flight, not a mistake. Refusing would make the operator re-type the command to get the flight they can have |
 | The confirmation and `--yes` | "`--yes` cannot skip it" | As planned, plus **refused outright when non-interactive** | Silence is not consent, and a non-interactive session has nobody in it to be holding a transmitter |
+
+## 4.13 The PC Side Imposes No Limit Stricter Than the Firmware's (2026-09-19)
+
+### The principle
+
+**Whether the aircraft may fly, and whether it must come down, is the vehicle's decision. The PC side (`lib/sfpilot`) holds only what the vehicle does not look at.**
+
+That is three things, and no more.
+
+| What the PC side holds | Why the vehicle does not look at it |
+|------------------------|-------------------------------------|
+| Landing when the PC goes quiet | The vehicle's COMM_LOST watches only the transmitter's ESP-NOW link and never fires on the PC's silence (§2). The vehicle holds position indefinitely instead |
+| The wall ahead | The vehicle uses the forward ToF neither for control nor for any safety rule. The decision to stop exists only on the PC side (§4.9) |
+| **Trends** | The vehicle judges instantaneous values against fixed thresholds. It never judges what takes time to become visible — the voltage's fall over a 20 s window, the altitude's drift |
+
+Any other number the PC side holds must be **at least as permissive as the firmware's**, or have **no counterpart in the firmware**, or be **a documented exception with a measurement behind it**.
+
+### Why the principle is needed (what actually happened)
+
+The take-off voltage minimum sat at `3.85 V`, invented rather than measured. The vehicle warns at 3.4 V and keeps flying; only at 3.0 V does it land itself. So **the PC refused to take off while the vehicle judged itself fit to fly and its own lamp said so.** One line turned away most of a cell's usable range (3.0–4.2 V).
+
+Generalised: when the PC side sets a figure stricter than the firmware's,
+
+- it **overrides the vehicle's judgement** (the vehicle says it can fly, and it does not);
+- it usually **has no basis**. The firmware's values carry design documents and measurements behind them; a figure added later on the PC side does not;
+- and **nobody notices**. The refusal reads "below the PC-side minimum" and never states what the vehicle had to say.
+
+### What the audit found
+
+Every threshold in `lib/sfpilot` was matched against its firmware counterpart. The firmware sources are `params.cpp` (the parameter table), `api_task.cpp` (API argument ranges), `failsafe.hpp` / `failsafe.cpp` (the failsafes) and `state_manager.cpp` (the ARM gates and the handling of alerts).
+
+#### (1) Corrected
+
+| Item | Was | Now | Firmware | Class | Basis |
+|------|-----|-----|----------|-------|-------|
+| `RealFlightConfig.battery_min_v` (the take-off voltage gate) | Refused take-off below 3.85 V | **Removed entirely. Check (b) now REPORTS the voltage and judges nothing** | ARM refused at 3.3 V (`state_manager.cpp` `requestArm`, param `safety.battery.usb_v`); warning at 3.4 V (keeps flying); **auto-land at 3.0 V** (`state_manager.cpp` LOW_BATTERY EMERGENCY → LANDING) | Stricter than the firmware; **invented** | The vehicle decides this in three layers, so a PC-side gate could only duplicate or override it. Removed on the owner's decision |
+| `MonitorConfig.battery_danger_pct` (the immediate landing that does not wait for Jev) | 15.0% (= **3.435 V**) | **11.1%** (= the vehicle's own 3.4 V warning) | Warning at 3.4 V | Stricter than the firmware; **invented** | 3.435 V sits **above** the vehicle's own warning, so the PC was ending flights the vehicle had not yet remarked on. Set to the vehicle's warning. Not to the 3.0 V auto-land, because a PC-side landing needs settling and descent time the vehicle's does not — and the vehicle's 3.0 V remains as the layer underneath |
+
+#### (2) No firmware counterpart (PC-side by nature; kept, as the principle intends)
+
+| Item | Value | Why the firmware has none |
+|------|-------|---------------------------|
+| `RealFlightConfig.telemetry_silence_land_s` | 1.5 s | The vehicle does not land on the PC's silence (§2). This rule is the PC side's reason to exist |
+| `RealFlightConfig.watchdog_stall_s` / `watchdog_period_s` | 0.5 s / 0.1 s | A loop that has stopped cannot detect that it has |
+| All of `ForwardConfig` (stopping distance, retreat, hysteresis) | §4.9.10 | The vehicle does not use the forward ToF. The 4.0 s coefficient is the upper envelope of 8 measured SILS approaches (§4.9.10.1) |
+| `MonitorConfig`'s trend figures (`battery_drop_fast_v` 0.18 V, the 20 s window, …) | §4.12 | The vehicle sees instantaneous values only. Nobody else watches the RATE of the fall |
+| `EnvelopeConfig.radius_max_m` / `RealEnvelopeConfig.radius_max_m` | 2.0 m / 1.0 m | The vehicle has no notion of a take-off point, only a per-move ceiling (`kMoveMaxCm` 300 cm) |
+| `ArbiterConfig.hover_to_land_s` | 10.0 s | "Hovering has gone on" is a history of Jev round trips, invisible to the vehicle |
+| All of `LandingConfig` | §4.3 | The vehicle holds no horizontal position while descending, by design. Settling beforehand is the PC side's work |
+| All of `JudgeConfig` (0.5 s deadline, 0.6 confidence, …) | §4 | Properties of the link to Jev, unrelated to the vehicle |
+
+#### (3) Identical to the firmware (kept aligned, and now pinned by a test)
+
+| Item | Value | Firmware source |
+|------|-------|-----------------|
+| `InstructionConfig.move_min_cm` / `move_max_cm` | 10 / 300 cm | `api_task.cpp` `kMoveMinCm` / `kMoveMaxCm` |
+| `MissionConfig.arrival_tolerance_m` | 0.25 m (outside `kReachRadiusM` = 0.15 m) | `api_task.cpp` `kReachRadiusM` |
+| `preflight.VEHICLE_ARM_REFUSED_V` / `VEHICLE_AUTO_LAND_V` | 3.3 V / 3.0 V | `params.cpp` `safety.battery.usb_v` / `failsafe.hpp` `critical_battery_v` |
+
+#### (4) Stricter than the firmware, and kept (each with its reason stated)
+
+| Item | PC side | Firmware | Why it stays |
+|------|---------|----------|--------------|
+| `EnvelopeConfig.climb_rate_max_mps` | 0.3 m/s | `altitude.climb_rate` 0.5 m/s | **The one deliberate exception.** The Monitor's altitude bands are 0.15/0.40 m wide and a trend needs `trend_hold_s` = 0.6 s to be called one. At 0.5 m/s the craft crosses the whole deviation band before the trend is reported; at 0.3 m/s it does not. **This bounds how fast THIS PROGRAM may command a climb, not the vehicle** — a person on the transmitter still gets the full 0.5 m/s, because INV-2 gives their stick immediate priority |
+| `EnvelopeConfig`'s altitude band | 0.3–1.5 m (real: 0.3–0.8 m) | API clamp 0.2–2.0 m (`kAltMinM`/`kAltMaxM`) | The vehicle clamps **silently** at its own edges, and a judging layer with no band has nothing to judge. **An excursion produces `stop`, not a refusal to fly**, and the craft keeps flying inside the vehicle's own range |
+| `RealEnvelopeConfig`'s radius and speed | 1.0 m / 0.15 m/s | None (the speed is below `position.stick_vel` = 0.4 m/s) | These describe the **room**, and the vehicle knows neither where the walls are nor who is standing there. Note that `sf pilot run --real` flies a hover and commands no move today, so neither is reached; they are the bounds the next stage inherits |
+
+#### (5) Confirmed not to bind at all
+
+| Item | PC side | Firmware | Note |
+|------|---------|----------|------|
+| `EnvelopeConfig.speed_max_mps` | 0.5 m/s | `position.stick_vel` 0.4 m/s (full scale for `rc` ±100) | The PC side is the **more permissive** of the two, so it never binds: asking for 0.5 m/s sends rc 100 and the craft flies at 0.4 m/s. Not lowered to 0.4 — that would hold the craft below what the craft allows, which is what this section forbids |
+
+#### (6) Left unchanged, for the owner to decide
+
+| Item | Value | The question |
+|------|-------|--------------|
+| `telemetry_rate_min` | 0.40 | Set below the measured 58% (§4.8.2) to catch the qualitative failure. No firmware counterpart, so it breaks no principle — but **the measurement is one room, one occasion**, and it can still refuse a flight on a day with worse radio |
+| `RealFlightConfig.command_p95_max_s` | 0.2 s | **Unmeasured** (§4.12.8). No firmware counterpart. The real p50/p95 should be recorded and this revisited |
+| `RealFlightConfig.max_duration_s` | 60 s | The firmware has no flight-time ceiling. An operational bound whose relation to battery endurance is unmeasured |
+| `MonitorConfig.battery_low_pct` | 30% (= 3.57 V) | Breaks no principle — it takes no action, only handing Jev the WORD "running low" — but it sits above the vehicle's 3.4 V warning. Whether the word is apt is worth revisiting from flight logs |
+| The firmware's `critical_battery_v` = 3.0 V | — | **Not touched here (the owner's decision).** Whether it is right — the time and power a landing needs, against the cell's discharge cutoff — is to be revisited separately from measured flight logs |
+
+### How this reached the implementation
+
+- `lib/sfpilot/config.py`: `RealFlightConfig.battery_min_v` removed, with the reason for the absence written where the field was. `MonitorConfig.battery_danger_pct` → 11.1. Each `EnvelopeConfig` value now states how it stands against its firmware counterpart.
+- `lib/sfpilot/preflight.py`: check (b) turned from a verdict into a **report**. `VEHICLE_ARM_REFUSED_V` / `VEHICLE_AUTO_LAND_V` are held as constants and the row says that the vehicle decides. The table's mark is **`INFO`**, not `PASS` — a row that cannot fail must not wear the mark of one that could.
+- `lib/sfpilot/tests/test_not_stricter_than_firmware.py` (new, 8 tests): **the firmware's own sources are parsed and matched against the PC-side values.** They are not copied, because a test that restates both sides agrees with itself for ever. A value that can no longer be found **fails** rather than skipping — a check that quietly stops checking is worse than no check.
+
+### Tests
+
+`pytest lib/sfpilot lib/sfcli lib/sflog` = **532 passed / 1 skipped** (against the 521 baseline: +3 in the preflight, +8 in the new firmware comparison).
+
+The new tests were confirmed to catch the regression they exist for: restoring `battery_danger_pct` to 15.0 and `speed_max_mps` to 0.3 fails exactly the two assertions that name them.
 
 ## 5. Placement
 
@@ -3149,7 +3339,7 @@ The remedy is a test that runs **measured samples through Monitor → Summarizer
 
 The samples are recorded from a real SILS flight rather than written by hand (`lib/sfpilot/tests/fixtures/`; the README there gives the reason — a hand-written sample would encode the same wrong assumptions the code did).
 
-395 tests in `lib/sfpilot/tests/` (including 14 for the live view, 6 for the recording and 54 for the real-hardware path — §4.12.9), all passing without a key or a network, plus 10 in `lib/sfcli/commands/test_web_assets.py` for the shared browser assets (including the check that extracting the 3D scene left `sf telemetry --web` behaving as before), plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+406 tests in `lib/sfpilot/tests/` (including 14 for the live view, 6 for the recording and 65 for the real-hardware path — §4.12.9), all passing without a key or a network, plus 10 in `lib/sfcli/commands/test_web_assets.py` for the shared browser assets (including the check that extracting the 3D scene left `sf telemetry --web` behaving as before), plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
 
 P3 adds: figure extraction across half-width, full-width and kanji numerals in m, cm and degrees; every assembly rule (everything after the first `none` is dropped, a takeoff and a landing are supplied, an unspecified amount takes the default band, a spoken figure outranks the band); that the envelope pre-check refuses an over-reaching plan and names the offending step; that a low-confidence step is not flown; the `return_home` computation including a turn along the way; that the hovering `rc` is withheld while a plan drives the vehicle but `land` is not; that waiting for an answer does not interrupt the sequence while a hold Jev chose does; that a step waits for the vehicle's reply and for the craft to settle; and that a non-interactive session will not fly without `--yes`.
 

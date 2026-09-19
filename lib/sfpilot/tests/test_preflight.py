@@ -1,12 +1,14 @@
 """
 What the preflight guarantees before a real aircraft takes off: each of the
-five checks passes only on the condition it names, a 104-byte v1 stream is
-refused rather than worked around, and one failing check refuses the whole
-flight.
+four judging checks passes only on the condition it names, a 104-byte v1
+stream is refused rather than worked around, one failing check refuses the
+whole flight, and the pack voltage is REPORTED without ever refusing one --
+because the vehicle owns that decision and applies it itself.
 
-飛行前点検が、実機が離陸する前に保証すること: 5 つの点検それぞれが、自分が
-名指しする条件でだけ通ること、104 バイトの v1 の流れを回避せず拒否すること、
-1 つでも不合格なら飛行全体を拒否すること。
+飛行前点検が、実機が離陸する前に保証すること: 判定を行う 4 つの点検それぞれが、
+自分が名指しする条件でだけ通ること、104 バイトの v1 の流れを回避せず拒否する
+こと、1 つでも不合格なら飛行全体を拒否すること、そしてパック電圧は**報告する
+だけ**で飛行を拒否しないこと —— その判断は機体が持ち、機体自身が下すからである。
 
 The link here is a stand-in, not a socket: what is under test is the rule
 each check applies, and a real socket would add the delivery rate of the
@@ -22,7 +24,8 @@ from sfpilot.config import DEFAULT_CONFIG, real_config
 from sfpilot.link import Sample
 from sfpilot.preflight import (
     CHECK_BATTERY, CHECK_JEV, CHECK_STATE, CHECK_TELEMETRY, CHECK_VEHICLE_LINK,
-    STATE_IDLE_GROUND, format_table, run_preflight,
+    STATE_IDLE_GROUND, VEHICLE_ARM_REFUSED_V, VEHICLE_AUTO_LAND_V,
+    format_table, run_preflight,
 )
 
 CONFIG = real_config(DEFAULT_CONFIG)
@@ -159,19 +162,24 @@ def test_one_failing_check_refuses_the_whole_flight(clock, sleep):
     飛行は全か無かである。各点検は、飛行が空中で依拠するものを守っており、
     5 つ中 4 つで通る報告とは、そのうち 1 つを欠いた飛行を許可することである。
     """
-    on_a_flat_pack = [_healthy(battery_v=3.5, battery_pct=22.0) for _ in range(100)]
-    link = FakeLink(samples=on_a_flat_pack)
+    # The vehicle is in the air under someone else's control. Everything
+    # else about this link is healthy, so the only thing that can refuse the
+    # flight is check (e).
+    # 機体が誰か別の制御下で空中にある。このリンクの他はすべて健全なので、飛行を
+    # 拒否しうるのは点検 (e) だけである。
+    already_flying = [_healthy(flight_state="FLYING") for _ in range(100)]
+    link = FakeLink(samples=already_flying)
 
     report = _report(link, clock=clock, sleep=sleep)
 
     assert not report.ok
-    assert not report.get(CHECK_BATTERY).passed
+    assert not report.get(CHECK_STATE).passed
     # The others still ran and still passed: a failing check must not make
     # the rest unreadable, because the table is what the operator acts on.
     # 他の点検は走り、通っている。1 つの不合格が残りを読めなくしてはならない。
     # 操作者が行動の根拠にするのはその表だからである。
     assert report.get(CHECK_TELEMETRY).passed
-    assert report.get(CHECK_STATE).passed
+    assert report.get(CHECK_VEHICLE_LINK).passed
 
 
 def test_the_table_names_every_check_and_the_verdict(clock, sleep):
@@ -275,31 +283,104 @@ def test_the_measured_rate_is_recorded_for_the_trace(clock, sleep):
 # =============================================================================
 # (b) battery / 電池
 # =============================================================================
-def test_a_pack_at_the_minimum_passes_and_one_below_it_does_not(clock, sleep):
-    """The gate is `battery_min_v`, applied to the LOWEST reading seen.
+def test_the_voltage_is_reported_and_never_refuses_the_flight(clock, sleep):
+    """The voltage check passes on ANY readable voltage, including a flat pack.
 
-    The lowest rather than the mean: the aircraft is on the ground with the
-    motors off, so there is no load transient to average away, and a pack
-    that dipped once will dip again under a hover.
+    The vehicle owns this decision and applies it in three layers of its
+    own: `requestArm` refuses an ARM at or below 3.3 V, the 3.4 V warning
+    does not end a flight, and the vehicle lands itself at 3.0 V. A gate
+    here could only duplicate that or — as the removed 3.85 V threshold
+    did — refuse flights the vehicle was willing to make.
 
-    関門は `battery_min_v` であり、見えた**最も低い**読みに適用すること。
+    電圧の点検が、読める電圧であればどんな値でも通ること（空のパックでも）。
 
-    平均ではなく最低値にする。機体は接地しモータは止まっており、均して消すべき
-    負荷の過渡は無い。一度落ち込んだパックは、ホバリングでも落ち込む。
+    この判断は機体が持ち、しかも自前の 3 層で適用している。`requestArm` は 3.3V
+    以下で ARM を拒否し、3.4V の警告は飛行を終わらせず、3.0V で機体は自ら着陸する。
+    ここに関門を置いても、その複製になるか、あるいは撤去した 3.85V がそうであった
+    ように、機体が応じる気のある飛行を拒むかにしかならない。
     """
-    minimum = CONFIG.real.battery_min_v
-    at_the_gate = FakeLink(samples=[_healthy(battery_v=minimum) for _ in range(100)])
-    assert _report(at_the_gate, clock=clock, sleep=sleep).get(CHECK_BATTERY).passed
+    # Below every one of the vehicle's own thresholds -- it would not even
+    # arm on this pack. The preflight still reports it and still passes,
+    # because refusing here is the vehicle's job and it does it.
+    # 機体自身のどのしきい値よりも下であり、このパックでは ARM すらしない。それ
+    # でも点検は報告して通す。ここで拒むのは機体の仕事であり、機体はそれをする。
+    flat = 3.0 - 0.2
+    link = FakeLink(samples=[_healthy(battery_v=flat, battery_pct=0.0)
+                             for _ in range(100)])
 
-    clock.state["now"] = 0.0
-    dipping = [_healthy(battery_v=minimum) for _ in range(99)]
-    dipping.append(_healthy(battery_v=minimum - 0.1))
-    below = FakeLink(samples=dipping)
+    report = _report(link, clock=clock, sleep=sleep)
+    check = report.get(CHECK_BATTERY)
 
-    check = _report(below, clock=clock, sleep=sleep).get(CHECK_BATTERY)
+    assert check.passed
+    assert report.ok
+    assert check.measured["lowest_v"] == pytest.approx(flat, abs=1e-3)
 
-    assert not check.passed
-    assert check.measured["lowest_v"] == pytest.approx(minimum - 0.1, abs=1e-3)
+
+def test_the_voltage_reported_is_the_lowest_reading_seen(clock, sleep):
+    """The row shows the worst reading, not the mean.
+
+    The aircraft is on the ground with the motors off, so there is no load
+    transient to average away, and a pack that dipped once will dip again
+    under a hover. The honest number to put in front of the operator is the
+    worst one that was seen.
+
+    表示するのが平均ではなく**最も低い**読みであること。
+
+    機体は接地しモータは止まっており、均して消すべき負荷の過渡は無い。一度
+    落ち込んだパックは、ホバリングでも落ち込む。操作者の前に置くべき正直な数値は、
+    見えたうちで最も悪いものである。
+    """
+    dip = 3.71
+    samples = [_healthy(battery_v=4.05) for _ in range(99)]
+    samples.append(_healthy(battery_v=dip))
+    link = FakeLink(samples=samples)
+
+    check = _report(link, clock=clock, sleep=sleep).get(CHECK_BATTERY)
+
+    assert check.measured["lowest_v"] == pytest.approx(dip, abs=1e-3)
+    assert f"{dip:.2f}" in check.detail
+
+
+def test_the_row_names_the_vehicles_own_thresholds(clock, sleep):
+    """The reported line says whose decision the voltage is.
+
+    Without the vehicle's numbers beside it, a bare voltage invites the
+    reader to supply a threshold of their own -- which is how the removed
+    3.85 V gate came to exist in the first place.
+
+    表示する行が、その電圧が誰の判断に属するかを述べること。
+
+    機体側の数値を添えずに電圧だけを出せば、読み手は自分のしきい値を当てはめたく
+    なる。撤去した 3.85V の関門が生まれた経緯がまさにそれである。
+    """
+    link = FakeLink(samples=[_healthy() for _ in range(100)])
+
+    check = _report(link, clock=clock, sleep=sleep).get(CHECK_BATTERY)
+
+    assert check.measured["vehicle_arm_refused_at_v"] == VEHICLE_ARM_REFUSED_V
+    assert check.measured["vehicle_auto_lands_at_v"] == VEHICLE_AUTO_LAND_V
+    assert "機体が判断" in check.detail
+
+
+def test_the_table_marks_the_voltage_row_as_information(clock, sleep):
+    """`format_table` prints INFO, not PASS, beside the voltage.
+
+    A row that cannot fail must not wear the mark of a row that could have:
+    five PASS marks would tell the operator that five things were verified,
+    when only four were.
+
+    `format_table` が電圧の行に PASS ではなく INFO を表示すること。
+
+    不合格になりえない行が、なりえた行と同じ印を付けてはならない。PASS が 5 つ
+    並べば、操作者には 5 件が確かめられたと読める。実際に確かめたのは 4 件である。
+    """
+    link = FakeLink(samples=[_healthy() for _ in range(100)])
+
+    lines = format_table(_report(link, clock=clock, sleep=sleep))
+
+    voltage_row = next(line for line in lines if "電池電圧" in line)
+    assert "[INFO]" in voltage_row
+    assert "[PASS]" not in voltage_row
 
 
 def test_no_voltage_at_all_points_at_the_telemetry_check(clock, sleep):

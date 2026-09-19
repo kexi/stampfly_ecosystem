@@ -2,19 +2,21 @@
 sfpilot.preflight - the checks that decide whether a real flight starts.
 sfpilot.preflight - 実機の飛行を始めてよいかを決める点検。
 
-Five checks, all of which must pass before anything takes off:
+Four checks, all of which must pass before anything takes off, plus one
+line that is REPORTED and never judged:
 
   (a) telemetry arrives, as the 140-byte v2 packet, with the battery and
       the downward ToF valid in it
-  (b) the pack voltage is at or above `RealFlightConfig.battery_min_v`
+  (b) the pack voltage, shown and not judged (see below)
   (c) `command` is answered, and the round trip's p95 is inside budget
   (d) Jev answers, and its round trip's p95 is inside the Judge's deadline
   (e) the vehicle reports IDLE_GROUND
 
-5 つの点検。すべて通らなければ何も離陸しない:
+4 つの点検。すべて通らなければ何も離陸しない。加えて、**判定せず表示するだけ**の
+1 行がある:
 
   (a) テレメトリが届く。140 バイトの v2 パケットで、電池と下向き ToF が有効
-  (b) パック電圧が `RealFlightConfig.battery_min_v` 以上
+  (b) パック電圧。表示のみで、飛行可否は判定しない（下記）
   (c) `command` に応答があり、往復時間の p95 が予算内
   (d) Jev が応答し、その往復時間の p95 が Judge の期限内
   (e) 機体が IDLE_GROUND を報告している
@@ -22,20 +24,40 @@ Five checks, all of which must pass before anything takes off:
 Why each check is refusal rather than a warning: every one of them is a
 thing this package RELIES on while the aircraft is in the air and cannot
 recover from afterwards. Without (a) the Monitor classifies nothing and
-the immediate safety rules never fire; without (b) the flight starts
-inside the band whose purpose is to end one; without (c) a `land` is not
-known to reach the vehicle at all, and §2 records that the firmware will
-NOT land itself when the PC goes quiet; without (d) the judging layer
-hovers on every cycle and the hover-to-land timer lands the aircraft
-anyway; without (e) the aircraft is not where the operator thinks it is.
+the immediate safety rules never fire; without (c) a `land` is not known
+to reach the vehicle at all, and §2 records that the firmware will NOT
+land itself when the PC goes quiet; without (d) the judging layer hovers
+on every cycle and the hover-to-land timer lands the aircraft anyway;
+without (e) the aircraft is not where the operator thinks it is.
+
+**Why (b) is not one of them.** The vehicle owns the take-off decision
+about its own battery and applies it in three layers: `requestArm`
+refuses an ARM at or below `safety.battery.usb_v` (3.3 V,
+`state_manager.cpp`), `failsafe.cpp` warns at 3.4 V without ending the
+flight, and the vehicle LANDS ITSELF at 3.0 V (`state_manager.cpp`
+LOW_BATTERY / EMERGENCY -> LANDING). A gate here could only duplicate
+that or be stricter than it, and stricter is what it was: this check used
+to refuse below 3.85 V, a figure invented rather than measured, which
+turned away most of a cell's usable range while the vehicle's own lamp
+reported it fit to fly. So the voltage is shown to the person holding the
+transmitter and the decision that follows from it is left to the vehicle.
 
 どれも警告ではなく拒否にする理由: いずれも、機体が空中にある間に本パッケージが
 **依拠する**ものであり、後から回復できないからである。(a) が無ければ Monitor は
-何も区分できず、即時安全則は一度も働かない。(b) が無ければ、飛行を終わらせる
-ためにある区分の中から飛行を始めることになる。(c) が無ければ `land` が機体に
+何も区分できず、即時安全則は一度も働かない。(c) が無ければ `land` が機体に
 届くかどうかすら分からず、しかも §2 は「PC が黙ってもファームは自分で着陸
 しない」と記録している。(d) が無ければ判断層は毎周期待機し、待機継続の計時が
 どのみち機体を着陸させる。(e) が無ければ、機体は操作者が思っている場所にいない。
+
+**(b) がそこに含まれない理由。** 自分の電池についての離陸の判断は機体が持って
+おり、しかも 3 層で適用している。`requestArm` は `safety.battery.usb_v`（3.3V、
+`state_manager.cpp`）以下で ARM を拒否し、`failsafe.cpp` は 3.4V で警告するが
+飛行は終えず、3.0V では機体が**自ら着陸に入る**（`state_manager.cpp` の
+LOW_BATTERY / EMERGENCY → LANDING）。ここに関門を置いても、それの複製になるか、
+それより厳しくなるかしかない。そして実際に厳しかった。この点検はかつて 3.85V
+未満を拒否していた。実測ではなく思いつきの値であり、機体自身のランプが飛行可能を
+示しているのにセルの使える範囲の大半を門前払いしていた。そこで電圧は、送信機を
+持つ人に**見せる**ものとし、そこから従う判断は機体に委ねる。
 
 Nothing here commands motion. The only thing sent to the vehicle is
 `command` (enter SDK mode), which the API reference lists as a mode change
@@ -58,6 +80,28 @@ from .link import BATTERY_FULL_V, BATTERY_EMPTY_V
 # FlightState 名をそのまま書く。`sfcli.commands.telemetry.STATE_NAMES` を通って
 # Sample に届く名前である。
 STATE_IDLE_GROUND = "IDLE_GROUND"
+
+# The vehicle's own battery thresholds [V], quoted so the preflight can say
+# whose decision the voltage is. Copied from the firmware rather than
+# imported, because nothing on the PC can read a C++ constant -- and written
+# here as named values so the report cannot print a number that no longer
+# matches what the firmware does.
+#
+# `VEHICLE_ARM_REFUSED_V`: `state_manager.cpp` `requestArm` refuses an ARM
+# when a valid reading is at or below `safety.battery.usb_v` (param default
+# 3.3). `VEHICLE_AUTO_LAND_V`: `failsafe.hpp` `critical_battery_v` = 3.0,
+# at which `state_manager.cpp` transitions an airborne craft to LANDING.
+#
+# 機体自身の電池しきい値 [V]。電圧が誰の判断に属するかを飛行前点検が述べられる
+# よう引用する。C++ の定数は PC 側から読めないので import ではなく転記であり、
+# 報告がファームの現在の挙動と食い違う数値を表示しないよう、名前を付けて置く。
+#
+# `VEHICLE_ARM_REFUSED_V`: `state_manager.cpp` の `requestArm` は、有効な読みが
+# `safety.battery.usb_v`（param 既定 3.3）以下なら ARM を拒否する。
+# `VEHICLE_AUTO_LAND_V`: `failsafe.hpp` の `critical_battery_v` = 3.0。これを
+# 下回ると `state_manager.cpp` が空中の機体を LANDING へ遷移させる。
+VEHICLE_ARM_REFUSED_V = 3.3
+VEHICLE_AUTO_LAND_V = 3.0
 
 # Check identifiers, in the order they are run and printed. Named rather
 # than spelled at each site so a result and the table that prints it cannot
@@ -160,7 +204,7 @@ def run_preflight(link, judge=None, config=DEFAULT_CONFIG, clock=None,
 
     telemetry, samples = _check_telemetry(link, cfg, clock, sleep)
     report = PreflightReport(checks=[telemetry])
-    report.checks.append(_check_battery(samples, cfg))
+    report.checks.append(_check_battery(samples))
     report.checks.append(_check_vehicle_link(link, cfg, clock))
     report.checks.append(_check_jev(judge, config, clock))
     report.checks.append(_check_state(samples))
@@ -272,20 +316,42 @@ def _listen(link, seconds: float, clock, sleep) -> list:
 # =============================================================================
 # (b) battery / 電池
 # =============================================================================
-def _check_battery(samples: list, cfg):
-    """The pack voltage against the takeoff minimum.
+def _check_battery(samples: list):
+    """Report the pack voltage. **This check never refuses a flight.**
+
+    It passes on any voltage the telemetry carries, including one the
+    vehicle would refuse to arm on. That is deliberate: the vehicle owns
+    the take-off decision about its own battery (`requestArm` at 3.3 V,
+    the 3.4 V warning, the 3.0 V auto-land — see the module docstring), so
+    a threshold here could only duplicate its rule or be stricter than it.
+    The line exists to put the number in front of the person holding the
+    transmitter, which is the fifth item on their checklist.
 
     Read from the telemetry rather than from `battery?`: the 140-byte
-    packet carries the voltage the Monitor will be judging on for the whole
-    flight, so checking THAT one closes the loop — a preflight that passed
-    on a different source would not have checked the source the flight uses.
+    packet carries the voltage the Monitor will be judging the TREND on for
+    the whole flight, so reporting THAT one closes the loop — a figure from
+    a different source would not be the one the flight uses.
 
-    離陸の下限に対するパック電圧。
+    Only a voltage that cannot be read at all is a failure, and it is a
+    SKIP rather than a refusal on its own account: it means the telemetry
+    check (a) has already failed, and that is the one refusing the flight.
 
-    `battery?` ではなくテレメトリから読む。140 バイトのパケットが運ぶのは、
-    飛行のあいだずっと Monitor が判定に使う当の電圧であり、**それ**を確かめて
-    はじめて輪が閉じる。別の出どころで通った点検は、飛行が使う出どころを
-    確かめていない。
+    パック電圧を報告する。**この点検は飛行を拒否しない。**
+
+    テレメトリが運ぶ電圧なら、機体が ARM を拒むような値であっても通す。これは
+    意図したものである。自分の電池についての離陸の判断は機体が持っており
+    （3.3V の `requestArm`、3.4V の警告、3.0V の自動着陸 — モジュール冒頭を参照）、
+    ここにしきい値を置いても、機体の規則の複製になるか、それより厳しくなるかしか
+    ない。この行が存在するのは、送信機を持つ人の目の前にその数値を置くためであり、
+    それは確認事項の第 5 項そのものである。
+
+    `battery?` ではなくテレメトリから読む。140 バイトのパケットが運ぶのは、飛行の
+    あいだずっと Monitor が**傾向**の判定に使う当の電圧であり、**それ**を報告して
+    はじめて輪が閉じる。別の出どころの数値は、飛行が使うものではない。
+
+    不合格になるのは、電圧がまったく読めない場合だけである。それも、それ自体を
+    理由とする拒否ではなく SKIP とする。その場合はテレメトリの点検 (a) が既に
+    不合格であり、飛行を拒否しているのはそちらだからである。
     """
     voltages = [s["battery_v"] for s in samples if "battery_v" in s]
     if not voltages:
@@ -296,24 +362,27 @@ def _check_battery(samples: list, cfg):
 
     # The lowest reading seen, not the mean: the aircraft is on the ground
     # with the motors off, so there is no load transient to average away,
-    # and a pack that dipped once will dip again under a hover.
+    # and a pack that dipped once will dip again under a hover. Reported as
+    # the worst of what was seen, which is the honest number to show.
     # 平均ではなく最も低い読み。機体は接地しモータは止まっているので、均して
     # 消すべき負荷の過渡は無い。一度落ち込んだパックは、ホバリングでも落ち込む。
+    # 見えたうちで最も悪い値を示すのが、正直な報告である。
     lowest = min(voltages)
     percent = _percent(lowest)
     measured = {"lowest_v": round(lowest, 3), "percent": round(percent, 1),
-                "minimum_v": cfg.battery_min_v, "samples": len(voltages)}
-
-    is_enough = lowest >= cfg.battery_min_v
-    if not is_enough:
-        return _failed(CHECK_BATTERY, measured, detail=(
-            f"{lowest:.2f}V（約 {percent:.0f}%）は離陸の下限 "
-            f"{cfg.battery_min_v:.2f}V を下回る。充電したパックに替える "
-            f"/ pack voltage below the takeoff minimum"
-        ))
+                "samples": len(voltages),
+                # The vehicle's own thresholds, recorded so a trace says what
+                # the number meant without the reader looking them up.
+                # 機体自身のしきい値。記録を読む人が調べ直さずに数値の意味を
+                # つかめるよう、一緒に残す。
+                "vehicle_arm_refused_at_v": VEHICLE_ARM_REFUSED_V,
+                "vehicle_auto_lands_at_v": VEHICLE_AUTO_LAND_V}
     return CheckResult(
         name=CHECK_BATTERY, passed=True, measured=measured,
-        detail=f"{lowest:.2f}V（約 {percent:.0f}%）≧ {cfg.battery_min_v:.2f}V",
+        detail=(f"{lowest:.2f}V（約 {percent:.0f}%）"
+                f"— 表示のみ。飛行可否は機体が判断する"
+                f"（ARM 拒否 {VEHICLE_ARM_REFUSED_V:.1f}V / "
+                f"自動着陸 {VEHICLE_AUTO_LAND_V:.1f}V） / reported, not judged"),
     )
 
 
@@ -651,8 +720,7 @@ def format_table(report: PreflightReport) -> list:
         check = report.get(name)
         if check is None:
             continue
-        mark = "PASS" if check.passed else ("SKIP" if check.skipped else "FAIL")
-        lines.append(f"  [{mark}] {_LABELS[name]:<22} {check.detail}")
+        lines.append(f"  [{_mark(check)}] {_LABELS[name]:<22} {check.detail}")
     lines.append("  " + "-" * 62)
     verdict = "離陸してよい / clear to fly" if report.ok else (
         "**離陸しない** / NOT clear to fly")
@@ -660,12 +728,35 @@ def format_table(report: PreflightReport) -> list:
     return lines
 
 
+# Checks that report a measurement without deciding anything, so the table
+# does not print "PASS" beside a line that could not have failed. Only the
+# battery is one today; it is a set rather than a flag on `CheckResult`
+# because whether a check is a verdict is a property of the check itself,
+# not of one run's result.
+# 何も決めずに測定を報告するだけの点検。不合格になりえない行に「PASS」と
+# 表示しないためのものである。現状は電池だけだが、`CheckResult` のフラグではなく
+# 集合にする。「その点検が判定か否か」は、1 回の実行の結果ではなく点検自身の
+# 性質だからである。
+REPORT_ONLY = frozenset({CHECK_BATTERY})
+
+
+def _mark(check: CheckResult) -> str:
+    """The four-letter mark for one row of the table.
+    表 1 行分の 4 文字の印。"""
+    is_report_only = check.name in REPORT_ONLY and check.passed
+    if is_report_only:
+        return "INFO"
+    if check.passed:
+        return "PASS"
+    return "SKIP" if check.skipped else "FAIL"
+
+
 # What each check is called on the table. Japanese first, matching the
 # repository's documentation convention.
 # 表に出す各点検の名前。リポジトリの文書の慣例どおり日本語を先にする。
 _LABELS = {
     CHECK_TELEMETRY: "(a) テレメトリ",
-    CHECK_BATTERY: "(b) 電池電圧",
+    CHECK_BATTERY: "(b) 電池電圧（表示）",
     CHECK_VEHICLE_LINK: "(c) 機体との往復",
     CHECK_JEV: "(d) Jev への疎通",
     CHECK_STATE: "(e) 機体の状態",

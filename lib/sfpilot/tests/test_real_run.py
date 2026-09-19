@@ -491,3 +491,46 @@ def test_a_landing_the_approach_completed_is_not_sent_a_second_time():
     assert outcome.commands.count("land") == 1, outcome.commands
     assert "land x2" not in outcome.commands
     assert outcome.landed
+
+
+def test_a_refused_takeoff_ends_the_flight_instead_of_watching_the_floor():
+    """A vehicle that will not take off is reported, not hovered over.
+
+    `takeoff` is answered: the vehicle refuses to ARM on a low pack and
+    replies `error takeoff timeout` after 12 s (api_task.cpp). Sent
+    fire-and-forget, that answer is never read, and the pilot would run its
+    whole watching loop over a machine sitting on the floor and report a
+    flight that never happened. Preflight deliberately does not judge the
+    voltage -- the vehicle does -- so this reply is the only way the
+    vehicle's refusal reaches this program.
+
+    離陸しない機体について、その上でホバリング監視を続けるのではなく報告すること。
+
+    `takeoff` には応答がある。電圧の低いパックでは機体が ARM を拒み、12 秒後に
+    `error takeoff timeout` を返す（api_task.cpp）。撃ちっぱなしで送ればその応答は
+    読まれず、この処理は床に置かれた機体の上で監視ループを回し切り、起きていない
+    飛行を報告する。飛行前点検は意図して電圧を判定しない（機体が判定する）ので、
+    この応答だけが機体の拒否をこの処理へ届ける経路である。
+    """
+    from sfpilot.real_run import TakeoffRefused
+
+    class RefusingLink(StubLink):
+        """Answers everything but `takeoff`, which it refuses as the vehicle does.
+        `takeoff` だけを機体と同じく拒み、他には応答するリンク。"""
+
+        def send(self, line: str, timeout: float):
+            reply = super().send(line, timeout)
+            is_the_takeoff = line == "takeoff"
+            if is_the_takeoff:
+                return ("error", "takeoff timeout")
+            return reply
+
+    link = RefusingLink()
+
+    with pytest.raises(TakeoffRefused):
+        fly_real(link, judge=None, config=QUICK, duration_s=5.0)
+
+    # It asked, and stopped there: no `rc` was ever sent to a grounded craft.
+    # 問うて、そこで止まっている。地上の機体へ `rc` は一度も送られていない。
+    assert "takeoff" in link.sent
+    assert not [line for line in link.sent if line.startswith("rc ")]
