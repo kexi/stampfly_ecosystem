@@ -91,7 +91,12 @@ class Sample(dict):
       vel_n, vel_e, vel_d  velocity [m/s], NED
       roll, pitch, yaw     attitude [rad]
       battery_pct  battery remaining [%]
-      tof_m        ground distance sensor [m]
+      tof_m        ground distance sensor [m] (downward)
+      tof_front_m  forward distance sensor [m]. Optional hardware that needs
+                   battery power, so it is absent more often than the others.
+                   Carried for monitoring and recording only — nothing decides
+                   on it yet; obstacle-aware exploration waits on a simulated
+                   forward distance in SILS (docs/plans/jev-autopilot.md P4b).
       flight_state firmware FlightState name, e.g. "FLYING"
 
     1 サンプル: キーを文書化した素の dict。`t` 以外はすべて省略可能で、
@@ -496,6 +501,15 @@ def _sample_from_packet(packet: dict, ts: float) -> Sample:
     tof = packet.get("tof_bottom")
     if tof is not None and packet.get("tof_bottom_valid"):
         sample["tof_m"] = float(tof)
+    # The forward sensor goes into its OWN key, on its own flag bit. Absent is
+    # the common case (optional hardware, and it needs battery power), so an
+    # omitted key must stay distinguishable from "zero metres ahead".
+    # 前方センサは「専用」のキーへ、自分のフラグビットで入れる。無いのが普通の状態
+    # なので（任意の装備で、かつバッテリー電源が要る）、キーが無いことと「前方 0m」は
+    # 区別できたままでなければならない。
+    tof_front = packet.get("tof_front")
+    if tof_front is not None and packet.get("tof_front_valid"):
+        sample["tof_front_m"] = float(tof_front)
     return sample
 
 
@@ -1019,6 +1033,16 @@ def _load_samples(path) -> list:
     _merge_stream(samples, streams.get("status"),
                   {"voltage": "battery_v", "flight_state": "flight_state_code"})
     _merge_stream(samples, streams.get("tof_bottom"), {"distance": "tof_m"})
+    # The 'tof_front' stream is optional and absent from every log the current
+    # firmware writes: the Data Stream does not carry the forward ToF yet
+    # (docs/plans/jev-autopilot.md P2b). Merging it here costs nothing on those
+    # logs -- streams.get() returns None -- and means a log that does carry it
+    # replays with the same key a live link supplies.
+    # 'tof_front' ストリームは任意で、現行ファームが書くログには常に無い: Data Stream
+    # はまだ前方 ToF を運ばない（docs/plans/jev-autopilot.md P2b）。ここで併合しても
+    # それらのログでは無害で（streams.get() が None を返す）、持っているログは
+    # ライブ接続と同じキーで再生される。
+    _merge_stream(samples, streams.get("tof_front"), {"distance": "tof_front_m"})
     _merge_attitude(samples, streams.get("attitude"))
     _add_battery_percent(samples)
     samples.sort(key=lambda s: s["t"])

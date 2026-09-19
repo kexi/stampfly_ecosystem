@@ -273,8 +273,24 @@ int cmd_sensor(int argc, char** argv)
         std::printf("baro : %.1f Pa  alt %.2f m\n", snap.baro_pressure, snap.baro_altitude);
     }
     if (all || std::strcmp(which, "tof") == 0) {
-        std::printf("tof  : %.3f m  status=%u valid=%s\n", snap.tof_distance, snap.tof_status,
-                    snap.tof_valid ? "yes" : "no");
+        // Two rows, never one: the bottom and front sensors are separate data
+        // sources and are shown separately, with their own timestamps. Merging
+        // them once hid a fault where both updated one variable and the bottom
+        // rate appeared doubled (docs/architecture/udp-telemetry-design.md §2).
+        // The timestamps are what a reader uses to check each sensor's rate.
+        // 1 行ではなく 2 行にする: 底面と前方は別のデータソースであり、それぞれの
+        // タイムスタンプとともに別々に表示する。まとめた結果、両者が 1 つの変数を
+        // 更新して底面のレートが 2 倍に見えた不具合がある
+        //（docs/architecture/udp-telemetry-design.md §2）。タイムスタンプは、
+        // 読み手が各センサのレートを確かめるためのものである。
+        std::printf("tof  : down  %.3f m  status=%u valid=%s  t=%lu us\n",
+                    snap.tof_distance, snap.tof_status,
+                    snap.tof_valid ? "yes" : "no",
+                    static_cast<unsigned long>(snap.tof_timestamp));
+        std::printf("tof  : front %.3f m  status=%u valid=%s  t=%lu us\n",
+                    snap.tof_front_distance, snap.tof_front_status,
+                    snap.tof_front_valid ? "yes" : "no",
+                    static_cast<unsigned long>(snap.tof_front_timestamp));
     }
     if (all || std::strcmp(which, "flow") == 0) {
         std::printf("flow : dx=%d dy=%d squal=%u\n", snap.flow_dx, snap.flow_dy, snap.flow_squal);

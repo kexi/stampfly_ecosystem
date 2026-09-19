@@ -151,7 +151,14 @@ bool                    g_initialized = false;
 // Optional センサの存在フラグ。SensorId で索引。各センサの setup が1回書き込み
 // (set_sensor_present)、Failsafe / Telemetry が読む。クロスタスク読み取りを
 // ロック無しにするため atomic。サイズは SensorId enum に追従。
-constexpr size_t kSensorSlots = 5;  // Mag, BottomToF, Flow, Baro, Power
+// Derived from SensorId::Count so adding a sensor to the enum resizes these
+// arrays automatically — a hand-written count would have to be found and
+// updated, and an out-of-range id would otherwise be clamped into another
+// sensor's slot (see the range checks in the accessors below).
+// SensorId::Count から導出するので、enum にセンサを足せば配列も自動で広がる。
+// 手書きの個数だと更新漏れが起き、範囲外 id が他センサのスロットへ丸め込まれる
+// （下のアクセサの範囲検査を参照）。
+constexpr size_t kSensorSlots = static_cast<size_t>(SensorId::Count);
 std::atomic<bool> g_sensor_present[kSensorSlots] = {};
 
 // Optional-sensor last-publish timestamp [us], indexed by SensorId. Each sensor task

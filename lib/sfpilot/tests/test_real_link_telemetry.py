@@ -35,6 +35,12 @@ FLOATS = {
     "vel_x": 0.12, "vel_y": 0.05, "vel_z": -0.01,
 }
 FLYING_MODE = 5   # STATE_NAMES index for "FLYING" / 「FLYING」の番号
+# kTelemTofFrontUnavailable in telemetry.hpp: what the firmware puts in the
+# tof_front slot when there is no reading. The flag bit — not this value — is
+# what says whether the reading counts.
+# telemetry.hpp の kTelemTofFrontUnavailable。測定値が無いときにファームが
+# tof_front 欄へ入れる値。採否を決めるのはこの値ではなくフラグビットである。
+TOF_FRONT_UNAVAILABLE = -1.0
 
 
 def _v1_packet(mode: int = FLYING_MODE) -> bytes:
@@ -44,16 +50,30 @@ def _v1_packet(mode: int = FLYING_MODE) -> bytes:
 
 
 def _v2_packet(voltage: float = 3.9, tof: float = 0.79,
-               valid: bool = True, mode: int = FLYING_MODE) -> bytes:
+               valid: bool = True, mode: int = FLYING_MODE,
+               tof_front: float = None) -> bytes:
     """A 140-byte v2 packet: v1 prefix plus the appended block.
-    140 バイトの v2 パケット: v1 の前半に追記部を足したもの。"""
+
+    `tof_front=None` is the common real case — the forward sensor is optional
+    and needs battery power — so the packet then carries the firmware's
+    "no reading" placeholder with bit1 clear.
+    140 バイトの v2 パケット: v1 の前半に追記部を足したもの。
+
+    `tof_front=None` が実際によくある状態 — 前方センサは任意でバッテリー電源を
+    要する — なので、そのときファーム側の「測定値なし」の placeholder を
+    bit1 を落として載せる。
+    """
     values = [FLOATS.get(name, 0.0) for name in FLOAT_NAMES]
     head = struct.pack(TELEM_FMT, TELEM_MAGIC, TELEM_VERSION_V2, 0, 1234, *values, mode)
     flags = 0
     if valid:
         flags = VALID_BITS["tof_bottom_valid"] | VALID_BITS["power_valid"]
+    front_value = TOF_FRONT_UNAVAILABLE if tof_front is None else tof_front
+    if tof_front is not None:
+        flags |= VALID_BITS["tof_front_valid"]
     tail = struct.pack(
-        TELEM_V2_FMT, voltage, tof, -1.0, 0, 0, 0, flags, 0.0, 0.0, 0.0, 0.80,
+        TELEM_V2_FMT, voltage, tof, front_value, 0, 0, 0, flags,
+        0.0, 0.0, 0.0, 0.80,
     )
     return head + tail
 
@@ -148,6 +168,47 @@ def test_an_invalid_flag_suppresses_the_value_it_guards(link):
     assert len(samples) == 1
     assert "tof_m" not in samples[0]
     assert "battery_pct" not in samples[0]
+
+
+def test_a_driven_front_tof_arrives_under_its_own_key(link):
+    """The forward distance reaches the Sample as tof_front_m, beside tof_m.
+
+    Nothing decides on it yet — it is carried so the monitor and the recording
+    can show it (docs/plans/jev-autopilot.md P2b).
+    前方距離が tof_m とは別の tof_front_m というキーで Sample に届くこと。
+
+    まだ何の判断にも使わない。監視と記録が表示できるように運ぶだけである
+    （docs/plans/jev-autopilot.md P2b）。
+    """
+    samples = _deliver(link, [_v2_packet(tof=0.79, tof_front=1.35)])
+
+    assert len(samples) == 1
+    assert samples[0]["tof_front_m"] == pytest.approx(1.35, abs=1e-5)
+    # The downward reading is untouched by the forward one.
+    # 下向きの値は前方の値に影響されない。
+    assert samples[0]["tof_m"] == pytest.approx(0.79, abs=1e-5)
+
+
+def test_an_absent_front_tof_omits_the_key_rather_than_reporting_minus_one(link):
+    """No forward reading means no tof_front_m key — not a -1 m obstacle.
+
+    This is the usual state: the sensor is optional and needs battery power, so
+    on USB alone it never starts. A -1.0 left in the Sample would read as an
+    obstacle 1 m BEHIND the craft to anything that later uses the value.
+    前方の測定値が無ければ tof_front_m というキー自体を持たないこと（-1m の
+    障害物ではない）。
+
+    これが通常の状態である: センサは任意でバッテリー電源を要し、USB のみでは
+    起動しない。-1.0 を Sample に残すと、後でこの値を使う側には「機体の 1m
+    後方に障害物」と読まれてしまう。
+    """
+    samples = _deliver(link, [_v2_packet(tof_front=None)])
+
+    assert len(samples) == 1
+    assert "tof_front_m" not in samples[0]
+    # The downward ToF still arrives — an absent front sensor hides nothing else.
+    # 下向き ToF は届く — 前方が無くても他を隠さない。
+    assert samples[0]["tof_m"] == pytest.approx(0.79, abs=1e-5)
 
 
 def test_every_packet_since_the_last_call_is_returned(link):

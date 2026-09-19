@@ -86,7 +86,9 @@ inline constexpr uint8_t TELEM_VALID_MAG        = 1u << 3;
 inline constexpr uint8_t TELEM_VALID_BARO       = 1u << 4;
 inline constexpr uint8_t TELEM_VALID_POWER      = 1u << 5;
 
-/// Placeholder distance published while the front ToF is not driven.
+/// Placeholder distance sent when there is no front-ToF reading — the sensor is
+/// absent, disabled by the tof.front.enable parameter, failed to initialise
+/// (it needs battery power), or its last sample has gone stale.
 /// Matches ws::tof_front()'s -1.0 so both surfaces agree on "no reading".
 ///
 /// Why not a separate bool per sensor: valid_flags already exists and one bit
@@ -95,7 +97,9 @@ inline constexpr uint8_t TELEM_VALID_POWER      = 1u << 5;
 /// TELEM_VALID_TOF_FRONT and never compare against this value, because a real
 /// sensor could legitimately report a negative number on error.
 ///
-/// 前方 ToF を駆動していない間に送る placeholder 距離。ws::tof_front() の -1.0 と
+/// 前方 ToF の測定値が無いときに送る placeholder 距離 — センサ未実装、
+/// tof.front.enable による無効化、初期化失敗（バッテリー電源が要る）、
+/// あるいは最終サンプルが古くなった場合。ws::tof_front() の -1.0 と
 /// 揃えてあり、両者で「測っていない」の表し方が一致する。
 ///
 /// なぜセンサ毎の bool にしないか: valid_flags が既にあり 1 ビットで足りる。bool に
@@ -164,7 +168,7 @@ struct TelemetryPacket {
 
     float   voltage;         // [V] battery pack / 電池電圧（0 = 不明）
     float   tof_bottom;      // [m] downward ToF / 下向き ToF 距離
-    float   tof_front;       // [m] forward ToF — not driven yet / 前方 ToF（未駆動）
+    float   tof_front;       // [m] forward ToF (kTelemTofFrontUnavailable = no reading) / 前方 ToF（測定値なしは kTelemTofFrontUnavailable）
     int16_t flow_dx_sum;     // [counts] displacement since last send / 前回送信からの変位
     int16_t flow_dy_sum;     // [counts] displacement since last send / 同上
     uint8_t flow_squal;      // Latest surface quality / 最新の表面品質

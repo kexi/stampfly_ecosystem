@@ -66,6 +66,77 @@ public:
     static constexpr uint8_t BOTTOM_I2C_ADDR = 0x30;
     static constexpr uint8_t FRONT_I2C_ADDR = 0x31;
 
+    /// Time the part needs after XSHUT is released before it answers on I2C.
+    /// The VL53L3CX datasheet gives t_boot = 1.2ms max (firmware boot after the
+    /// supply and XSHUT are valid); 4ms is that bound with margin for supply
+    /// ramp on this board, and is what init() has always waited.
+    /// XSHUT 解除後、I2C に応答するまでに部品が要する時間。VL53L3CX のデータシートは
+    /// t_boot 最大 1.2ms（電源と XSHUT 確定後のファーム起動）を規定する。4ms はその
+    /// 上限に本基板の電源立ち上がり分の余裕を足した値で、init() が従来待ってきた量でもある。
+    static constexpr uint32_t BOOT_TIME_MS = 4;
+
+    /// IDENTIFICATION__MODEL_ID register, and the values a genuine VL53L3CX
+    /// reports there. The driver's own DataInit accepts 0xEB and 0xEC.
+    /// IDENTIFICATION__MODEL_ID レジスタと、本物の VL53L3CX が返す値。ドライバ自身の
+    /// DataInit も 0xEB / 0xEC を受け入れる。
+    static constexpr uint16_t MODEL_ID_REG = 0x010F;
+    static constexpr uint8_t  MODEL_ID_A   = 0xEB;
+    static constexpr uint8_t  MODEL_ID_B   = 0xEC;
+
+    /**
+     * @brief Cheaply test whether a VL53L3CX is actually present at `addr`.
+     *
+     * Reads ONE register (IDENTIFICATION__MODEL_ID). Returns true only when the
+     * part answers AND reports a VL53L3CX model id.
+     *
+     * DOES NOT WAIT AND DOES NOT TOUCH XSHUT. The caller must already have
+     * released the part's XSHUT and let at least BOOT_TIME_MS pass. That is
+     * deliberate: a caller on a fixed cycle (TofTask) raises XSHUT in one cycle
+     * and calls this in the next, so the boot wait is absorbed by the cycle it
+     * was going to sleep through anyway and the cycle's phase never moves.
+     *
+     * Why this exists: init() below is expensive when the part is ABSENT —
+     * VL53LX_WaitDeviceBooted() polls for up to
+     * VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS (500ms) before giving up. A
+     * caller that must not block for that long (TofTask, whose bottom sensor is
+     * the vehicle's only vertical observation) calls this first and skips init()
+     * entirely on a negative result, paying a few milliseconds instead.
+     *
+     * Why a model-id read and not a bare address ACK: an ACK only proves that
+     * SOMETHING answered. Reading the id distinguishes a real VL53L3CX from a
+     * bus that ACKs by default.
+     *
+     * The caller owns the XSHUT pin and is responsible for returning it to low
+     * on a negative result.
+     *
+     * @param i2c_bus    Bus handle borrowed from sf_board (R1/R2)
+     * @param addr       Address to test (the part's power-on address)
+     * @return true if a VL53L3CX answered with a known model id
+     *
+     * @brief `addr` に VL53L3CX が実在するかを安価に確かめる。
+     *
+     * レジスタを 1 本だけ（IDENTIFICATION__MODEL_ID）読む。応答があり、かつ
+     * VL53L3CX の model id を返したときだけ true を返す。
+     *
+     * 「待たない」「XSHUT に触れない」。呼び出し側が事前に XSHUT を解除し、
+     * BOOT_TIME_MS 以上経過させておくこと。これは意図的である: 一定周期で回る
+     * 呼び出し側（TofTask）は、ある周期で XSHUT を上げ、次の周期でこれを呼ぶ。
+     * そうすれば起動待ちは「どのみち眠る予定だった周期」に吸収され、周期の位相は
+     * 一切動かない。
+     *
+     * 存在理由: 下の init() は部品が「無い」ときに高くつく — VL53LX_WaitDeviceBooted()
+     * が諦めるまでに VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS（500ms）ポーリングする。
+     * それだけ止まってはならない呼び出し側（底面が機体唯一の鉛直観測である TofTask）は
+     * 先にこれを呼び、否定ならば init() を一切呼ばずに数ミリ秒で済ませる。
+     *
+     * なぜ素のアドレス ACK ではなく model id を読むか: ACK は「何かが応答した」ことしか
+     * 示さない。id を読めば、既定で ACK を返すバスと本物の VL53L3CX を区別できる。
+     *
+     * `xshut_pin` は呼び出し側の所有物であり、否定時に low へ戻す責任も呼び出し側にある。
+     * 本関数はピンを high のままにする。
+     */
+    static bool isPresentAt(i2c_master_bus_handle_t i2c_bus, uint8_t addr);
+
     /**
      * @brief Configuration structure for VL53L3CX
      */

@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（飛行を見る手段 — `--web` のライブ表示と飛行後の動画・GUI 再生 — を 4.6 節に追記）。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P2b: 前方 ToF の駆動を実装し、結果と**実機確認の手順書**を 4.7 節に追記。実機未確認）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -23,15 +23,15 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 | P0 | 本計画文書、`sf pilot bench`（Jev 往復時間・トークン数の実測） | **実装済み** |
 | P1 | `lib/sfpilot` の中核（Monitor / Summarizer / Judge / Arbiter / Executor）、FakeJudge、ReplayLink | **実装済み** |
 | P2a | テレメトリ拡張（UDP:5005 を 140B の v2 に。電池電圧・下向き ToF・フロー・地磁気・気圧高度を追加。様式は `firmware/vehicle/docs/detailed_design.md` §10） | **実装済み**（実機未確認） |
-| P2b | 前方 ToF の駆動（`sensor_tof_front` 新設、`SensorSnapshot` へのミラー、テレメトリ bit1 の供給）。**実機確認必須。バッテリー電源必須**（USB 給電では前方 ToF が立ち上がらない事例がある） | 未着手 |
+| P2b | 前方 ToF の駆動（`sensor_tof_front` 新設、`SensorSnapshot` へのミラー、テレメトリ bit1 の供給）。**実機確認必須。バッテリー電源必須**（USB 給電では前方 ToF が立ち上がらない事例がある） | **実装済み**（**実機未確認** — 手順書は下記 4.7）。SILS は既定のまま基準どおり（28 PASS / 5 KNOWN-FAIL / 1 SKIP、決定論性 SHA256 も一致）|
 | P2 | SILS 連携（stdin の `api` 行、SilsLink、場面 3 種）、`sf pilot run --sils`、実機 UDP:5005 の 50Hz 受信 | **実装済み**。Jev 実走で 3 場面すべて確認済み（下記 4.5）|
 | P3 | `sf pilot say`（自然言語の指示） | **実装済み**。Jev 実走で 7/10 → 原因を特定して修正 → **10/10**（下記 4.5）|
 | P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**。Jev 実走で応答計数の競合を発見して修正し、**全 6 区間が `as planned` で完走**（下記 4.5）|
-| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。**P2b の後**に着手する — 前方 ToF が駆動していない現行ファームでは前提が成立しない | 未着手（P2b 待ち）|
+| P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ）。**前提は 2 つ**: ①前方 ToF が駆動していること（P2b、実装済み・実機未確認）②**SILS に前方距離の模擬があること**（MuJoCo のレイキャスト等。未着手）。②が無いと、判断の誤りを飛ばす前に見つけられない | 未着手（P2b の実機確認と、SILS の前方距離模擬を待つ）|
 | P4c | **飛行を見る手段**（`--web` のライブ表示＋飛行後の動画・GUI 再生。4.6 節） | **実装済み** |
 | P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
 
-**前方 ToF の現状（重要）**: 前方 ToF はハードウェアとしては実装されているが、**現行ファームでは駆動していない**。`TofTask` が XSHUT を low に固定してリセット保持している（VL53L3CX 2 個が同じ I2C アドレス 0x29 で起動し、底面のアドレス変更が両方に届いて測距データが混線するため）。テレメトリ v2 には枠（`tof_front`、有効ビット bit1）を確保してあるが、現行ファームでは bit1 は常に 0、値は常に -1.0 である。**障害物回避・探索を Jev に判断させる計画は、P2b の完了まで前提が成立しない。**
+**前方 ToF の現状（重要）**: 2026-09-19 に駆動を開始した（P2b、下記 4.7）。`TofTask` が前方をリセット保持したまま底面を 0x30 で起動し、その後で前方を 0x31 へ振り直す。テレメトリ v2 の `tof_front` と有効ビット bit1 はここから供給される。**ただし実機未確認である。** また前方は Optional で**バッテリー電源が要る**（USB 給電のみでは起動せず、bit1 は 0 のまま）。**障害物回避・探索（P4b）にはもう 1 つ前提がある — SILS に前方距離の模擬が無い。** 模擬が無いままでは、判断の誤りを実機で初めて知ることになる。
 
 ## 2. 設計を決めた制約
 
@@ -623,6 +623,134 @@ C が `sf sils scenario` で表に出なかったのは、そちらが時間を�
 
 併せて `sf sils video -m <名前>` が、区切りを含む名前（`pilot/<日時>`）でも動画の出力先を誤らないようにした（末尾の区切りだけをファイル名に使う）。
 
+## 4.7 P2b の結果（前方 ToF の駆動、2026-09-19）
+
+### 要旨
+
+前方 ToF を駆動し、専用トピック `sensor_tof_front` → `SensorSnapshot` → テレメトリ v2 の `tof_front` / bit1 という経路を通した。SILS で確認済み、**実機未確認**（手元に実機が無いため。手順書は下記）。
+
+**設計の出発点は「前方を足したことで底面 ToF と高度保持が一切変わらないこと」である。** 底面 ToF は高度推定の唯一の鉛直観測（気圧は既定で非融合）で Critical、前方は Optional にすぎない。順序・読み出し・失敗処理はすべてこの一線から導いた。
+
+### 実装したもの
+
+| 層 | 変更 |
+|----|------|
+| 起動 | `TofTask` が 2 センサを時差起動する。①前方 XSHUT=LOW ②底面を**従来と同じ手順**で 0x30 へ、`startRanging()` まで ③以降は周期ループの余り時間で 1 周期 1 段ずつ（`FrontBringUp`）: `Wake` で前方 XSHUT を上げ、次周期の `Probe` で model id を確認し、本物のときだけ `init()`→0x31→`startRanging()`。**どの段も `last_wake` に触れない**ので底面の位相は動かない。前方の失敗・不在は XSHUT を LOW に戻して `sensor_present(FrontToF)=false` で続行（R4） |
+| 在否確認 | `VL53L3CXWrapper::isPresentAt()` を新設（HAL 層）。model id レジスタ 1 本読みで、居ないときのコストを 500ms から数 ms へ |
+| トピック | `sensor_tof_front`（`TofData`, Queue 2）を新設。底面と変数・トピック・タイムスタンプ・`SensorId` をすべて分離 |
+| ミラー | `SensorSnapshot` に `tof_front_distance` / `tof_front_status` / `tof_front_valid` / `tof_front_timestamp`。`ImuTask` が**ミラーのみ**行い、推定器にも離着陸マネージャにも渡さない |
+| テレメトリ | `tof_front` と bit1 を `sensor_snapshot` から供給。他のセンサと同じ 2 条件（publish された有効性 ＋ 鮮度 R16） |
+| 無効化 | パラメータ `tof.front.enable`（既定 1）。`TofTask` が起動手順の前に 1 回読む。**反映には再起動が要る**（アドレス割り当ては実行中に返上できないため） |
+| CLI | `sensor tof` を底面・前方の 2 行にし、各行に `t=<us>` を付けた（実機でレートを確かめるため） |
+| PC 側 | `sf telemetry` と `--web` の「未対応」を撤去し、有効ビットに応じて値／`invalid` を出す。`lib/sfpilot` の Sample に `tof_front_m` を通す（**判断にはまだ使わない**） |
+
+### 安全要件をどう満たしたか
+
+| 要件 | 手段 |
+|------|------|
+| 1. 起動順序 | 上記。底面の失敗時の扱いは従来から変えていない |
+| 2. 前方の異常が底面の周期・値を乱さない | 1 周期内で**底面を先に、無条件で**読む。前方はその後、周期に余裕があるときだけ（`cycle_still_on_schedule`）。バス占有は 2 センサ合計で約 6.6ms／33ms 周期＝**約 20%**（見積もりは `detailed_design.md` §10） |
+| 3. 1 データソース = 1 変数 | トピック・スナップショットのフィールド・タイムスタンプ・`SensorId` をすべて分離。SILS 試験 `simulator/tests/test_tof_front_sils.py` が起動順序・Optional 継続・飛行中の底面供給を確認 |
+| 4. 推定・状態機械・制御則に触れない | `ImuTask` はミラーのみ。INV-1〜INV-5 のいずれにも該当する変更は無い（観測の追加であって鉛直フェーズ・姿勢・検出／判断の分離・状態遷移表・ミキサーのいずれも変えていない） |
+| 5. 無効化手段 | `tof.front.enable`（既定 1、既存の params の流儀どおり） |
+
+### SILS で確認したこと
+
+SILS には VL53L3CX が無いので前方の初期化は必ず失敗する。これは**実機で USB 給電のみのときと同じ経路**であり、そのまま「初期化失敗 → Optional で続行」の確認になる。
+
+```
+[INFO] TofTask: VL53L3CX bottom ready at 0x30 (continuous ranging at ~30Hz)
+[WARN] TofTask: VL53L3CX front init failed: ESP_ERR — continuing without it (Optional; needs battery power)
+```
+
+### 起動時のタイミング中立性（実機の安全要件 2。SILS で検証）
+
+最初の実装では、前方が「居ない」とき `VL53L3CXWrapper::init()` の中でドライバが起動完了を最大 500ms ポーリングしてから失敗していた（`VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS`）。**これは 33ms 周期の約 15 回分、底面がまったく読まれないことを意味する。** 底面は高度推定の唯一の鉛直観測なので、これは安全要件 2 の未達である。USB 給電のみ・前方非搭載・コネクタ不良のいずれでも起こる。
+
+SILS でもこれは `stab_flight` の `att_rmse` と決定論性 SHA256 のずれとして現れていた。
+
+**対処（2 段構え）**:
+
+| 段 | 内容 |
+|----|------|
+| 安価な在否確認を先に | `VL53L3CXWrapper::isPresentAt()` を新設。`IDENTIFICATION__MODEL_ID`（0x010F）を**レジスタ 1 本だけ**読み、VL53L3CX の model id（0xEB/0xEC）が返ったときだけ本物と判定する。NACK・不一致なら**ドライバの重い `init()` を呼ばずに**即 XSHUT=LOW へ戻して `sensor_present(FrontToF)=false`。I2C タイムアウト 10ms が最悪時間を抑える。素の ACK ではなく model id を読むのは、既定で ACK を返すバスと本物を区別するためである |
+| 起動を周期に分散 | 起動を `FrontBringUp{Wake→Probe→Done}` の 3 状態にし、**1 周期に 1 段だけ**進める。`Wake` は XSHUT を上げるだけ（GPIO 書き込み 1 回）で、**起動待ちは「どのみち眠る予定だった周期のスリープ」に吸収させる** — 専用の `vTaskDelay` を持たない。`Probe` は次の周期に走るので、部品は 33ms（`BOOT_TIME_MS`=4ms を十分上回る）の起動時間を得ている。どの段も底面を読んだ後の余り時間で、`cycle_still_on_schedule` の下で走り、**`last_wake` に一切触れない** |
+
+HAL 側（`isPresentAt()`）は待たず XSHUT にも触れない設計にした。待ちと XSHUT は呼び出し側の周期に属する関心事であり、HAL に持たせると周期を持たない呼び出し側から使えなくなるためである。
+
+**結果（既定 `tof.front.enable=1` のまま、SILS に前方のシム無し）**:
+
+| 確認 | 結果 |
+|------|------|
+| `stab_flight` の `att_rmse` | **0.0489（2.80°）= 基準値と同一**、PASS |
+| `sf sils regression` | **28 PASS / 5 KNOWN-FAIL / 1 SKIP**（基準どおり）|
+| `test_determinism_unchanged_without_env_vars` の SHA256 | `e3cd84e0…b609` = **基準値とバイト単位で一致** |
+| pytest 全件 | **436 passed / 1 skipped / 0 failed**（基準 427 passed + 1 skipped に、本改修の追加試験 9 件）|
+| `sf build vehicle` | エラー 0・警告 0。サイズ 1,173,744 バイト（基準比 +432）|
+
+**閾値も SHA256 基準値も動かしていません。** 前方が居ない環境で底面のタイミングに完全中立になったため、動かす必要がなくなりました。
+
+試験 `simulator/tests/test_tof_front_sils.py::test_an_absent_front_sensor_does_not_shift_the_bottom_sensor_timing` が、前方の有無（`tof.front.enable`）で STATE 列が 1 行も変わらないことを見張ります（上書きが効かず空振りになる場合を検出する保険つき）。
+
+### 前方が「居る」ときの重い初期化（ブロック時間の見積もり）
+
+在否確認が肯定のときだけ `init()`＋`startRanging()` を走らせます。**地上での起動時に 1 回だけ**です。
+
+| 項目 | 値・根拠 |
+|------|---------|
+| `WaitDeviceBooted` のポーリング | `VL53LX_WaitValueMaskEx` は**最初の一致で即座に抜ける**（`found=1` で待ちに入らない。`vl53lx_platform.c`）。`Probe` の段に来た時点で部品は 33ms 起動済みなので、初回読みで一致する |
+| ドライバ内のその他の待ち | `DataInit`/`SetDistanceMode`/`SetTimingBudget`/`StartMeasurement` の経路に `VL53LX_WaitMs` は**無い**（grep 済み、0 件）。残りは I2C 転送のみ |
+| I2C 転送量 | 設定ブロックの書き込みと NVM 読み出しで数百バイト。400kHz なら合計 10ms 前後 |
+| SILS での実測 | 底面の同一経路（`init`＋`startRanging`）が**1 周期（33ms）以内**に完了。前方の `Probe` は t=0.033s、すなわち設計どおり 1 周期後に到達 |
+
+**底面が欠けるサンプル数**: 最悪でも 1 周期分（1 サンプル）。R16 の鮮度しきい値は 500ms（`kTelemSensorStaleUs`）＝底面 15 周期分なので、1 サンプル欠落では `sensor_health` も telemetry の bit0 も落ちません。接地/ARM 判定（`TakeoffLandingMgr`）と ESKF の鉛直ハンドオフも ToF サンプル列に対して十分な時定数を持ち、1 サンプルでは状態が変わりません。
+
+**ARM 前に完了します**: 起動手順は `TofTask` の最初の 2 周期（66ms）で終わります。実機の起動校正は数秒あり、`prearm` は校正完了まで ARM を拒否します（`requirements.md` の状態モデル）。したがって前方の起動は ARM のはるか前に決着します。
+
+### 今回やらなかったこと（意図的）
+
+| 項目 | 理由 |
+|------|------|
+| `sensor_health` への前方 ToF の追加 | `SensorHealth` の present/healthy マスクは `sf::SensorId`（`Imu/Mag/Baro/Tof/Flow/Power`）を索引とする**電文**で、前方を足すと様式変更になる。前方の presence/鮮度は BSP 内部（`board::SensorId::FrontToF`）には記録済みで、`PowerTask` が両 enum を明示的に対応付けているため黙った食い違いは起きない |
+| Data Stream（400Hz ログ）への追加 | 下記 |
+| SILS の前方距離の模擬 | P4b の前提。今回の範囲外（`simulation-policy` #15 と併せて議論）|
+| 前方 ToF を推定器へ入れること | **やってはならない**。前方は機体の状態ではなく障害物の観測であり、状態ベクトルがモデル化していない |
+
+### Data Stream（400Hz ログ）は対象外
+
+前方 ToF を 400Hz ログに載せることは今回行わない。テレメトリ（50Hz）で監視と `sf pilot` への供給は足りており、ワイヤ様式の変更は独立に検証すべき別の作業だからである。載せるときのワイヤ id は **0x47**（`lib/sflog` に `tof_front` ストリームとして定義済み）。**0x49 は使用禁止**（`udp_capture.py` が `PKT_ESKF_PDIAG` として予約済み。`data_stream_wire.hpp:68-79`）。
+
+### 実機確認の手順書（未実施。ユーザーが実行する）
+
+**前提**: **プロペラを外す。** 前方 ToF はバッテリー電源が要るので、バッテリー駆動と USB 給電のみの両方を試す。飛行を伴う項目は、それ以外の全項目が通ってから。
+
+**USB 給電のみの項目（手順 2）についての注意**: **この機体は、少なくともドックを経由した USB では、バッテリーをつながないと USB 機器として認識されなかった**（本体ポートへの直挿し・バッテリー無しの場合は未確認）。したがって手順 2 は「機体が USB だけで起動する場合に限り」実施する。起動しないなら、USB 給電のみの経路は**確認不能**として記録し、飛ばしてよい — その場合に前方 ToF が居ない状況を作るには、手順 8（コネクタを抜く）か `tof.front.enable 0`（手順 10）を使う。
+
+| # | 手順 | 期待する結果 | 外れたときに見るもの |
+|---|------|------------|-------------------|
+| 1 | `sf flash vehicle -m`（**バッテリー接続**）。起動ログを見る | `TofTask: VL53L3CX bottom ready at 0x30` が先、`TofTask: VL53L3CX front ready at 0x31` が後。**この順序**であること | 順序が逆、または 0x30／0x31 以外のアドレスが出る → 起動手順の破綻。混線の疑いなので**そこで止める** |
+| 2 | 同上（**USB 給電のみ、バッテリー外す**）。**機体が USB だけで起動する場合に限る**（上記の注意を参照。起動しないなら「確認不能」と記録して手順 8 で代替） | `bottom ready at 0x30` の後、`Front ToF not detected — continuing without it`。**`front init failed` は出ない**（出たら重い初期化に入っており、在否確認が効いていない）。その後も通常起動 | `[ERROR]` や abort、あるいは底面まで失敗 → Optional の扱いが効いていない |
+| 3 | `sf telemetry`（バッテリー駆動、機体を手に持って静止） | `tof : down 0.xxx m   front x.xxx m` の形で**両方が数値**。「未対応」の文字が出ないこと | 前方が `invalid` のまま → 手順 1 で前方が起動したか確認。`--web` でも同じ表示になること |
+| 4 | 手を**機体の下**にかざす／離す | **底面だけ**が変わり、前方は変わらない | 両方同時に動く → 混線（1 データソース = 1 変数の破れ）。**そこで止めて報告** |
+| 5 | 手を**機体の前**にかざす／離す | **前方だけ**が変わり、底面は変わらない | 同上 |
+| 6 | 底面の更新レートを測る。CLI の `sensor tof` は底面・前方を 2 行で出し、各行に `t=<マイクロ秒>` を付ける。これを数回打って**底面の `t` の増分**を見る（33000us 前後なら 30Hz）。可能なら `sf log wifi` で 400Hz ログを取り `tof_bottom.csv` の行間隔を見る | 底面の `t` の増分が約 33000us（30Hz）。**手順 2（前方なし）と手順 3（前方あり）で変わらないこと** | 前方ありで落ちる → バス占有の見積もりが外れている。`tof.front.enable 0` で切って再測し、差分を報告 |
+| 7 | 前方センサを指で塞ぐ | 前方が `invalid` または近距離の値になる。**底面は乱れない**（手順 6 のレートも値も） | 底面が乱れる → 前方の異常が底面に及んでいる。**そこで止めて報告** |
+| 8 | 可能なら前方のコネクタを抜いて再起動（コネクタ不良の模擬） | `Front ToF not detected`（`front init failed` ではない）、底面は正常。**手順 6 の底面レートがコネクタの有無で変わらないこと** | 起動しない・底面が失敗する・底面のレートが変わる → 失敗処理か在否確認の破綻 |
+| 9 | **ここまで全て通ってから**、低高度（0.5m 程度）・短時間（10〜20 秒）でホバリング | 高度保持が従来どおり（±6〜7cm）。高度の振れ・落ち込みが従来と変わらないこと | 悪化 → **直ちに `tof.front.enable 0` で切り**（下記）、切った状態で再度ホバリングして従来に戻るか確認。戻るなら前方が原因、戻らないなら別の原因 |
+| 10 | 無効化手順の確認 | `param set tof.front.enable 0` → `param save` → **再起動**。起動ログに `Front ToF disabled by tof.front.enable — left in reset` が出て、前方が起動しないこと。テレメトリの前方は `invalid` | 再起動しないと反映されない点に注意（アドレス割り当ては実行中に返上できない） |
+
+**手順 4・5・7・9 で異常が出たら、`tof.front.enable 0` ＋ 再起動で前方を切れば、従来のファームと同じ挙動に戻る。**
+
+### 実機でしか確かめられないこと
+
+| 事項 | 理由 |
+|------|------|
+| 前方 ToF が実際に 0x31 で起動し測距すること | SILS に VL53L3CX が無い。SILS が通るのは「起動失敗 → Optional で続行」の経路だけである |
+| 2 センサ同時運用時の実バス占有 | 見積もり（約 20%）は転送量からの計算であり、実測ではない |
+| 前方ありで底面が 30Hz を保つこと | 上と同じ理由 |
+| バッテリー駆動と USB 給電のみの差 | 電源に依存する現象で、SILS には電源が無い |
+| ホバリング時の高度保持が従来どおりであること | SILS の回帰は変更前と一致したが、SILS のプラントは実機と忠実度が異なる |
+
 ## 5. 置き場所
 
 | パス | 内容 | 状況 |
@@ -782,15 +910,17 @@ P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 | P0 | This plan document, `sf pilot bench` (measure Jev round-trip time and tokens) | **Done** |
 | P1 | `lib/sfpilot` core (Monitor / Summarizer / Judge / Arbiter / Executor), FakeJudge, ReplayLink | **Done** |
 | P2a | Telemetry extension (UDP:5005 becomes the 140B v2 packet, adding battery voltage, downward ToF, optical flow, magnetometer and pressure altitude; format in `firmware/vehicle/docs/detailed_design.md` §10) | **Done** (not verified on hardware) |
-| P2b | Drive the forward ToF (add `sensor_tof_front`, mirror into `SensorSnapshot`, supply telemetry bit1). **Requires hardware verification and battery power** (the forward ToF has been seen not to come up on USB power) | Not started |
+| P2b | Drive the forward ToF (add `sensor_tof_front`, mirror into `SensorSnapshot`, supply telemetry bit1). **Requires hardware verification and battery power** (the forward ToF has been seen not to come up on USB power) | **Implemented** (verified in SILS; **not yet verified on hardware** — the procedure is in §4.7 of the Japanese section) |
 | P2 | SILS integration (`api` stdin verb, SilsLink, three scenes), `sf pilot run --sils`, RealLink's 50Hz UDP:5005 reader | **Done**. All three scenes confirmed against the live Jev (§4.5) |
 | P3 | `sf pilot say` (natural-language instruction) | **Done**. 7/10 against the live Jev, all three misses diagnosed and fixed, now **10/10** (§4.5) |
 | P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done**. A reply-count race found and fixed during the live-Jev flights; **all six legs now complete `as planned`** (§4.5) |
-| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). Starts **after P2b**: the premise does not hold while the current firmware leaves the forward ToF undriven | Not started (waiting on P2b) |
+| P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead). **Two premises**: (1) the forward ToF is driven (P2b — implemented, not yet verified on hardware) and (2) **SILS simulates a forward distance** (a MuJoCo raycast or similar; not started). Without (2) a wrong heading judgment is first met in the air | Not started (waiting on P2b's hardware verification and on a simulated forward distance in SILS) |
 | P4c | **Ways to watch a flight** (`--web` live view, plus video / GUI replay afterwards; §4.6) | **Done** |
 | P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
 
-**Forward ToF status (important):** the forward ToF exists in hardware but is **not driven by the current firmware**. `TofTask` holds its XSHUT low, keeping it in reset (both VL53L3CX parts boot at I2C address 0x29, so re-addressing the bottom sensor would reach both and interleave their ranging data). Telemetry v2 reserves the slot (`tof_front`, validity bit1), but on current firmware bit1 is always clear and the value is always -1.0. **Any plan to have Jev judge obstacle avoidance or exploration rests on a premise that does not hold until P2b is done.**
+**Forward ToF status (important):** the forward ToF has been driven since 2026-09-19 (P2b; see §4.7 of the Japanese section). `TofTask` holds the forward part in reset while it brings the bottom sensor up at 0x30, and only then wakes the forward one and moves it to 0x31. Telemetry v2's `tof_front` and validity bit1 are supplied from there. **It is not yet verified on hardware.** The forward sensor is Optional and **needs battery power**: on USB alone it does not start and bit1 stays clear. **Obstacle avoidance and exploration (P4b) rest on one more premise that does not yet hold — SILS does not simulate a forward distance.** Until it does, a wrong judgment would first be met in the air.
+
+**Why the forward ToF is not fed to the estimator:** it observes obstacles ahead, not the vehicle's own state, so it is mirrored for monitoring and telemetry only. The bottom ToF remains the single vertical observation.
 
 ## 2. Constraints That Shaped the Design
 

@@ -21,6 +21,15 @@ static const char* TAG = "VL53L3CX";
 
 namespace stampfly {
 
+/// I2C timeout for the presence probe. Short on purpose: the whole point of the
+/// probe is to decide "absent" quickly, and a part that is really there answers
+/// a single register read in well under a millisecond at 400kHz. This bounds the
+/// probe's worst case, unlike the driver's 500ms boot polling.
+/// 在否確認の I2C タイムアウト。意図的に短い: 確認の目的は「居ない」を速く決めること
+/// であり、実在する部品なら 400kHz でレジスタ 1 本の読み出しは 1ms 未満で応答する。
+/// ドライバの 500ms 起動ポーリングと違い、これが確認の最悪時間を抑える。
+static constexpr int kProbeTimeoutMs = 10;
+
 VL53L3CXWrapper::~VL53L3CXWrapper()
 {
     if (initialized_) {
@@ -94,6 +103,48 @@ esp_err_t VL53L3CXWrapper::waitDeviceBoot()
         return ESP_FAIL;
     }
     return ESP_OK;
+}
+
+bool VL53L3CXWrapper::isPresentAt(i2c_master_bus_handle_t i2c_bus, uint8_t addr)
+{
+    // Borrow the bus the same way every other HAL does (R2): add a device,
+    // use it, remove it. Nothing here keeps a handle beyond this call.
+    // 他の HAL と同じ流儀でバスを借りる（R2）: デバイスを足し、使い、外す。
+    // この呼び出しを越えてハンドルを保持しない。
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = addr,
+        .scl_speed_hz = 400000,
+        .scl_wait_us = 0,
+        .flags = { .disable_ack_check = 0 },
+    };
+    i2c_master_dev_handle_t probe_handle = nullptr;
+    if (i2c_master_bus_add_device(i2c_bus, &dev_cfg, &probe_handle) != ESP_OK) {
+        return false;
+    }
+
+    // One 16-bit-pointer register read. A missing part NACKs and this fails
+    // outright; a bus that ACKs by default returns something that is not a
+    // VL53L3CX model id.
+    // 16bit ポインタのレジスタ読み 1 回。部品が無ければ NACK で失敗し、既定で ACK を
+    // 返すバスなら VL53L3CX の model id ではない値が返る。
+    const uint8_t reg[2] = { static_cast<uint8_t>(MODEL_ID_REG >> 8),
+                             static_cast<uint8_t>(MODEL_ID_REG & 0xFF) };
+    uint8_t model_id = 0;
+    const esp_err_t ret = i2c_master_transmit_receive(
+        probe_handle, reg, sizeof(reg), &model_id, 1, kProbeTimeoutMs);
+    i2c_master_bus_rm_device(probe_handle);
+
+    if (ret != ESP_OK) {
+        ESP_LOGD(TAG, "probe at 0x%02X: no answer (%s)", addr, esp_err_to_name(ret));
+        return false;
+    }
+    const bool is_vl53l3cx = (model_id == MODEL_ID_A) || (model_id == MODEL_ID_B);
+    if (!is_vl53l3cx) {
+        ESP_LOGD(TAG, "probe at 0x%02X: model id 0x%02X is not a VL53L3CX",
+                 addr, model_id);
+    }
+    return is_vl53l3cx;
 }
 
 esp_err_t VL53L3CXWrapper::init(const Config& config)

@@ -218,6 +218,83 @@ def test_front_tof_is_reported_invalid_by_the_bit_not_the_value():
 
 
 # ---------------------------------------------------------------------------
+# Terminal display (_sensor_lines)
+# 端末表示
+# ---------------------------------------------------------------------------
+
+def _tof_line(pkt: dict) -> str:
+    """The dashboard's `tof` row, for asserting on what the operator reads.
+    ダッシュボードの `tof` 行。操作者が読む内容を検査するために取り出す。"""
+    lines = [line for line in telem._sensor_lines(pkt) if line.startswith("tof")]
+    assert len(lines) == 1, f"expected exactly one tof row, got {lines}"
+    return lines[0]
+
+
+def test_a_driven_front_tof_shows_its_distance():
+    """With bit1 set the front reading is a distance, not a "not supported" note.
+
+    The firmware drives the forward sensor now, so the display must show what it
+    measured. This is the regression guard for the old hard-coded annotation.
+    bit1 が立っていれば前方は距離として表示され、「未対応」の注記ではないこと。
+
+    ファームが前方センサを駆動するようになったので、表示は測った値を出さねば
+    ならない。以前のベタ書きの注記に戻っていないことを見張る。
+    """
+    pkt = telem.decode_packet(build_v2(flags=0b111111, tof_front=0.85))
+    line = _tof_line(pkt)
+
+    assert "0.850 m" in line
+    assert "not supported" not in line
+    assert "未対応" not in line
+
+
+def test_an_undriven_front_tof_reads_invalid_not_a_distance():
+    """Bit1 clear shows "invalid" — never the -1.0 placeholder as a distance.
+
+    The front sensor is optional (absent, switched off, or unstarted on USB-only
+    power), so this is the ordinary case and must not look like a reading of
+    -1 m or of 0 m.
+    bit1 が落ちていれば "invalid" と表示し、placeholder の -1.0 を距離として
+    出さないこと。
+
+    前方は任意の装備（非搭載・無効化・USB 給電のみで未起動）なのでこれが通常の
+    状態であり、-1m や 0m の測定値のようには見せてはならない。
+    """
+    line = _tof_line(telem.decode_packet(
+        build_v2(flags=0b111101, tof_front=-1.0)))
+
+    assert "invalid" in line
+    assert "-1.000" not in line
+
+
+def test_the_two_tof_readings_are_reported_independently():
+    """Each ToF follows its OWN flag bit; one being invalid never hides the other.
+
+    Bottom and front once shared a variable and the bottom sensor's reported rate
+    doubled when the front one initialised (docs/architecture/udp-telemetry-design.md
+    §2). The bottom ToF is the only vertical observation, so its reading must stay
+    untouched by anything the front sensor does.
+    2つの ToF はそれぞれ「自分の」フラグビットに従い、片方が無効でももう片方を
+    隠さないこと。
+
+    かつて底面と前方が変数を共有し、前方の初期化成功で底面の報告レートが 2 倍に
+    なった（docs/architecture/udp-telemetry-design.md §2）。底面は唯一の鉛直観測
+    であり、前方が何をしようとその表示は影響を受けてはならない。
+    """
+    bottom_only = telem.decode_packet(build_v2(
+        flags=telem.VALID_BITS["tof_bottom_valid"],
+        tof_bottom=0.42, tof_front=-1.0))
+    front_only = telem.decode_packet(build_v2(
+        flags=telem.VALID_BITS["tof_front_valid"],
+        tof_bottom=9.99, tof_front=1.20))
+
+    assert "0.420 m" in _tof_line(bottom_only)      # bottom shown / 底面は表示
+    assert "invalid" in _tof_line(bottom_only)      # front not   / 前方は非表示
+    assert "1.200 m" in _tof_line(front_only)       # front shown / 前方は表示
+    assert "9.990" not in _tof_line(front_only)     # bottom not  / 底面は非表示
+
+
+# ---------------------------------------------------------------------------
 # CSV
 # ---------------------------------------------------------------------------
 

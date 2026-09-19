@@ -97,9 +97,25 @@ struct SensorSnapshot {
     float    mag[3];          // Magnetometer [uT]        / 地磁気
     float    baro_pressure;   // Barometer pressure [Pa]  / 気圧
     float    baro_altitude;   // Pressure altitude [m]    / 気圧高度
-    float    tof_distance;    // ToF distance [m]         / ToF 距離
-    uint8_t  tof_status;      // ToF status code          / ToF ステータス
-    bool     tof_valid;       // ToF validity             / ToF 有効
+    float    tof_distance;    // Bottom ToF distance [m]  / 底面 ToF 距離
+    uint8_t  tof_status;      // Bottom ToF status code   / 底面 ToF ステータス
+    bool     tof_valid;       // Bottom ToF validity      / 底面 ToF 有効
+    // Front ToF mirror. Deliberately SEPARATE fields from the bottom sensor's
+    // above — never a shared variable. Bottom and front once updated the same
+    // timestamp variable, and on battery power the front sensor initialised
+    // successfully and made the bottom rate appear doubled
+    // (docs/architecture/udp-telemetry-design.md §2, "one data source = one
+    // variable"). The bottom ToF is the vehicle's only vertical observation, so
+    // a front-sensor fault must not be able to reach it through a shared field.
+    // 前方 ToF のミラー。上の底面用とは意図的に「別」フィールドにする — 変数を
+    // 共有しない。かつて底面と前方が同じタイムスタンプ変数を更新し、電池駆動時に
+    // 前方が初期化に成功して底面のレートが 2 倍に見えた不具合がある
+    // （docs/architecture/udp-telemetry-design.md §2「1 データソース = 1 変数」）。
+    // 底面 ToF は機体唯一の鉛直観測であり、前方の異常が共有フィールド経由で
+    // そこへ及んではならない。
+    float    tof_front_distance;  // Front ToF distance [m]  / 前方 ToF 距離
+    uint8_t  tof_front_status;    // Front ToF status code   / 前方 ToF ステータス
+    bool     tof_front_valid;     // Front ToF validity      / 前方 ToF 有効
     int16_t  flow_dx;         // Optical flow dx [counts] / フロー dx
     int16_t  flow_dy;         // Optical flow dy [counts] / フロー dy
     uint8_t  flow_squal;      // Flow surface quality     / フロー品質
@@ -134,7 +150,8 @@ struct SensorSnapshot {
     // 分からない。
     uint32_t mag_timestamp;   // [us] last mag sample   / 最終 mag サンプル時刻
     uint32_t baro_timestamp;  // [us] last baro sample  / 最終 baro サンプル時刻
-    uint32_t tof_timestamp;   // [us] last ToF sample   / 最終 ToF サンプル時刻
+    uint32_t tof_timestamp;   // [us] last bottom ToF sample / 最終 底面 ToF サンプル時刻
+    uint32_t tof_front_timestamp; // [us] last front ToF sample / 最終 前方 ToF サンプル時刻
     uint32_t flow_timestamp;  // [us] last flow sample  / 最終 flow サンプル時刻
     uint32_t timestamp;       // [us] snapshot publish time / スナップショット発行時刻
 };

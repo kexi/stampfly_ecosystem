@@ -252,13 +252,20 @@ float ws::tof_bottom() { return sf::sensor_snapshot.latest().tof_distance; }
 
 float ws::tof_front()
 {
-    // The current vehicle sensor pipeline has no front ToF (SensorSnapshot
-    // carries a single bottom-facing tof_distance only). -1 matches the
-    // "unavailable" convention documented in workshop_api.hpp.
-    // 現行 vehicle のセンサパイプラインには前方 ToF が無い（SensorSnapshot は
-    // 下向き tof_distance のみを運ぶ）。-1 は workshop_api.hpp に文書化された
-    // 「利用不可」の慣例と一致する。
-    return -1.0f;
+    // Report the measured distance only when the sensor said the sample is
+    // valid; otherwise the documented "unavailable" value. The front sensor is
+    // Optional — it is absent on a board without it, when tof.front.enable is
+    // off, and on USB-only power (it needs the battery) — so a learner's code
+    // must be able to tell "no reading" from "zero metres ahead".
+    // センサが有効と告げたサンプルのときだけ測距値を返し、そうでなければ文書化された
+    // 「利用不可」の値を返す。前方センサは Optional であり — 非搭載の基板、
+    // tof.front.enable が off のとき、USB 給電のみのとき（バッテリーが要る）に
+    // 存在しない — 学習者のコードが「測っていない」と「前方 0m」を区別できねばならない。
+    const auto& snapshot = sf::sensor_snapshot.latest();
+    if (!snapshot.tof_front_valid) {
+        return ws::kDistanceUnavailable;
+    }
+    return snapshot.tof_front_distance;
 }
 
 float ws::flow_vx()

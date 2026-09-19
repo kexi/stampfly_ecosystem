@@ -267,7 +267,26 @@ float mag_z();
 /** @brief Get bottom ToF distance [m] (VL53L3CX, 0-2m) */
 float tof_bottom();
 
-/** @brief Get front ToF distance [m] (VL53L3CX, 0-2m, -1 if unavailable) */
+/**
+ * @brief Distance reported when a distance sensor has no reading.
+ *
+ * A real distance is never negative, so this value cannot be mistaken for one.
+ * Compare against it rather than writing -1 at each call site.
+ * 距離センサに測定値が無いときに返す距離。実際の距離は負にならないので取り違えない。
+ * 各所に -1 と書かず、この定数と比較すること。
+ */
+inline constexpr float kDistanceUnavailable = -1.0f;
+
+/**
+ * @brief Get front ToF distance [m] (VL53L3CX, 0-2m)
+ *
+ * Returns kDistanceUnavailable when there is no reading: the sensor is not
+ * fitted, the tof.front.enable parameter is off, it failed to start (it needs
+ * battery power — USB alone is not enough), or the last sample was invalid.
+ * 測定値が無いときは kDistanceUnavailable を返す: センサ非搭載、
+ * tof.front.enable が off、起動失敗（バッテリー電源が要る。USB のみでは不足）、
+ * あるいは最終サンプルが無効だった場合。
+ */
 float tof_front();
 
 /** @brief Get optical flow velocity X [m/s] (PMW3901) */

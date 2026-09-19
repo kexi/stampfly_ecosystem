@@ -20,7 +20,7 @@
  * 状態推定値を発行し、制御タスクに通知する。
  *
  * @publisher sensor_imu, estimate_state, system_status
- * @subscriber sensor_tof, sensor_flow, sensor_mag, sensor_baro, estimator_command, system_mode
+ * @subscriber sensor_tof, sensor_tof_front, sensor_flow, sensor_mag, sensor_baro, estimator_command, system_mode
  * @design architecture.md §5 — Main pipeline: IMU → Estimation        [OK]
  * @design architecture.md §6 — ImuTask: Sensing(IMU) + Estimation     [OK]
  * @design detailed_design.md §8 — ImuTask: 400Hz, priority 24        [OK]
@@ -269,6 +269,26 @@ static void processAsyncSensors()
         snap.tof_status    = tof.status;
         snap.tof_valid     = tof.valid;
         snap.tof_timestamp = tof.timestamp;   // per-sensor stamp for the Data Stream / Data Stream 用センサ別時刻
+        snap_dirty = true;
+    }
+
+    // Front ToF: MIRROR ONLY — the estimator never sees it. The front sensor
+    // observes obstacles ahead, not the vehicle's state, so feeding it to the
+    // estimator would be an observation of something the state vector does not
+    // model. It is drained here purely so telemetry and ws::tof_front() can read
+    // it, and into its OWN snapshot fields so a front-sensor fault cannot reach
+    // the bottom ToF above (R5, "one data source = one variable").
+    // 前方 ToF: 「ミラーのみ」 — 推定器には決して渡さない。前方は機体の状態ではなく
+    // 前方の障害物を観測するもので、推定器に入れれば状態ベクトルがモデル化していない
+    // 対象の観測になってしまう。ここで引き抜くのはテレメトリと ws::tof_front() が
+    // 読めるようにするためだけであり、格納先も「専用」フィールドとして上の底面 ToF に
+    // 前方の異常が及ばないようにする（R5「1 データソース = 1 変数」）。
+    sf::TofData tof_front;
+    while (sf::sensor_tof_front.read(tof_front)) {
+        snap.tof_front_distance  = tof_front.distance;
+        snap.tof_front_status    = tof_front.status;
+        snap.tof_front_valid     = tof_front.valid;
+        snap.tof_front_timestamp = tof_front.timestamp;
         snap_dirty = true;
     }
 

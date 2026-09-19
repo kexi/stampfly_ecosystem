@@ -180,9 +180,16 @@ ledc_mode_t motor_speed_mode();
 enum class SensorId : uint8_t {
     Mag,        ///< BMM150 magnetometer
     BottomToF,  ///< VL53L3CX bottom-facing ToF (altitude source; managed by TofTask)
+    FrontToF,   ///< VL53L3CX forward-facing ToF (obstacle sensing; managed by TofTask)
     Flow,       ///< PMW3901 optical flow
     Baro,       ///< BMP280 barometer
     Power,      ///< INA3221 power monitor
+    /// Slot count — must stay last. Keeping it in the enum makes the storage
+    /// arrays in board.cpp resize with the list instead of relying on a
+    /// hand-maintained constant that a new sensor can silently outgrow.
+    /// スロット数 — 必ず最後に置く。enum 内に持たせることで board.cpp の格納配列が
+    /// この一覧に追従する。手で保守する定数では、センサ追加時に黙って溢れうる。
+    Count,
 };
 
 /**

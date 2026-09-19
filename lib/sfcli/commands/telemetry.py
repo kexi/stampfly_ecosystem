@@ -285,9 +285,17 @@ def _sensor_lines(pkt: dict) -> list:
             flow += " (stale)"
     return [
         f"power : {_format_reading(pkt, 'voltage', 'power_valid', '5.2f', ' V')}",
+        # Both ToF readings go through the same formatter: each shows its
+        # distance when its own flag bit is set, and "invalid" when it is not.
+        # The front sensor is Optional (absent, switched off, or failed to start
+        # on USB-only power), so "invalid" is an ordinary reading here, not a
+        # fault — but it is never dressed up as a distance.
+        # ToF は 2 つとも同じ整形関数を通す: それぞれ自分のフラグビットが立っていれば
+        # 距離を、立っていなければ "invalid" を表示する。前方は Optional（非搭載・
+        # 無効化・USB 給電のみでの起動失敗）なので、ここでの "invalid" は異常ではなく
+        # 通常の表示である — ただし距離であるかのように見せることはしない。
         f"tof   : down {_format_reading(pkt, 'tof_bottom', 'tof_bottom_valid', '5.3f', ' m')}"
-        f"   front {_format_reading(pkt, 'tof_front', 'tof_front_valid', '5.3f', ' m')}"
-        f" (front: not supported / 未対応)",
+        f"   front {_format_reading(pkt, 'tof_front', 'tof_front_valid', '5.3f', ' m')}",
         f"baro  : {_format_reading(pkt, 'baro_altitude', 'baro_valid', '+7.2f', ' m')}",
         f"mag   : {_format_reading(pkt, 'mag_x', 'mag_valid', '+7.1f', '')} "
         f"{_format_reading(pkt, 'mag_y', 'mag_valid', '+7.1f', '')} "

@@ -236,8 +236,13 @@ function sensorText(value, valid, digits, suffix){
 function updateSensors(p){
   $("voltage").textContent       = sensorText(p.voltage, p.power_valid, 2);
   $("tof_bottom").textContent    = sensorText(p.tof_bottom, p.tof_bottom_valid, 3);
-  $("tof_front").textContent     = p.tof_front === null || p.tof_front === undefined
-    ? "--" : "未対応 / not supported";
+  // Same formatter as the bottom sensor: the flag bit decides, never the value.
+  // The front sensor is Optional, so "invalid" is an ordinary reading here
+  // (absent, switched off, or not started on USB-only power) rather than a fault.
+  // 底面と同じ整形関数を使う: 判断するのはフラグビットであって値ではない。
+  // 前方は Optional なので、ここでの "invalid" は異常ではなく通常の表示である
+  // （非搭載・無効化・USB 給電のみで未起動）。
+  $("tof_front").textContent     = sensorText(p.tof_front, p.tof_front_valid, 3);
   $("baro_altitude").textContent = sensorText(p.baro_altitude, p.baro_valid, 2);
   $("mag").textContent = (p.mag_x === null || p.mag_x === undefined) ? "--"
     : (p.mag_valid === false ? "invalid"

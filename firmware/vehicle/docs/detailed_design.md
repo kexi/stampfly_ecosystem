@@ -776,7 +776,7 @@ v2 は v1 への**末尾追記**であり、先頭 104 バイトは両版でビ�
 |---|---|---|---|
 | 104 | voltage | f32 | 電池電圧 [V]（0 = 不明） |
 | 108 | tof_bottom | f32 | 下向き ToF 距離 [m] |
-| 112 | tof_front | f32 | 前方 ToF 距離 [m]。**現行ファームでは常に -1.0（未駆動）** |
+| 112 | tof_front | f32 | 前方 ToF 距離 [m]。測定値が無いときは `kTelemTofFrontUnavailable`（-1.0）。有効性は bit1 が正 |
 | 116 | flow_dx_sum | i16 | フロー変位 dx [counts]。前回送信からの変位（全サンプルを含む） |
 | 118 | flow_dy_sum | i16 | フロー変位 dy [counts]。同上 |
 | 120 | flow_squal | u8 | 最新の表面品質 |
@@ -792,7 +792,7 @@ v2 は v1 への**末尾追記**であり、先頭 104 バイトは両版でビ�
 | ビット | 定数 | 対象 |
 |---|---|---|
 | bit0 | `TELEM_VALID_TOF_BOTTOM` | 下向き ToF |
-| bit1 | `TELEM_VALID_TOF_FRONT` | 前方 ToF（現行ファームでは常に 0） |
+| bit1 | `TELEM_VALID_TOF_FRONT` | 前方 ToF（Optional。非搭載・無効化・USB 給電のみでの起動失敗時は 0） |
 | bit2 | `TELEM_VALID_FLOW` | オプティカルフロー |
 | bit3 | `TELEM_VALID_MAG` | 地磁気 |
 | bit4 | `TELEM_VALID_BARO` | 気圧高度 |
@@ -818,20 +818,59 @@ v2 は v1 への**末尾追記**であり、先頭 104 バイトは両版でビ�
 
 最初のパケットは、起動からの累積を 1 回の巨大な変位として報告する代わりに、現在の累積を基準として採用し 0 を送る。
 
-### 前方 ToF の予約枠と将来の供給契約（R11）
+### 前方 ToF の供給経路（R11 の契約を実装）
 
-前方 ToF は**ハードウェアとしては実装されているが、現行ファームでは駆動していない**。`TofTask` が XSHUT を low に固定してリセット保持している。VL53L3CX は 2 個とも同じ I2C アドレス 0x29 で起動するため、前方を生かしたまま底面のアドレスを変更すると両方に届いて測距データが混線するからである。
+前方 ToF は 2026-09-19 に駆動を開始した（jev-autopilot P2b）。**実機未確認**である。かつて R11 に従って先に決めた 4 段階の契約を、そのまま実装したものである。
 
-枠だけを先に確保し、供給側の契約を R11 に従って今決める。**実装は将来行う。**
+| 段階 | 内容 | 実装 |
+|------|------|------|
+| 1 | `TofTask` が XSHUT を時差解除する 2 センサ起動手順を実装する | `tasks/tof_task.cpp::startTofSensors()` |
+| 2 | 専用トピック `sensor_tof_front` を新設する。**底面と変数・トピックを共有しない。** かつて底面と前方が同じタイムスタンプ変数を更新し、電池駆動時に前方が初期化に成功して 2 倍のレートに見えた不具合がある（`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」） | `sf_core/include/topics.hpp` |
+| 3 | `SensorSnapshot` に `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp` を追加し、`ImuTask` がミラーする | `sf_core/include/data_types.hpp`、`tasks/imu_task.cpp`（`tof_front_status` も併せて追加） |
+| 4 | テレメトリは `sensor_snapshot` からそれを読み、bit1 と `tof_front` を埋める | `sf_telemetry/telemetry.cpp` |
 
-| 段階 | 内容 |
+#### 起動順序（この順序でなければならない）
+
+VL53L3CX は 2 個とも I2C 0x29 で起動する。前方を生かしたまま底面のアドレスを変更すると、変更が**両方に届いて**混線する。したがって順序は 1 通りしかない。
+
+| 段 | 動作 | なぜその順か |
+|----|------|------------|
+| 1 | 前方 XSHUT = LOW（リセット保持） | 0x29 に応答する部品を 1 個だけにする |
+| 2 | 底面を初期化し 0x30 へ、`startRanging()` まで完了 | **従来と全く同じ手順**。底面は高度推定の唯一の鉛直観測であり、その挙動を変えない |
+| 3 | 以降は周期ループの余り時間で 1 周期 1 段ずつ（`FrontBringUp`）: `Wake` で前方 XSHUT=HIGH → 次周期の `Probe` で `isPresentAt()`（model id 1 本読み）→ 本物なら `init()`→0x31→`startRanging()` | 底面が自分のアドレスへ移った後なので、0x29 に応答するのは前方だけである。**設定時に一括で行わない**: 前方が非搭載だとドライバが起動完了を最大 500ms ポーリングしてから失敗し（`VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS`）、底面が約 15 周期読まれなくなる。在否確認を先に置いて「居ない」を数 ms で決め、かつ起動待ちを「どのみち眠る周期のスリープ」に吸収させることで、**`last_wake` に触れず底面の 30Hz の位相を一切動かさない**（安全要件 2）|
+
+段 3 が失敗した場合は前方 XSHUT を LOW に戻し、`sensor_present(FrontToF) = false` として続行する（R4 の Optional）。**底面の失敗時の扱いは従来から変えていない。**
+
+#### 底面を乱さないための設計
+
+底面 ToF は高度推定の唯一の鉛直観測（気圧は既定で非融合）であり、Critical である（`hardware_init.md` §5）。前方は Optional にすぎない。したがって次を設計で保証する。
+
+| 要件 | 手段 |
 |------|------|
-| 1 | `TofTask` が XSHUT を時差解除する 2 センサ起動手順を実装する |
-| 2 | 専用トピック `sensor_tof_front` を新設する。**底面と変数・トピックを共有しない。** かつて底面と前方が同じタイムスタンプ変数を更新し、電池駆動時に前方が初期化に成功して 2 倍のレートに見えた不具合がある（`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」） |
-| 3 | `SensorSnapshot` に `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp` を追加し、`ImuTask` がミラーする |
-| 4 | テレメトリは `sensor_snapshot` からそれを読み、bit1 と `tof_front` を埋める |
+| 前方の失敗が底面に及ばない | Topic・`SensorSnapshot` のフィールド・タイムスタンプ・`SensorId` をすべて別にする。前方の失敗経路は XSHUT を LOW に戻して終わり、底面の状態に一切触れない |
+| 底面の 30Hz が前方で遅れない | 1 周期内で**底面を先に、無条件で**読む。前方はその後、周期に余裕があるときだけ読む（`cycle_still_on_schedule`）。余裕が無ければ前方のサンプルを 1 つ捨てる |
+| 前方が推定器に入らない | `ImuTask` は `sensor_tof_front` を**ミラーするだけ**で `g_estimator` にも `g_takeoff_landing` にも渡さない。前方は機体の状態ではなく障害物の観測であり、状態ベクトルがモデル化していない |
+| 実機で問題が出たら即座に切れる | パラメータ `tof.front.enable`（既定 1）。`TofTask` が起動手順の前に 1 回読む。`param set tof.front.enable 0; param save` の後**再起動**で反映（アドレス割り当ては実行中に返上できないため、ライブ再読込は持たない） |
 
-**本改修では段階 1〜3 を行わない**（トピックも `SensorSnapshot` も変更しない）。現行ファームは bit1 を常に 0 とし、`tof_front` に `kTelemTofFrontUnavailable`（-1.0）を入れる。この -1.0 は `ws::tof_front()` が返す値と揃えてある。
+#### I2C バス占有の見積もり
+
+底面の周期 33ms に対し、2 センサ分の読み出しがどれだけ占めるかを見積もる。バスは 400kHz、1 バイト ≈ 9 クロック（8 ビット + ACK）＝ 22.5µs。
+
+| 処理 | 転送量 | 所要 |
+|------|--------|------|
+| `isDataReady`（`GetMeasurementDataReady`） | 約 2 バイトの読み（レジスタアドレス 2 + データ 1、start/stop 込みで概算 6 バイト相当） | 約 0.14ms |
+| `getDistance`（`GetMultiRangingData`, `DEVICERESULTSLEVEL_FULL`） | 結果ブロックを 1 トランザクションで一括読み。レジスタ 0x0088〜0x010E の **134 バイト**（system 44 + core 33 + debug 56 を含む範囲）＋アドレス 2 | 約 3.1ms |
+| `clearInterruptAndStartMeasurement` | 数バイトの書き込み | 約 0.1ms |
+| **1 センサあたり合計** | | **約 3.3ms** |
+| **2 センサ合計** | | **約 6.6ms（33ms 周期の約 20%）** |
+
+残り約 27ms が同じバスを使う他タスク（BMP280 50Hz、BMM150 25Hz、INA3221 10Hz — いずれも 1 回あたり数十バイト）と余裕に充てられる。**前方を足してもバス占有は周期の 2 割程度**であり、底面の 30Hz を脅かさない。なお `getDistance` は新サンプルがある周期にしか走らないため、上の値は最悪値である。
+
+それでも `cycle_still_on_schedule` の間引きを置くのは、クロックストレッチや再試行中の部品でバスが想定外に遅くなったときに、**底面の次の読み出しを遅らせるのではなく前方のサンプルを捨てる**ためである。
+
+#### Data Stream（400Hz ログ）は今回対象外
+
+前方 ToF を Data Stream に載せることは**今回行わない**。テレメトリ（50Hz）で目的（監視・`sf pilot` への供給）は足りており、ワイヤ様式の変更は独立に検証すべき別の作業だからである。`lib/sflog` 側には既に `tof_front` ストリーム（ワイヤ id **0x47**）が定義済みで、載せるときはそれを使う。**0x49 は使用禁止**（`data_stream_wire.hpp:68-79`）。
 
 ### 関連ファイル
 
@@ -1013,7 +1052,7 @@ Growing the packet does not cost anything to send: lwIP's `sendto()` on ESP32 ta
 |---|---|---|---|
 | 104 | voltage | f32 | Battery voltage [V] (0 = unknown) |
 | 108 | tof_bottom | f32 | Downward ToF distance [m] |
-| 112 | tof_front | f32 | Forward ToF distance [m]. **Always -1.0 on current firmware (not driven)** |
+| 112 | tof_front | f32 | Forward ToF distance [m]. `kTelemTofFrontUnavailable` (-1.0) when there is no reading; bit1 is the authority on validity |
 | 116 | flow_dx_sum | i16 | Flow displacement dx [counts] since the previous packet (every sample included) |
 | 118 | flow_dy_sum | i16 | Flow displacement dy [counts], same |
 | 120 | flow_squal | u8 | Latest surface quality |
@@ -1029,7 +1068,7 @@ Each offset is pinned by `static_assert(offsetof(...))` in `telemetry.hpp`, and 
 | Bit | Constant | Sensor |
 |---|---|---|
 | bit0 | `TELEM_VALID_TOF_BOTTOM` | Downward ToF |
-| bit1 | `TELEM_VALID_TOF_FRONT` | Forward ToF (always 0 on current firmware) |
+| bit1 | `TELEM_VALID_TOF_FRONT` | Forward ToF (Optional: 0 when not fitted, disabled, or not started on USB-only power) |
 | bit2 | `TELEM_VALID_FLOW` | Optical flow |
 | bit3 | `TELEM_VALID_MAG` | Magnetometer |
 | bit4 | `TELEM_VALID_BARO` | Pressure altitude |

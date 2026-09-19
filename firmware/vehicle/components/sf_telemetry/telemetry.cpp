@@ -397,13 +397,33 @@ void Telemetry::packSensorFields(TelemetryPacket& pkt)
         flags |= TELEM_VALID_TOF_BOTTOM;
     }
 
-    // Front ToF is held in reset by TofTask (both VL53L3CX parts boot at I2C
-    // 0x29 and would alias), so bit1 is always 0 on this firmware. The slot is
-    // reserved per R11; the supply contract is in detailed_design.md §10.
-    // 前方 ToF は TofTask がリセット保持している（VL53L3CX 2個は I2C 0x29 で起動し
-    // 混線するため）ので、本ファームでは bit1 は常に 0。枠は R11 に基づく予約で、
-    // 供給側の契約は detailed_design.md §10 に記す。
-    pkt.tof_front = kTelemTofFrontUnavailable;
+    // Front ToF: same two-condition rule as every other mirrored sensor — the
+    // sensor's own published validity AND freshness (R16). Forward the fact,
+    // do not re-derive it (INV-3).
+    //
+    // When the front sensor is absent (not fitted, disabled by
+    // tof.front.enable, or failed to initialise on USB-only power), TofTask
+    // never publishes, so the snapshot keeps its zero-initialised fields: the
+    // stamp stays 0, the freshness check fails, and bit1 stays clear. We still
+    // send kTelemTofFrontUnavailable rather than that 0.0 so a receiver reading
+    // the raw value sees the documented "no reading" marker instead of a
+    // distance of zero metres. THE BIT REMAINS THE AUTHORITY either way.
+    //
+    // 前方 ToF: 他のミラーされたセンサと同じ 2 条件 — センサ自身が publish した
+    // 有効性「かつ」鮮度（R16）。事実を転送し、判定をやり直さない（INV-3）。
+    //
+    // 前方が無い場合（未実装、tof.front.enable による無効化、USB 給電のみでの初期化
+    // 失敗）、TofTask は publish しないのでスナップショットはゼロ初期化のまま残る:
+    // 刻印は 0 のままで鮮度判定が落ち、bit1 は立たない。それでも 0.0 ではなく
+    // kTelemTofFrontUnavailable を送るのは、生値を読む受信側に「距離 0m」ではなく
+    // 文書化された「測っていない」の印を見せるためである。いずれにせよ「正はビット」。
+    const bool front_tof_measured =
+        snapshot.tof_front_valid && is_fresh(snapshot.tof_front_timestamp);
+    pkt.tof_front = front_tof_measured ? snapshot.tof_front_distance
+                                       : kTelemTofFrontUnavailable;
+    if (front_tof_measured) {
+        flags |= TELEM_VALID_TOF_FRONT;
+    }
 
     // Clamp rather than truncate: the delta is int32 but the wire field is
     // int16, and a plain cast would wrap a large positive value into a
