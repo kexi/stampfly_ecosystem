@@ -293,6 +293,20 @@ class RealLink:
             self._telem_sock = None
 
         self._reply_q: "queue.Queue[str]" = queue.Queue()
+        # How many replies this link has seen, and how many commands that
+        # expect one have been sent. `landing.py` compares the two to tell
+        # "a move is still running" from "everything sent has been
+        # answered", and `safety.LandGuard` watches the first to tell
+        # whether a `land` was acknowledged. `SilsLink` keeps the same two
+        # counters under the same names for the same readers -- naming them
+        # differently here would mean those readers had to learn both.
+        # このリンクが見た応答の数と、応答を求める指令を送った数。`landing.py` は
+        # 両者を比べて「移動がまだ実行中」と「送ったものはすべて応答済み」を
+        # 区別し、`safety.LandGuard` は前者を見て `land` に応答があったかを判定
+        # する。`SilsLink` も同じ読み手のために同じ名前で同じ 2 つを持つ ――
+        # ここで別の名前にすれば、読み手が両方を覚えることになる。
+        self._replies = 0
+        self._awaiting = 0
         self._send_lock = threading.Lock()     # serializes socket writes / 送信の直列化
         self._abort_evt = threading.Event()
         self._closed = threading.Event()
@@ -320,6 +334,14 @@ class RealLink:
                 data, _addr = self._cmd_sock.recvfrom(1024)
             except OSError:
                 return   # socket closed by close() / close() によるソケット破棄
+            # Counted before it is queued, so a reply is counted whether or
+            # not anyone takes it off the queue -- the non-blocking senders
+            # (`priority`, `send_command`) never read it, and they are the
+            # ones whose acknowledgement matters most (`land`).
+            # 待ち行列へ積む前に数える。誰かが取り出すかどうかに関わらず応答を
+            # 数えるためである。ブロックしない送信（`priority`・`send_command`）は
+            # これを読まないが、応答が最も重要なのはまさにそちら（`land`）である。
+            self._replies += 1
             self._reply_q.put(data.decode(errors="replace").strip())
 
     def _state_loop(self) -> None:
@@ -379,6 +401,8 @@ class RealLink:
             except queue.Empty:
                 break
         self._abort_evt.clear()
+        if expects_reply(cmd_line):
+            self._awaiting += 1
         with self._send_lock:
             try:
                 self._cmd_sock.sendto(cmd_line.encode(), (self.host, API_PORT))
@@ -401,11 +425,37 @@ class RealLink:
     def priority(self, cmd_line: str) -> None:
         """Send immediately, bypassing any busy check (stop/emergency).
         busy チェックを無視して即時送信（stop/emergency 用）。"""
+        if expects_reply(cmd_line):
+            self._awaiting += 1
         with self._send_lock:
             try:
                 self._cmd_sock.sendto(cmd_line.encode(), (self.host, API_PORT))
             except OSError:
                 pass   # best-effort — priority sends must not raise / 失敗しても例外化しない
+
+    @property
+    def reply_count(self) -> int:
+        """How many replies the vehicle has sent so far.
+        機体がこれまでに返した応答の数。"""
+        return self._replies
+
+    @property
+    def replies_outstanding(self) -> int:
+        """How many sent commands have not been answered yet.
+
+        The same meaning `SilsLink.replies_outstanding` has, so
+        `landing.py` reads one concept from either link. Clamped at zero:
+        the firmware answers a command sent by some OTHER process on this
+        machine to whatever address that command came from, but a stray
+        reply arriving here would otherwise drive this negative.
+
+        `SilsLink.replies_outstanding` と同じ意味であり、`landing.py` は
+        どちらのリンクからも 1 つの概念として読める。0 で下限を切る。ファームが
+        応答を返す先はコマンドの送信元なので、このマシンの**他の**プロセスが
+        送った指令の応答がここへ紛れ込むことは無いが、紛れ込めばこの値が負に
+        なるためである。
+        """
+        return max(0, self._awaiting - self._replies)
 
     def abort(self) -> None:
         """Make the in-flight send() (if any) return ("aborted", ...).

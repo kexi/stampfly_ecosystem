@@ -1,6 +1,6 @@
 # Jev による StampFly 自動操縦（`sf pilot`）
 
-状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P4b: ヨー回転による探索を**完全に実装し、設定で無効にした状態で同梱**。飛ばせないのは機体がヨー回転で落下するためで、解除条件と解除手順は 4.11 節）。
+状態: **実装中**。作成 2026-09-19、最終更新 2026-09-19（P5 第 1 段階: `sf pilot run --real` を実装。実機で離陸→ホバリング→監視→着陸まで。**実機ではまだ飛ばしていない** — 内容・手順・未実施の項目は 4.12 節）。
 
 > **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
 
@@ -16,7 +16,7 @@ TypeSafe の System One モデル **Jev**（自然言語と状況から、型の
 
 ### 実装状況（2026-09-19 時点）
 
-P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である。
+P0、P1、P2a、P2、P3、P4、および P5 の第 1 段階を実装した。P5 は**実機でまだ飛ばしていない**（4.12 節）。
 
 | 段階 | 内容 | 状況 |
 |------|------|------|
@@ -29,7 +29,7 @@ P0、P1、P2a、P2、P3、P4 を実装した。それ以外は未着手である
 | P4 | ミッション（経路巡回）と `next_move`、および着陸前手順 | **実装済み**。Jev 実走で応答計数の競合を発見して修正し、**全 6 区間が `as planned` で完走**（下記 4.5）|
 | P4b | **前方 ToF による探索**（前方の空きを見て進路を選ぶ） | **実装済み、ただし無効**（4.11）。前方距離の模擬・回転を要しない即時安全則（4.9）に加え、**ヨー回転による掃引と方位選択も実装した**。既定で無効であり、飛ばして検証していない — 現状の SILS では `cw 30` でも機体が落下するため（4.9.1）。**解除は `ExploreConfig.enabled` を有効にするだけ**（手順は 4.11.2、依存はバックログ #12）<br>**停止則は 2026-09-19 に設計変更済み（4.9.10）**: 停止距離を接近速度から算出し、前進量の制限と後退を加えた。SILS 13 回で**通過 0 件・最小余裕 +0.714m** |
 | P4c | **飛行を見る手段**（`--web` のライブ表示＋飛行後の動画・GUI 再生。4.6 節） | **実装済み** |
-| P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | 未着手 |
+| P5 | 実機。事前に往復時間を実測し、送信機を手元に置く | **第 1 段階を実装済み**（`sf pilot run --real`: 点検→離陸→ホバリング→監視→着陸。`say`／`mission`／`explore` は実機では拒否）。**実機飛行は未実施**、PC↔機体の往復時間も未計測。手順と未実施の項目は 4.12 節 |
 
 **前方 ToF の現状（重要）**: 2026-09-19 に駆動を開始した（P2b、下記 4.7）。`TofTask` が前方をリセット保持したまま底面を 0x30 で起動し、その後で前方を 0x31 へ振り直す。テレメトリ v2 の `tof_front` と有効ビット bit1 はここから供給される。**ただし実機未確認である。** また前方は Optional で**バッテリー電源が要る**（USB 給電のみでは起動せず、bit1 は 0 のまま）。**SILS の前方距離の模擬は 2026-09-19 に実装した（4.9）。** 残る制約はヨー回転であり、現状の SILS では旋回そのもので機体が落下するため、探索は保留している（4.9.1）。
 
@@ -1416,34 +1416,126 @@ t=23.7  n=+0.919  alt=0.13   vx=+0.242   ← 接地直前。0.72m 前進して�
 
 事例集 `say_eval_cases.yaml` にも「前に80cm進んで」→ `["takeoff", "forward 80", "land"]` を追加した（本物の Jev に対する評価用）。
 
-## 4.11 前方 ToF による停止を実機で試すための手順書（未実施、2026-09-19 作成）
+## 4.12 P5 第 1 段階 — 実機で飛ばす（2026-09-19、飛行は未実施）
 
-### この節の位置づけ
+### 要旨
 
-4.9 節で実装した「前方距離が近ければ Jev を待たずに停止する」は、**SILS でしか
-検証していない。** 本節は、それを実機で試せる状態に持っていくための段取りである。
+**`sf pilot run --real` を実装した。実機で離陸し、ホバリングし、用途①（状況の監視と
+安全判断）で見張り、着陸する。それ以外は実機では拒否する。**
 
-**この手順を飛ばして、いきなり壁に向けて自動操縦してはならない。** 理由は 3 つ:
+`say`・`mission`・`explore` は `--real` を受け付けない。いずれも機体に**移動**を
+指令するものであり、指令された移動は実機で一度も飛ばされていないためである。すべての
+指令が実機で確かめられている飛行は、ホバリングだけである（`command`・`takeoff`・
+`rc 0 0 0 0`・`stop`・`land`）。
 
-1. **停止則は一度壊れていた。** 当初の実装は 8 回中 3 回、壁を通り越した（4.9.7）。
-   速度に応じた停止距離へ設計変更して SILS で 13 回・突き抜け 0 になったが、
-   **その 13 回もすべて SILS である。**
-2. **SILS の前方モデルにはノイズが無い**（意図的。`simulation-policy.md` #16）。
-   実機の値がどれだけばたつくかを、まだ誰も見ていない。区分のヒステリシスは
-   SILS の実測に基づいて決めてあり、実機の雑音に対する妥当性は未知である。
-3. **前方 ToF を有効にしたままの飛行が未実施**（4.7 節の手順 9）。前方が底面を
-   乱せば高度保持に出る。
+**この段階で実機は飛ばしていない。** 本節の数値はすべて、地上での実測かファーム自身の
+出典から選んだ上限であり、飛行の結果ではない。作業時点で Mac は機体の WiFi に
+つながっておらず（`en0` は未接続、192.168.10.1 に到達せず）、`--preflight-only` の
+実機確認も行えていない。
 
-### 4.11.1 PC 側の経路は確認済み（コード変更は不要）
+### 4.12.1 実装したもの
 
-`RealLink` は既にテレメトリ v2 の `tof_front` を取り出し、有効ビットが立っている
-ときだけ `Sample["tof_front_m"]` に入れる（`lib/sfpilot/link.py`）。SILS 用の
-`SilsLink` と**同じキー**に入るので、Monitor から上の層は実機か SILS かを知らない。
+| 対象 | 内容 |
+|------|------|
+| `lib/sfpilot/preflight.py` | 飛行前点検 5 項目（下記 4.12.2）。判定と、その根拠になった測定値を組で返す |
+| `lib/sfpilot/safety.py` | `LandGuard`（例外・Ctrl-C・SIGTERM・正常終了）、`LoopWatchdog`（別スレッドの番人）、`KeyListener`／`apply_key`（`l`／`e`／`h`） |
+| `lib/sfpilot/real_run.py` | 実機の飛行そのもの。点検 → 離陸 → 50Hz ループ → 着陸。`RecordingLink` が送出した指令列を記録する |
+| `lib/sfpilot/config.py` | `RealEnvelopeConfig`（実機の飛行領域）、`RealFlightConfig`（実機だけが要る値）、`real_config()` |
+| `lib/sfpilot/link.py` | `RealLink` に `reply_count`／`replies_outstanding` を追加（`SilsLink` と同名・同意味。`landing.py` と `LandGuard` が読む） |
+| `lib/sfcli/commands/pilot.py` | `sf pilot run --real [--preflight-only] [--host] [--duration] [--fake] [--web]`、実機の確認事項、集計表示、`say`／`mission`／`explore` の `--real` 拒否 |
 
-したがって**実機で試すためにコードを書く必要は無い。** 足りないのは、下記の
-実測と、それに基づく閾値の妥当性確認だけである。
+### 4.12.2 飛行前点検の内容
 
-### 4.11.2 段階 1 — 前方の値がどれだけばたつか（飛行なし・書き込み不要）
+5 項目すべてが通らなければ離陸しない。1 つでも欠ければ拒否する。
+
+| # | 項目 | 合格条件 | なぜ警告ではなく拒否か |
+|---|------|---------|---------------------|
+| (a) | テレメトリ | 140B の v2 が届き、受信率が下限（既定 40%）以上 | 無ければ Monitor は何も区分できず、即時安全則が一度も働かない。104B の v1 は**拒否する**（電池を 1/10 の周期でしか与えず、前方距離は皆無。回避しない） |
+| (b) | 電池電圧 | 見えた最低値が `battery_min_v`（既定 3.85V ≒ 61%）以上 | 下回れば、飛行を終わらせるためにある区分（`battery_low_pct = 30%` は 3.57V）の中から飛行を始めることになる |
+| (c) | 機体との往復 | `command` を 10 回送り、全件応答、p95 が `command_p95_max_s`（既定 200ms）以内 | §2 のとおり**機体は PC の指令が途絶えても着陸しない**。こちらから届かない `land` とは、PC からは誰も終わらせられない飛行のことである |
+| (d) | Jev への疎通 | 3 回問い、p95 が Judge の期限（500ms）以内。`--fake` では「問い合わせない」と記録 | 届かなければ判断層は毎周期待機し、待機継続の計時がどのみち着陸させる。どちらにせよ終わるなら地上で終わるほうがよい |
+| (e) | 機体の状態 | `IDLE_GROUND` | 他の状態は、機体が操作者の思っている場所に居ないことを意味する |
+
+**点検が機体へ送出するのは `command` だけである。** API リファレンスはこれを SDK モードへの
+移行としており、モータに影響しない。プロペラを付けた機体の傍らで走らせても安全である
+根拠がこれで、`test_command_is_the_only_thing_sent_to_the_vehicle` が固定している。
+
+結果は表にして表示し、判定と測定値を記録（`logs/pilot/*.jsonl`）へ `kind: "preflight"` の
+1 行として残す。判断の行とは形を分けてあるので、判断を数える `jq` がこれを数えることはない。
+
+### 4.12.3 実機の飛行領域（SILS とは別に持つ）
+
+`RealEnvelopeConfig` が `EnvelopeConfig` を置き換える。Arbiter が読む飛行領域は 1 つなので、
+上限の半分が予行のもの・半分が部屋のもの、という周期は生じない。
+
+| 項目 | SILS | 実機 | 根拠 |
+|------|------|------|------|
+| 高度 | 0.3〜1.5m | **0.3〜0.8m** | 自動離陸の到達高度（実測 0.441〜0.483m、§4.5）が何も指令せず収まる。1.5m では、暴走した上昇が部屋の中で人の頭の高さに届く |
+| 半径 | 2.0m | **1.0m** | 確認事項は周囲 2m を空けることを求める。1m なら上限に達しても余裕が 1m 残る |
+| 水平速度 | 0.5m/s | **0.15m/s** | 停止距離は `安全余裕 + 4.0 × 接近速度`（`ForwardConfig`）なので、0.5m/s では停止に 2.5m 要り、0.15m/s なら 1.1m で上の半径に収まる |
+| 上昇速度 | 0.3m/s | **0.15m/s** | 同上 |
+
+**それ以外は SILS と同一である。** Monitor の区分、Arbiter の規則、着陸前手順、Judge の
+期限は変えていない。判断する層は SILS で働かせた当のものであり、実機で別の数値を与えれば
+予行していないものを飛ばすことになる（`test_real_config_changes_only_the_flight_area`）。
+
+### 4.12.4 PC 側の安全策
+
+| 経路 | 何が起きるか |
+|------|------------|
+| 例外・Ctrl-C・SIGTERM・正常終了 | `LandGuard` が `land` を送る（`atexit` ＋ signal、送信は `priority()`）。冪等で、経路が重なっても `land` は高々 1 回 |
+| `land` に応答が無い | **もう 1 回だけ**送る。それでも無応答なら `emergency` は**送らない**（下記） |
+| 監視ループの停止 | 別スレッドの番人が、最後の刻みから `watchdog_stall_s`（既定 0.5s ＝ 25 周期）超で `land` |
+| テレメトリ途絶 | `telemetry_silence_land_s`（既定 1.5s）届かなければ `land`。実測の欠損は連続 4〜10 個＝0.08〜0.20 秒（§4.8.2）なので、その約 7 倍 |
+| キー操作 | `l` = `land`、`e` = `emergency`（確認なし・即時）、`h` = 待機 |
+| 電圧の急低下・高度逸脱 | 既存の即時安全則を実機用のしきい値（上表の飛行領域）で使う |
+
+**`land` の応答が無いときに `emergency` を送らない理由（Why not）。** `emergency` はモータを
+止めるので、高度 0.5m の機体は 0.5m 落ちる。応答の無い `land` には 2 つの原因がありえ、
+それぞれが正反対の行動を求める。指令が届いていない場合（ならば `emergency` も届かず、
+送っても何も変わらない）か、応答が返らなかっただけの場合（ならば機体は既に降下中で、
+`emergency` は到達した高さから機体を落とす）である。**モータを止めるほうが良い結末になる
+読み方は存在しない。** そこで機体は、送信機を持っている人に委ねる —— その人はスティックを
+動かせばいつでも奪える（INV-2）。確認事項が送信機を手に持つことを求めているのは、そのため
+である。`emergency` は本パッケージで常にそうであった場所に留まる: 人からは届き、他の
+何からも届かない。操作者は `e` を押せば今でも送れる。
+
+### 4.12.5 実行前の確認
+
+`--real` では、次を画面に出して `y` の入力を求める。
+
+1. プロペラを取り付けたか（4 枚とも、回転方向どおりに）
+2. 送信機を手に持ち、いつでも操縦を奪える状態か（スティックを動かせば即座に奪える）
+3. 機体の周囲 2m に人と障害物が無いか
+4. 機体を平らな床に置き、水平にしたか
+5. `sf telemetry` で電池電圧を確認したか
+
+**`--yes` でも省略できない。** `sf pilot` の他の場所では省略できるし、そこではそれが正しい
+（SILS の予行であり、スクリプト中の無人の `--yes` は望んで当然である）。実機の飛行は定義上
+無人ではない —— 第 3 項は人が見ていること、第 2 項は人が送信機を持っていることである ——
+ので、「誰にも尋ねる必要が無い」と述べる指定は、確認事項の目的の正反対を主張することになる。
+非対話（`stdin` が端末でない）では実行しない。
+
+飛行の長さは既定 20 秒、上限 60 秒（超える要求は切り詰める）。確認の画面に、実際に飛ぶ長さと
+飛行領域を併記する。
+
+### 4.12.6 実機で人が行う手順
+
+**初飛行の前に、飛行を伴わない段階を順に行う。すべて書き込み不要である。**
+
+#### 段階 0 — `--preflight-only`（プロペラを付ける前）
+
+```bash
+# 機体をバッテリーで起動し、Mac を機体の WiFi につなぐ（wifi.mode=1 が要る。§4.8.5）
+sf pilot run --real --preflight-only          # Jev も確かめる
+sf pilot run --real --preflight-only --fake   # キー無しで、機体側だけ確かめる
+```
+
+送出するのは `command` だけで、離陸はしない。5 項目の表が出る。**ここで (a)〜(e) が
+すべて PASS になるまで、プロペラを付けない。** 併せて、この実行が
+**PC↔機体の往復時間の初めての実測**になる（§4 の未計測項目）。p50／p95 を記録すること。
+
+#### 段階 1 — 前方 ToF の値がどれだけばたつか（飛行なし）
 
 **プロペラを外したまま**、バッテリー駆動で機体を手に持つ。
 
@@ -1453,22 +1545,20 @@ sf telemetry --csv > /tmp/front_noise.csv
 
 | # | 動作 | 見るもの |
 |---|------|---------|
-| 1 | 壁から 1m 程度に機体を固定して 30 秒静止 | `tof_front` の**標準偏差と最大の飛び**。これが実機のノイズである |
-| 2 | ゆっくり壁へ近づけ、0.3m まで寄せて戻す | 値が距離に追随するか。0.5m 前後で**無効に落ちる頻度** |
+| 1 | 壁から 1m 程度に固定して 30 秒静止 | `tof_front` の標準偏差と最大の飛び。これが実機のノイズである |
+| 2 | ゆっくり壁へ近づけ、0.3m まで寄せて戻す | 値が距離に追随するか。0.5m 前後で無効に落ちる頻度 |
 | 3 | 壁から外して空間へ向ける | 「対象なし」になるか（値が残らないか） |
-| 4 | 手を前にかざす／離す（4.7 節の手順 5） | 前方だけが変わり、底面が変わらないこと |
+| 4 | 手を前にかざす／離す（§4.7 の手順 5） | 前方だけが変わり、底面が変わらないこと |
 
-**この段階の合格条件**:
-- 静止時の値のばらつきが、区分の幅（`stop_distance_m`=0.5m と
-  `release_distance_m`=0.7m の差 = 0.2m）より**十分小さい**こと
-- 0.5m 付近で無効が頻発しないこと（頻発するなら `invalid_grace_s` の 2 秒では
-  足りない可能性がある）
+**合格条件**: 静止時のばらつきが区分の幅（停止距離とその解除の差 =
+`release_margin_m` = 0.2m）より十分小さいこと。0.5m 付近で無効が頻発しないこと
+（頻発するなら `invalid_grace_s` の 2 秒では足りない可能性がある）。
 
-**外れたときの対処**: ばらつきが 0.2m に迫る、あるいは無効が頻発するなら、
-**閾値とヒステリシスを実測に基づいて引き直す。** SILS の値のまま実機へ進めない。
-（`ForwardConfig` の全項目は `lib/sfpilot/config.py` にあり、根拠のコメント付き）
+**外れたときの対処**: ばらつきが 0.2m に迫る、あるいは無効が頻発するなら、**閾値と
+ヒステリシスを実測に基づいて引き直す。** SILS の値のまま実機へ進めない
+（`ForwardConfig` の全項目は `lib/sfpilot/config.py` にあり、根拠のコメント付き）。
 
-### 4.11.3 段階 2 — 前方を有効にしたまま飛ぶ（4.7 節の手順 9）
+#### 段階 2 — 前方 ToF を有効にしたまま飛ぶ（§4.7 の手順 9）
 
 **壁の無い場所で。** 送信機を手元に持つ。低高度（0.5m 程度）・短時間（10〜20 秒）。
 
@@ -1477,47 +1567,91 @@ sf telemetry --csv > /tmp/front_noise.csv
 | 高度保持 | 従来どおり（±6〜7cm）。振れ・落ち込みが増えないこと |
 | 底面 ToF のレート | 30Hz を保つこと（`sf log wifi` で `tof_bottom.csv` の行間隔） |
 
-悪化したら、直ちに `tof.front.enable 0` ＋再起動で前方を切り、戻るかを確認する
+悪化したら直ちに `param set tof.front.enable 0` ＋再起動で前方を切り、戻るかを確認する
 （戻るなら前方が原因）。
 
-### 4.11.4 段階 3 — 壁の「無い」場所で `sf pilot` を実機に繋ぐ
+#### 段階 3 — 壁の「無い」場所で `sf pilot run --real` を繋ぐ
 
 **まだ壁に向けない。** ここで見るのは「**誤発火しないこと**」だけである。
 
 ```bash
 # 送信機を手元に。壁から十分離れた場所で
-sf pilot run --host <機体のIP> --duration 30
+sf pilot run --real --duration 20
 ```
 
 | 見るもの | 合格条件 |
 |---------|---------|
-| `forward_clearance` の語 | 空間では `open` か `cannot be measured`。**`wall near` が出ないこと** |
-| `stop` の発行 | **0 回** |
+| `forward_clearance` の語 | 空間では「開けている」か「測定不能」。**「壁が近い」が出ないこと** |
+| `stop` の発行 | **0 回**（集計の「送信したコマンド列」で確認する） |
 
-**`wall near` が出る、あるいは `stop` が出たら、そこで止める。** 実機のノイズか
-無効の扱いが原因なので、段階 1 のデータに戻って閾値を引き直す。
+**「壁が近い」が出る、あるいは `stop` が出たら、そこで止める。** 実機のノイズか無効の
+扱いが原因なので、段階 1 のデータに戻って閾値を引き直す。
 
-### 4.11.5 段階 4 — 壁に向ける（最後）
+#### 段階 4 — 壁に向ける（最後）
 
 ここまで全て通ってから。**送信機を手元に持ち、いつでも解除できる状態で。**
 
-- 壁から 2m 以上離れた位置から、**ゆっくり**近づける（接近速度が惰走を決める。4.9.7）
+- 壁から 2m 以上離れた位置から、**ゆっくり**近づける（接近速度が惰走を決める。§4.9.7）
 - 最初は**手で持って**前方距離が縮むのを見るだけでもよい
 - 自動で前進させるのは、その挙動を見てから
 
-**中止する条件**: 停止が遅い、`wall near` になっても止まらない、値が飛ぶ。
-いずれも 4.9.7 の「突き抜け」と同じ症状である。
+**中止する条件**: 停止が遅い、「壁が近い」になっても止まらない、値が飛ぶ。いずれも
+§4.9.7 の「突き抜け」と同じ症状である。
 
-### 4.11.6 この手順書を書いた時点で分かっていないこと
+### 4.12.7 初飛行の手順（まとめ）
+
+1. **送信機を手に持つ。** これが、このプログラムが動き続けることに依存しない唯一の制御経路である
+2. **プロペラを付ける前に** `sf pilot run --real --preflight-only` を通す（段階 0）
+3. 段階 1 で前方 ToF のノイズを測り、必要なら `ForwardConfig` を引き直す
+4. **開けた場所**で、周囲 2m に人と障害物が無いことを確かめる
+5. プロペラを付け、機体を平らな床に置く
+6. `sf pilot run --real --duration 20`（既定。高度は機体自身の離陸到達高度 ≒ 0.5m）
+7. 画面の確認事項 5 項目に `y` で答える
+8. 飛行中は `l` で着陸、`e` で緊急停止（即時）。異常を感じたら**送信機のスティックを動かす**
+9. 終了後、集計の受信率・往復時間・待機の理由・送信したコマンド列を記録に残す
+
+### 4.12.8 この段階で分かっていないこと
 
 | 事項 | なぜ分からないか |
 |------|-----------------|
-| 実機の前方 ToF のノイズの大きさ | 測っていない（段階 1 で埋まる） |
-| `ForwardConfig` の閾値が実機で妥当か | 上に依存する。SILS はノイズ無しなので、現在値は実機の根拠を持たない |
-| 実機での停止距離 | SILS の 13 回は実機の慣性・空気抵抗を含まない |
-| PC↔機体の往復時間 | 未計測（P5 の項目）。UDP:5005 は 58% しか届かない（4.8.2）ので、判断の間隔にも効く |
+| **実機での飛行そのもの** | **未実施。** 本節の実装は一度も実機を飛ばしていない |
+| PC↔機体の往復時間 | **未計測**（段階 0 で埋まる）。`command_p95_max_s = 0.2s` は実測ではなく、用途から選んだ上限である |
+| 飛行中の UDP:5005 の受信率 | 未計測。§4.8.2 の 58% は机上の 1 回で、飛行中（モータ回転・機体の姿勢変化）では違いうる |
+| `telemetry_silence_land_s = 1.5s` の妥当性 | 上に依存する。実測の欠損の塊（0.08〜0.20 秒）の約 7 倍という以上の根拠は無い |
+| `battery_min_v = 3.85V` で 20 秒飛べるか | 未確認。区分との整合（4.12.2）から選んだ値であり、消費の実測ではない |
+| 実機の前方 ToF のノイズ | 未計測（段階 1 で埋まる） |
+| `emergency` を `e` で送る経路 | **実機で試していない**（モータが止まるため、飛行中にしか試せない） |
 
-**段階 1 を実施すれば、上の 2 つは埋まる。** そこまでは飛行も書き込みも要らない。
+### 4.12.9 試験（キー不要・実機不要、54 件）
+
+| ファイル | 固定していること |
+|---------|----------------|
+| `lib/sfpilot/tests/test_preflight.py`（17 件） | 5 項目それぞれが自分の条件でだけ通ること、104B の v1 の拒否、到達率の下限、最低電圧、往復の予算、`IDLE_GROUND` 以外の拒否、**点検が送るのは `command` だけ**であること |
+| `lib/sfpilot/tests/test_real_safety.py`（16 件） | `land` が 1 回だけ送られること、応答が無ければ 2 回目を送り**`emergency` は送らないこと**、番人の発火、`l`／`e`／`h`、閉じたリンクでも例外にしないこと |
+| `lib/sfpilot/tests/test_real_run.py`（14 件） | 点検に落ちたら離陸しないこと、**例外でも `land` が出ること**、実機の飛行領域が狭く Arbiter が却下すること、飛行領域以外は SILS と同一であること、指令列の記録 |
+| `lib/sfpilot/tests/test_scenes_and_cli.py`（追加 7 件） | 飛ばす先の未指定・同時指定の拒否、`--preflight-only` が `--real` 専用であること、`say`／`mission`／`explore` の `--real` 拒否 |
+
+`pytest lib/sfpilot lib/sfcli lib/sflog` は **521 passed / 1 skipped**（基準の 467 / 1 に対し
+54 件の追加）。
+
+### 4.12.10 試験とレビューで見つけて直したもの（実装の誤り 4 件）
+
+最初の 3 件は試験を書いて初めて現れ、4 件目は仕上がったコードの可読性レビューで出た。
+
+| # | 症状 | 原因 | 対処 |
+|---|------|------|------|
+| 1 | 応答のあった `land` に、2 通目の `land` を送っていた | `_await_ack` が応答の計数を**送信の後**に読んでいた。`sendto` が返る最中に届いた応答は、snapshot より前に数えられてしまう | 計数を送信の**前**に読み、`_await_ack(before)` へ渡す。2 通目は、既に始まっている降下をやり直させる |
+| 2 | 答えを返さない judge で、地上で異常終了していた | `_check_jev` が `judgement.error` を無条件に読み、`None` で `AttributeError` | `None` を「失敗した問い合わせ」として扱う。この点検は機体が飛ぶかを決めるものであり、例外を投げる当のものであってはならない |
+| 3 | 集計の指令列が `command x11` で始まっていた | 点検の 10 回の `command` が、飛行自身の `command` と 1 行にまとまっていた。飛行が 11 回送って始まったように読める | 飛行の開始時に記録を取り直す（`RecordingLink.forget_commands`）。点検の送信は、点検自身の項目が時間とともに報告する |
+| 4 | **判断層が着陸を決めると、静定しない `land` が送られていた（最重大）** | `executor.landing` は着陸前手順が**始まった**瞬間に True になる。その時点で出ているのは `stop` だけで、機体はまだ静定中である（実測: 段階 `settle`、送出は `stop` のみ）。監視ループがこのフラグで抜け、`fly_real` の `finally` が自前の素の `land` を送っていた —— `landing.py` が存在する理由そのものである静定を飛ばして。同モジュールの実測では、その着陸は床を 0.45m 滑る（静定したホバリングからは 0.000m） | 手順が**終わる**まで（`approach is None`）ループを回し続け、手順自身に `land` を送らせる。飛行時間の上限も、進行中の着陸は終わらせてから切る。併せて、手順が完了させた着陸を番人へ申告し（`LandGuard.note_landed`）、降下の上に 2 通目を重ねないようにした |
+
+### 4.12.11 設計から外れた点
+
+| 事項 | 計画 | 実装 | 理由 |
+|------|------|------|------|
+| `--fake` での Jev 点検 | 「Jev への疎通（`bench` 相当を 3 回）」 | 規則ベースの judge では**問い合わせず**、そう記録する | `FakeJudge` は表から即答するので、計時すれば 0ms の「往復時間」が出る。表を読む人には網の点検が通ったように見える —— この点検が防ぐためにある、まさにその読み違いである |
+| `--duration` の上限超過 | 「`--duration` 上限（既定 20 秒、最大 60 秒）」 | 拒否せず**切り詰める** | `--duration 120` は「もっと長く飛ばしたい」という要望であって誤りではない。拒否すれば、得られる飛行を得るためにコマンドを打ち直させることになる |
+| 確認の `--yes` | 「`--yes` で省略不可」 | 同左に加え、**非対話では実行しない** | 無言は同意ではなく、非対話のセッションには、送信機を手に持っている人がそもそも居ない |
 
 ## 5. 置き場所
 
@@ -1545,6 +1679,9 @@ sf pilot run --host <機体のIP> --duration 30
 | `lib/sfpilot/landing.py` | 着陸前手順（移動を終える → `stop` → 静定待ち → `land`）| 実装済み（P4） |
 | `lib/sfpilot/events.py` | 出来事の流れ（`EventBus`）。記録とライブ表示の分岐点 | 実装済み（P4c） |
 | `lib/sfpilot/recording.py` | SILS 飛行のフライトログ一式の置き場所と命名 | 実装済み（P4c） |
+| `lib/sfpilot/preflight.py` | 飛行前点検 5 項目（テレメトリ・電圧・機体との往復・Jev・機体の状態）| 実装済み（P5 第 1 段階 / 4.12）|
+| `lib/sfpilot/safety.py` | `LandGuard`（例外・シグナル・終了）、`LoopWatchdog`（別スレッドの番人）、キー操作 | 実装済み（P5 第 1 段階 / 4.12）|
+| `lib/sfpilot/real_run.py` | 実機の飛行（点検 → 離陸 → 50Hz ループ → 着陸）と送信した指令列の記録 | 実装済み（P5 第 1 段階 / 4.12。**実機未飛行**）|
 | `lib/sfcli/commands/pilot_web.py` | `--web` の HTTP・SSE サーバ（127.0.0.1 のみ） | 実装済み（P4c） |
 | `lib/sfcli/commands/web_assets.py` | ブラウザ表示の共有静的配信（STL・three.js・共有 3D） | 実装済み（P4c） |
 | `lib/sfcli/assets/pilot_web.html` | 飛行と判断を並べて見せるページ | 実装済み（P4c） |
@@ -1603,7 +1740,7 @@ security add-generic-password -U -a "$USER" -s typesafe-api-key -w
 
 ## 7. 試験
 
-`lib/sfpilot/tests/` に 296 件（ライブ表示 14 件・記録 6 件・探索 43 件を含む）。キー不要・通信不要で
+`lib/sfpilot/tests/` に 395 件（ライブ表示 14 件・記録 6 件・探索 43 件・実機 54 件を含む。実機のものは 4.12.9）。キー不要・通信不要で
 通る。ブラウザ表示の共有部分は `lib/sfcli/commands/test_web_assets.py` に 10 件
 （3D シーンの切り出しで `sf telemetry --web` が壊れていないことの確認を含む）。加えて
 `simulator/tests/test_mission_sils.py` に SILS の実飛行 6 件（`--fake`。エミュレータの
@@ -1674,7 +1811,7 @@ Anyone implementing or changing `sf pilot`, and anyone reviewing the safety desi
 
 ### Implementation Status (as of 2026-09-19)
 
-P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
+P0, P1, P2a, P2, P3, P4 and P5's first stage are implemented. P5 has **not yet been flown on hardware** (§4.12).
 
 | Stage | Content | Status |
 |-------|---------|--------|
@@ -1687,7 +1824,7 @@ P0, P1, P2a, P2, P3 and P4 are implemented. The rest is not started.
 | P4 | Mission (route patrol), `next_move`, and the pre-landing approach | **Done**. A reply-count race found and fixed during the live-Jev flights; **all six legs now complete `as planned`** (§4.5) |
 | P4b | **Forward-ToF exploration** (choose a heading from the clear space ahead) | **Implemented and disabled** (§4.11). Beyond the simulated forward distance and the turn-free immediate rule (§4.9), **the yaw sweep and heading selection are implemented too**. Off by default and never flown — in SILS as it stands even `cw 30` drops the aircraft (§4.9.1). **Lifting it is one setting, `ExploreConfig.enabled`** (steps in §4.11.2; depends on backlog #12) |
 | P4c | **Ways to watch a flight** (`--web` live view, plus video / GUI replay afterwards; §4.6) | **Done** |
-| P5 | Real hardware, after measuring round-trip time, transmitter in hand | Not started |
+| P5 | Real hardware, after measuring round-trip time, transmitter in hand | **First stage implemented** (`sf pilot run --real`: preflight, take off, hover, watch, land; `say` / `mission` / `explore` refuse hardware). **Not yet flown**, and the PC↔vehicle round trip is still unmeasured. The procedure and the open items are in §4.12 |
 
 **Forward ToF status (important):** the forward ToF has been driven since 2026-09-19 (P2b; see §4.7 of the Japanese section). `TofTask` holds the forward part in reset while it brings the bottom sensor up at 0x30, and only then wakes the forward one and moves it to 0x31. Telemetry v2's `tof_front` and validity bit1 are supplied from there. **It is not yet verified on hardware.** The forward sensor is Optional and **needs battery power**: on USB alone it does not start and bit1 stays clear. **The simulated forward distance in SILS was implemented on 2026-09-19 (§4.9).** The remaining constraint is yaw rotation: in SILS as it stands the aircraft falls out of the air from the turn itself, so exploration is deferred (§4.9.1).
 
@@ -2697,6 +2834,269 @@ The mis-translation §4.9.9 recorded is fixed.
 
 **Pinned by** (`--eval` needs Jev, so the assembly side is pinned by unit tests): `test_a_figure_goes_to_the_move_the_sentence_names_beside_it` and `test_a_figure_for_every_move_is_still_paired_in_order` in `test_instruction.py`. The case "前に80cm進んで" → `["takeoff", "forward 80", "land"]` was added to `say_eval_cases.yaml` for evaluation against the live model.
 
+## 4.12 P5 First Stage — Flying the Real Aircraft (2026-09-19, not yet flown)
+
+### Summary
+
+**`sf pilot run --real` is implemented: it takes off, hovers, watches under
+use (1) — situation monitoring and safety judgement — and lands. Nothing
+else flies on hardware.**
+
+`say`, `mission` and `explore` refuse `--real`. Each of them commands the
+aircraft to MOVE, and no commanded move has been flown on hardware. The
+hover is the one flight whose every command has been: `command`,
+`takeoff`, `rc 0 0 0 0`, `stop`, `land`.
+
+**No real flight has been made at this stage.** Every figure in this
+section is a bound chosen from a ground measurement or from the firmware's
+own source, not a flight result. At the time of writing the Mac was not on
+the aircraft's WiFi (`en0` unassociated, 192.168.10.1 unreachable), so even
+the `--preflight-only` check could not be run against hardware.
+
+### 4.12.1 What was implemented
+
+| Target | Contents |
+|--------|----------|
+| `lib/sfpilot/preflight.py` | The five preflight checks (§4.12.2). Each returns its verdict together with the measurement it was reached from |
+| `lib/sfpilot/safety.py` | `LandGuard` (exceptions, Ctrl-C, SIGTERM, normal exit), `LoopWatchdog` (a watchdog on its own thread), `KeyListener` / `apply_key` (`l` / `e` / `h`) |
+| `lib/sfpilot/real_run.py` | The real flight itself: preflight, take off, 50 Hz loop, land. `RecordingLink` records the command sequence that was transmitted |
+| `lib/sfpilot/config.py` | `RealEnvelopeConfig` (the real flight area), `RealFlightConfig` (what only a real flight needs), `real_config()` |
+| `lib/sfpilot/link.py` | `reply_count` / `replies_outstanding` added to `RealLink`, under the same names and with the same meaning as `SilsLink`'s (read by `landing.py` and `LandGuard`) |
+| `lib/sfcli/commands/pilot.py` | `sf pilot run --real [--preflight-only] [--host] [--duration] [--fake] [--web]`, the confirmation checklist, the summary, and the `--real` refusals on `say` / `mission` / `explore` |
+
+### 4.12.2 What the preflight checks
+
+All five must pass or nothing takes off. One missing check refuses the flight.
+
+| # | Check | Passes when | Why refusal rather than a warning |
+|---|-------|-------------|-----------------------------------|
+| (a) | Telemetry | The 140-byte v2 packet arrives, at or above the delivery floor (40% by default) | Without it the Monitor classifies nothing and the immediate safety rules never fire. A 104-byte v1 stream is **refused**, not worked around: it supplies the battery at a tenth of the rate and no forward distance at all |
+| (b) | Pack voltage | The lowest reading seen is at or above `battery_min_v` (3.85 V ≈ 61% by default) | Below it the flight starts inside the band whose purpose is to end one (`battery_low_pct = 30%` is 3.57 V) |
+| (c) | Vehicle round trip | `command` sent 10 times, all answered, p95 within `command_p95_max_s` (200 ms by default) | Per §2 **the vehicle does not land itself when the PC goes quiet**. A `land` this side cannot deliver is a flight nobody can end from the PC |
+| (d) | Jev reachability | Asked 3 times, p95 within the Judge's deadline (500 ms). With `--fake`, recorded as not asked | Without it the judging layer hovers every cycle and the hover-to-land timer lands the aircraft anyway. If the flight ends either way, better on the ground |
+| (e) | Vehicle state | `IDLE_GROUND` | Any other state means the aircraft is not where the operator believes it is |
+
+**The only thing the preflight transmits is `command`.** The API reference
+lists it as entering SDK mode, with no effect on the motors. That is what
+makes it safe to run beside an aircraft with propellers fitted, and
+`test_command_is_the_only_thing_sent_to_the_vehicle` pins it.
+
+The result is printed as a table and written to the trace
+(`logs/pilot/*.jsonl`) as a single `kind: "preflight"` line. Its shape is
+deliberately not a decision row, so a `jq` that counts decisions does not
+count this too.
+
+### 4.12.3 The real flight area (kept apart from the SILS one)
+
+`RealEnvelopeConfig` replaces `EnvelopeConfig` wholesale. The Arbiter reads
+one envelope, so there is no cycle in which half the limits are the
+rehearsal's and half the room's.
+
+| Limit | SILS | Real | Basis |
+|-------|------|------|-------|
+| Altitude | 0.3–1.5 m | **0.3–0.8 m** | The auto-takeoff's own climb (measured 0.441–0.483 m, §4.5) sits inside it with nothing commanded. At 1.5 m a runaway climb reaches head height in a room |
+| Radius | 2.0 m | **1.0 m** | The checklist asks for 2 m clear around the aircraft, so 1 m leaves a metre unspent even at the limit |
+| Horizontal speed | 0.5 m/s | **0.15 m/s** | The stopping distance is `margin + 4.0 × closing speed` (`ForwardConfig`), so 0.5 m/s needs 2.5 m to stop in while 0.15 m/s needs 1.1 m, which fits inside the radius above |
+| Climb rate | 0.3 m/s | **0.15 m/s** | As above |
+
+**Everything else is identical to SILS.** The Monitor's bands, the
+Arbiter's rules, the landing approach and the Judge's deadline are
+unchanged. The layers that decide are the ones that were exercised in
+SILS, and giving them different numbers on hardware would mean flying
+something that was never rehearsed
+(`test_real_config_changes_only_the_flight_area`).
+
+### 4.12.4 The PC-side safety net
+
+| Path | What happens |
+|------|--------------|
+| Exception, Ctrl-C, SIGTERM, normal exit | `LandGuard` sends `land` (`atexit` plus the signals; transmitted on `priority()`). Idempotent, so overlapping paths still send at most one `land` |
+| `land` unacknowledged | Sent **once more**. If that is unanswered too, `emergency` is **not** sent (below) |
+| The monitor loop stalls | A watchdog on its own thread sends `land` once the last beat is older than `watchdog_stall_s` (0.5 s by default = 25 cycles) |
+| Telemetry goes silent | `land` after `telemetry_silence_land_s` (1.5 s by default). The measured loss comes in bursts of 4–10 packets = 0.08–0.20 s (§4.8.2), so this is about seven times the worst burst seen |
+| Keys | `l` = `land`, `e` = `emergency` (immediate, no confirmation), `h` = hold |
+| Voltage collapse, altitude excursion | The existing immediate safety rules, with the real thresholds from the table above |
+
+**Why `emergency` does not follow an unacknowledged `land`.** `emergency`
+cuts the motors, so an aircraft at 0.5 m falls 0.5 m. An unacknowledged
+`land` has two possible causes and they call for opposite actions: the
+command did not arrive (in which case `emergency` will not arrive either,
+and sending it changes nothing), or the acknowledgement did not come back
+(in which case the aircraft is already descending, and `emergency` drops
+it from whatever height it has reached). **There is no reading of the
+situation in which cutting the motors is the better outcome.** So the
+aircraft is left to the person holding the transmitter, who can take it
+with a stick movement at any time (INV-2) — which is the whole reason the
+checklist requires them to be holding it. `emergency` stays where it has
+always been in this package: reachable by a person, and by nothing else.
+The operator can still send it by pressing `e`.
+
+### 4.12.5 The confirmation before a real flight
+
+With `--real`, these are printed and a typed `y` is required:
+
+1. Are the propellers fitted (all four, the right way round)?
+2. Is the transmitter in your hand, ready to take control (a stick movement takes it instantly)?
+3. Is there 2 m clear of people and obstacles around the aircraft?
+4. Is the aircraft on a flat floor and level?
+5. Have you checked the pack voltage with `sf telemetry`?
+
+**`--yes` does not skip this.** Everywhere else in `sf pilot` it does, and
+that is right there: those flights are SILS, where an unattended `--yes` in
+a script is a reasonable thing to want. A real flight is not unattended by
+definition — the third item is that a person is watching and the second is
+that a person is holding the transmitter — so a flag that says "nobody
+needs to be asked" asserts the opposite of what the checklist is for. A
+non-interactive session (`stdin` not a terminal) is refused outright.
+
+The flight length defaults to 20 s and is capped at 60 s (a longer request
+is clamped). The confirmation states the length that will actually be flown
+and the flight area alongside it.
+
+### 4.12.6 What a person does on the hardware
+
+**Before the first flight, work through the non-flying stages in order.
+None of them needs a firmware flash.**
+
+#### Stage 0 — `--preflight-only` (before fitting the propellers)
+
+```bash
+# Power the aircraft from the battery and join its WiFi (needs wifi.mode=1, §4.8.5)
+sf pilot run --real --preflight-only          # checks Jev too
+sf pilot run --real --preflight-only --fake   # keyless: checks the vehicle side only
+```
+
+The only thing transmitted is `command`; nothing takes off. The five-row
+table is printed. **Do not fit the propellers until (a)–(e) all read PASS.**
+This run is also **the first measurement of the PC↔vehicle round trip**
+(listed as unmeasured in §4). Record the p50 and p95.
+
+#### Stage 1 — how much the forward ToF wanders (no flight)
+
+**With the propellers off**, on battery power, hold the aircraft in your hand.
+
+```bash
+sf telemetry --csv > /tmp/front_noise.csv
+```
+
+| # | Action | What to watch |
+|---|--------|---------------|
+| 1 | Hold it about 1 m from a wall, still, for 30 s | The standard deviation and the largest jump in `tof_front`. This is the real noise |
+| 2 | Move slowly towards the wall to 0.3 m and back | Whether the value tracks the distance, and how often it drops to invalid around 0.5 m |
+| 3 | Point it away, into open space | Whether it reads "no target" (rather than holding the old value) |
+| 4 | Pass a hand in front and away (§4.7 step 5) | Only the forward reading changes; the bottom one does not |
+
+**Passing condition**: the spread while stationary is comfortably smaller
+than the width of the band (the gap between the stopping distance and its
+release, `release_margin_m` = 0.2 m), and invalid readings are not frequent
+around 0.5 m (if they are, the 2 s of `invalid_grace_s` may not be enough).
+
+**If it does not pass**: if the spread approaches 0.2 m, or invalid
+readings are frequent, **re-derive the thresholds and the hysteresis from
+the measurement.** Do not carry the SILS values onto hardware (every field
+of `ForwardConfig` is in `lib/sfpilot/config.py`, with its basis in a
+comment).
+
+#### Stage 2 — fly with the forward ToF enabled (§4.7 step 9)
+
+**Somewhere with no walls.** Transmitter in hand. Low (about 0.5 m) and
+short (10–20 s).
+
+| What to watch | Passing condition |
+|---------------|-------------------|
+| Altitude hold | As before (±6–7 cm). No added oscillation or sag |
+| Bottom ToF rate | Stays at 30 Hz (row spacing of `tof_bottom.csv` from `sf log wifi`) |
+
+If it degrades, immediately `param set tof.front.enable 0`, reboot, and
+check whether it recovers (if it does, the forward sensor is the cause).
+
+#### Stage 3 — connect `sf pilot run --real` where there is NO wall
+
+**Do not point it at a wall yet.** The only thing being checked here is
+that it **does not fire spuriously**.
+
+```bash
+# Transmitter in hand, well clear of any wall
+sf pilot run --real --duration 20
+```
+
+| What to watch | Passing condition |
+|---------------|-------------------|
+| The `forward_clearance` word | In open space, "open" or "cannot be measured". **"wall near" must not appear** |
+| `stop` commands | **Zero** (check the "commands sent" list in the summary) |
+
+**If "wall near" appears, or a `stop` goes out, stop there.** The cause is
+the real noise or the handling of invalid readings, so go back to the
+stage 1 data and re-derive the thresholds.
+
+#### Stage 4 — point it at a wall (last)
+
+Only after all of the above. **Transmitter in hand, ready to take control.**
+
+- Start at least 2 m from the wall and approach **slowly** (the closing speed is what sets the coast, §4.9.7)
+- It is fine to begin by **holding it in your hand** and just watching the forward distance shrink
+- Only command a forward move after you have seen that behaviour
+
+**Abort if**: the stop is late, it does not stop once "wall near" is
+reported, or the values jump. All three are the same symptom as the
+"passed through the wall" runs of §4.9.7.
+
+### 4.12.7 The first flight, as a sequence
+
+1. **Hold the transmitter.** It is the only control path that does not depend on this program still working
+2. **Before fitting the propellers**, pass `sf pilot run --real --preflight-only` (stage 0)
+3. Measure the forward ToF noise in stage 1, and re-derive `ForwardConfig` if needed
+4. Work **in an open space**, with 2 m clear of people and obstacles
+5. Fit the propellers and set the aircraft on a flat floor
+6. `sf pilot run --real --duration 20` (the default; the altitude is the vehicle's own takeoff altitude, about 0.5 m)
+7. Answer `y` to the five checklist items
+8. In flight, `l` lands and `e` cuts the motors (immediately). If anything feels wrong, **move the transmitter sticks**
+9. Afterwards, record the summary's delivery rate, round trips, hold reasons and command sequence
+
+### 4.12.8 What is not known at this stage
+
+| Item | Why it is not known |
+|------|--------------------|
+| **The real flight itself** | **Not done.** This implementation has never flown a real aircraft |
+| PC↔vehicle round trip | **Unmeasured** (stage 0 fills it). `command_p95_max_s = 0.2 s` is a bound chosen from what the number is for, not a measurement |
+| UDP:5005 delivery rate in flight | Unmeasured. §4.8.2's 58% is one bench measurement, and flight (spinning motors, changing attitude) may differ |
+| Whether `telemetry_silence_land_s = 1.5 s` is right | Depends on the above. Its only basis is being about seven times the measured loss burst (0.08–0.20 s) |
+| Whether 20 s is flyable from `battery_min_v = 3.85 V` | Unverified. The figure was chosen to agree with the Monitor's bands (§4.12.2), not from a discharge measurement |
+| The real forward-ToF noise | Unmeasured (stage 1 fills it) |
+| The `e` → `emergency` path on hardware | **Untried**: it cuts the motors, so it can only be tried in flight |
+
+### 4.12.9 Tests (no key, no hardware — 54 of them)
+
+| File | What it pins |
+|------|--------------|
+| `lib/sfpilot/tests/test_preflight.py` (17) | Each of the five checks passes only on the condition it names; the 104-byte v1 refusal; the delivery floor; the voltage minimum; the round-trip budget; refusing anything but `IDLE_GROUND`; and that **the preflight sends only `command`** |
+| `lib/sfpilot/tests/test_real_safety.py` (16) | `land` sent exactly once; a second attempt when unacknowledged and **never `emergency`**; the watchdog firing; `l` / `e` / `h`; a closed link not turning an exit into a traceback |
+| `lib/sfpilot/tests/test_real_run.py` (14) | A failing preflight takes off nothing; **an exception still lands the aircraft**; the real flight area is narrower and the Arbiter enforces it; everything but the envelope matches SILS; the command sequence |
+| `lib/sfpilot/tests/test_scenes_and_cli.py` (7 added) | Refusing no target and both targets; `--preflight-only` being `--real`-only; the `--real` refusals on `say` / `mission` / `explore` |
+
+`pytest lib/sfpilot lib/sfcli lib/sflog` gives **521 passed / 1 skipped**
+(54 added to the baseline of 467 / 1).
+
+### 4.12.10 Four implementation errors the tests and the review found
+
+The first three were invisible until a test was written for them; the
+fourth came out of a readability review of the finished code.
+
+| # | Symptom | Cause | Fix |
+|---|---------|-------|-----|
+| 1 | A second `land` was sent after one that HAD been acknowledged | `_await_ack` read the reply counter **after** the send, so a reply arriving while `sendto` was still returning landed before the snapshot was taken | Read the counter **before** the send and pass it in as `_await_ack(before)`. The second `land` restarts a descent already under way |
+| 2 | A judge that answers with nothing aborted the program on the ground | `_check_jev` read `judgement.error` unconditionally, giving an `AttributeError` on `None` | Treat `None` as a failed ask. This check decides whether the aircraft flies, so it must not be the thing that raises |
+| 3 | The summary's command sequence began `command x11` | The preflight's ten `command` probes collapsed with the flight's own `command` into one row, reading as though the flight opened by sending it eleven times | Restart the recording where the flight starts (`RecordingLink.forget_commands`). The preflight's sends are reported by its own check, with their timings |
+| 4 | **A judged landing sent an unsettled `land` (the worst of the four)** | `executor.landing` turns True the moment the landing approach BEGINS — at which point only `stop` has gone out and the craft is still settling (measured: stage `settle`, nothing but `stop` transmitted). The monitor loop left on that flag, and `fly_real`'s `finally` then sent a raw `land` of its own, skipping exactly the settling `landing.py` exists to perform. That module measures such a landing at 0.45 m of slide across the floor, against 0.000 m from a settled hover | Keep the loop turning until the approach has FINISHED (`approach is None`) and let the approach send the `land` itself. The duration ceiling also lets an in-progress landing finish. The completed landing is then declared to the guard (`LandGuard.note_landed`) so no second `land` lands on top of the descent |
+
+### 4.12.11 Departures from the plan
+
+| Item | Planned | Implemented | Why |
+|------|---------|-------------|-----|
+| The Jev check under `--fake` | "Jev reachability (`bench`-equivalent, 3 times)" | A rule-based judge is **not asked**, and that is recorded | `FakeJudge` answers instantly from a table, so timing it produces a 0 ms "round trip" that reads as a passing network check — the exact misreading this check exists to prevent |
+| `--duration` above the ceiling | "`--duration` ceiling (20 s default, 60 s maximum)" | **Clamped**, not refused | `--duration 120` is a request for a longer flight, not a mistake. Refusing would make the operator re-type the command to get the flight they can have |
+| The confirmation and `--yes` | "`--yes` cannot skip it" | As planned, plus **refused outright when non-interactive** | Silence is not consent, and a non-interactive session has nobody in it to be holding a transmitter |
+
 ## 5. Placement
 
 `RealLink` moved from `lib/sfcli/commands/blocks.py` to `lib/sfpilot/link.py` on 2026-09-19, so that `sf blocks` and `sf pilot` drive the vehicle through one client instead of two copies that could drift apart. `blocks.py` imports it.
@@ -2749,7 +3149,7 @@ The remedy is a test that runs **measured samples through Monitor → Summarizer
 
 The samples are recorded from a real SILS flight rather than written by hand (`lib/sfpilot/tests/fixtures/`; the README there gives the reason — a hand-written sample would encode the same wrong assumptions the code did).
 
-253 tests in `lib/sfpilot/tests/` (including 14 for the live view and 6 for the recording), all passing without a key or a network, plus 10 in `lib/sfcli/commands/test_web_assets.py` for the shared browser assets (including the check that extracting the 3D scene left `sf telemetry --web` behaving as before), plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
+395 tests in `lib/sfpilot/tests/` (including 14 for the live view, 6 for the recording and 54 for the real-hardware path — §4.12.9), all passing without a key or a network, plus 10 in `lib/sfcli/commands/test_web_assets.py` for the shared browser assets (including the check that extracting the 3D scene left `sf telemetry --web` behaving as before), plus six real SILS flights in `simulator/tests/test_mission_sils.py` (under `--fake`, skipped automatically when the emulator is not built): that every uncertain case becomes holding and that a 10-second hold becomes a landing; that numbers become words and trends require duration; that the state carries no numbers; that `emergency` cannot emerge from the judging path; that a Judge which raises does not stop the loop; and that a real flight log replays into decision records.
 
 P3 adds: figure extraction across half-width, full-width and kanji numerals in m, cm and degrees; every assembly rule (everything after the first `none` is dropped, a takeoff and a landing are supplied, an unspecified amount takes the default band, a spoken figure outranks the band); that the envelope pre-check refuses an over-reaching plan and names the offending step; that a low-confidence step is not flown; the `return_home` computation including a turn along the way; that the hovering `rc` is withheld while a plan drives the vehicle but `land` is not; that waiting for an answer does not interrupt the sequence while a hold Jev chose does; that a step waits for the vehicle's reply and for the craft to settle; and that a non-interactive session will not fly without `--yes`.
 

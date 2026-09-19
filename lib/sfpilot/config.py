@@ -1035,6 +1035,296 @@ class ExploreConfig:
 
 
 @dataclass(frozen=True)
+class RealEnvelopeConfig(EnvelopeConfig):
+    """The flight area for a REAL aircraft, smaller than the SILS one.
+
+    Same fields as `EnvelopeConfig`, different numbers, and it replaces the
+    SILS envelope wholesale on a `--real` run (`real_config()`): the Arbiter
+    reads one envelope, so there is no cycle in which half the limits are
+    the rehearsal's and half are the room's.
+
+    Why smaller rather than the same: in SILS the cost of reaching a limit
+    is a number in a CSV, and the 2 m radius was chosen to leave the
+    judging layers room to be exercised. In a room the cost is the airframe
+    and whoever is in the room, and the first real flights are flown in a
+    space cleared by hand to 2 m (the checklist in §5 of the confirmation
+    asks for exactly that), so the aircraft is kept to half of it.
+
+    実機の飛行領域。SILS のものより狭い。
+
+    項目は `EnvelopeConfig` と同じで数値だけが違う。`--real` の実行では SILS の
+    飛行領域を丸ごと置き換える（`real_config()`）。Arbiter が読む飛行領域は 1 つ
+    なので、上限の半分が予行のもの、半分が部屋のもの、という周期は生じない。
+
+    同じにせず狭める理由: SILS では上限に達した代償は CSV の数値にすぎず、
+    半径 2m は判断層を十分に働かせるために選んだ値である。部屋では代償が機体と、
+    その部屋にいる人になる。最初の実機飛行は人手で 2m 空けた場所で飛ばす（確認の
+    第 5 項がまさにそれを求める）ので、機体はその半分に留める。
+    """
+
+    # 0.3-0.8 m: above the ground effect the craft hovers in and below the
+    # height a fall would damage it from, and the auto-takeoff's own climb
+    # (measured 0.441-0.483 m, §4.5) lands inside it without any commanded
+    # move. A ceiling of 1.5 m as in SILS would let a runaway climb reach
+    # head height in a room.
+    # 0.3〜0.8m。機体がホバリングする地面効果の上、落ちても壊れない高さの下で
+    # あり、自動離陸自身の上昇（実測 0.441〜0.483m、§4.5）が、何も指令せずとも
+    # この中に収まる。SILS と同じ 1.5m を上限にすると、暴走した上昇が部屋の中で
+    # 人の頭の高さに届く。
+    altitude_min_m: float = 0.3
+    altitude_max_m: float = 0.8
+
+    # Half the SILS radius: the confirmation asks for 2 m clear around the
+    # aircraft, so 1 m keeps a metre of that margin unspent even at the limit.
+    # SILS の半分。確認は機体の周囲 2m を空けることを求めるので、1m なら上限に
+    # 達しても余裕が 1m 残る。
+    radius_max_m: float = 1.0
+
+    # A third of the SILS ceiling. The stopping distance the forward rule
+    # computes is `safety_margin + 4.0 * closing_speed` (ForwardConfig), so
+    # 0.5 m/s would need 2.5 m of room to stop in and 0.15 m/s needs 1.1 m
+    # — which is what fits inside the radius above. The forward part is also
+    # unverified in flight, so the speed is set so that the craft is slow
+    # enough for a person to reach it rather than relying on the sensor.
+    # SILS の 1/3。前方の規則が算出する停止距離は
+    # `safety_margin + 4.0 × 接近速度`（ForwardConfig）なので、0.5m/s では停止に
+    # 2.5m 要り、0.15m/s なら 1.1m で済む —— 上の半径に収まるのはそちらである。
+    # 前方の部品は飛行中の確認がまだなので、センサに頼るのではなく、人が手を
+    # 伸ばして届く程度の速さに留める意味もある。
+    speed_max_mps: float = 0.15
+    climb_rate_max_mps: float = 0.15
+
+
+@dataclass(frozen=True)
+class RealFlightConfig:
+    """Everything a REAL flight needs that a SILS rehearsal does not.
+
+    The counterpart of `SilsConfig`, and kept apart from it for the same
+    reason: changing how a rehearsal is staged must not be able to change
+    what a real flight refuses to take off with.
+
+    **Nothing here is measured in flight.** P5's first stage does not fly,
+    so every number below is a bound chosen from a measurement taken on the
+    ground or from the firmware's own source, and each says which. They are
+    starting points to be revised from the first flights, not results.
+
+    実機の飛行に必要で、SILS の予行には不要なものすべて。
+
+    `SilsConfig` の対になるもので、分けておく理由も同じである。予行の段取りを
+    変えたことが、実機が離陸を拒む条件を変えてしまってはならない。
+
+    **ここの数値はどれも飛行では実測していない。** P5 の第 1 段階は飛ばさない
+    ので、以下はすべて地上での実測か、ファーム自身の出典から選んだ上限であり、
+    どちらかを各項目に記す。最初の飛行で見直すべき出発点であって、結果ではない。
+    """
+
+    # -- preflight: telemetry / 飛行前点検: テレメトリ ---------------------
+
+    # How long to listen for telemetry before deciding whether it arrives at
+    # all. Long enough that the measured 58% delivery rate (§4.8.2) still
+    # yields a stable estimate — at 50 Hz this is about 150 packets expected
+    # and about 87 received — and short enough that a check nobody wants to
+    # sit through does not discourage running it.
+    # テレメトリが届くかを判定する前に聞く時間。実測の到達率 58%（§4.8.2）でも
+    # 見積もりが安定する程度に長く（50Hz で期待 150 個・受信約 87 個）、かつ誰も
+    # 待ちたくない点検にして実施をためらわせない程度に短い。
+    telemetry_probe_s: float = 3.0
+
+    # The delivery rate below which the link is not good enough to fly on.
+    # 40%: BELOW the 58% measured on the bench (§4.8.2), because that figure
+    # is one measurement in one room and the rate is a property of the
+    # radio environment, not of the firmware. A gate at 58% would refuse a
+    # flight on any day slightly worse than the day it was measured. What it
+    # does catch is the qualitative failure — the AP not up, `wifi.mode` not
+    # 1 (§4.8.5), the wrong network joined — where the rate is near zero.
+    # この到達率を下回るリンクでは飛ばさない。40% は、机上で実測した 58%
+    #（§4.8.2）より**下**に置く。あの値は 1 つの部屋での 1 回の測定であり、到達率は
+    # ファームではなく電波環境の性質だからである。58% で門をかければ、実測した日
+    # より少し悪いだけの日の飛行を拒むことになる。ここで捕らえたいのは質的な失敗
+    #（アクセスポイントが立っていない・`wifi.mode` が 1 でない（§4.8.5）・別の網に
+    # つないでいる）であり、そのとき到達率はほぼ 0 である。
+    telemetry_rate_min: float = 0.40
+
+    # The pack voltage the aircraft must have before it takes off [V].
+    #
+    # 3.85 V, chosen to agree with the bands the Monitor already uses rather
+    # than as a new opinion about batteries: `link.battery_percent` maps
+    # 3.3-4.2 V onto 0-100%, so `MonitorConfig.battery_low_pct = 30` is
+    # 3.57 V and `battery_danger_pct = 15` is 3.435 V. Taking off at 3.57 V
+    # would mean starting the flight already inside the band whose whole
+    # purpose is to end one. 3.85 V is about 61%, which leaves the flight
+    # the margin those bands assume exists.
+    #
+    # Measured on the ground for context, not as the basis: `takeoff` alone
+    # pulls the READING down 4.19 -> 3.79 V within a second (§4.5, the load
+    # transient, not discharge), so a pack starting at 3.85 V under no load
+    # will read close to the low band the moment the motors spin up. That is
+    # expected and is why the trend is judged on volts over a 20 s window
+    # rather than on the instantaneous reading (MonitorConfig).
+    #
+    # 離陸前に機体が持っていなければならないパック電圧 [V]。
+    #
+    # 3.85V は、電池についての新しい見解ではなく、Monitor が既に使っている区分に
+    # 合わせて選んだ値である。`link.battery_percent` は 3.3〜4.2V を 0〜100% に
+    # 写すので、`MonitorConfig.battery_low_pct = 30` は 3.57V、
+    # `battery_danger_pct = 15` は 3.435V にあたる。3.57V で離陸することは、飛行を
+    # 終わらせるためにある当の区分の中から飛行を始めることを意味する。3.85V は
+    # 約 61% で、それらの区分が前提としている余裕を飛行に残す。
+    #
+    # 地上での実測は根拠ではなく文脈として: `takeoff` だけで**読み**が 1 秒以内に
+    # 4.19V → 3.79V まで落ちる（§4.5。放電ではなく負荷による降下）。したがって
+    # 無負荷で 3.85V から始まるパックは、モータが回った瞬間に低い区分の近くを
+    # 指す。それは想定どおりであり、傾向を瞬時の読みではなく 20 秒窓の電圧で
+    # 判定している理由でもある（MonitorConfig）。
+    battery_min_v: float = 3.85
+
+    # -- preflight: round trips / 飛行前点検: 往復時間 --------------------
+
+    # How many times `command` is sent to measure the PC<->vehicle round
+    # trip, and the p95 it must come in under [s].
+    #
+    # **Unmeasured** (§4 lists "the real PC<->vehicle round trip" as not yet
+    # measured), so this is a bound, not a result. 0.2 s is chosen against
+    # what the number is FOR: the pilot loop runs at 50 Hz (20 ms) and a
+    # `land` must reach the vehicle inside a human's reaction time. A link
+    # whose p95 is worse than 0.2 s is one where a stop command is a fifth
+    # of a second of travel behind the situation that called for it — at the
+    # real envelope's 0.15 m/s, 3 cm, which is tolerable; at ten times this
+    # figure it would not be. **The first flights should record the real
+    # p50/p95 here and this value revisited from them.**
+    #
+    # Ten samples rather than the bench's twenty: this runs while a person
+    # stands over an armed-but-not-flying aircraft, and `command` is
+    # answered by the firmware's own parser with no network round trip to
+    # TypeSafe, so the spread is narrow and ten places a p95 (the 10th
+    # value, nearest-rank) without making the wait noticeable.
+    #
+    # PC↔機体の往復時間を測るために `command` を送る回数と、その p95 が収まる
+    # べき時間 [s]。
+    #
+    # **未実測である**（§4 は「実機の PC↔機体往復時間」を未計測として挙げている）。
+    # よってこれは結果ではなく上限である。0.2s は、この数値が何のためにあるかから
+    # 選んだ。操縦ループは 50Hz（20ms）で回り、`land` は人の反応時間の内に機体へ
+    # 届かねばならない。p95 が 0.2s より悪いリンクとは、停止の指令が、それを求めた
+    # 状況より 0.2 秒ぶんの移動だけ遅れて届くリンクである —— 実機の飛行領域の
+    # 0.15m/s では 3cm で、許容できる。これの 10 倍なら許容できない。
+    # **最初の飛行で実機の p50/p95 を記録し、この値をそこから見直すこと。**
+    #
+    # bench の 20 回ではなく 10 回にする理由: これは、ARM 前の機体の前に人が立って
+    # いる間に走る。`command` に答えるのはファーム自身の解釈器で、TypeSafe への
+    # 往復は挟まらないのでばらつきは狭く、10 回あれば p95（最近傍順位で 10 番目の値）
+    # を待ち時間が気になる前に置ける。
+    command_probe_count: int = 10
+    command_p95_max_s: float = 0.2
+
+    # How long one `command` may take before it counts as lost [s]. Well
+    # above the p95 gate so a single slow reply is measured as slow rather
+    # than as a failure; a reply that has not come in a second on a link
+    # with a 0.2 s budget is not late, it is gone.
+    # 1 回の `command` が失われたとみなされるまでの時間 [s]。p95 の関門より十分
+    # 大きくし、1 回遅かった応答を失敗ではなく「遅い」として測れるようにする。
+    # 予算が 0.2 秒のリンクで 1 秒返らない応答は、遅いのではなく届いていない。
+    command_timeout_s: float = 1.0
+
+    # Jev round trips taken during the preflight, and the p95 they must come
+    # in under [s]. Three, because this repeats a measurement `sf pilot
+    # bench` already makes twenty of (§4: p50 232 ms / p95 442 ms / max
+    # 502 ms) — the question here is not what the distribution is but
+    # whether the network is working right now, from this room.
+    #
+    # The gate is the Judge's own deadline, so it asks exactly the question
+    # that matters: would answers arrive in time to be used? A link that
+    # cannot meet it does not stop the aircraft flying — it stops it flying
+    # UNDER JEV, and `--fake` is the way to fly a real aircraft with the
+    # rule-based judge instead.
+    #
+    # 飛行前点検で取る Jev の往復回数と、その p95 が収まるべき時間 [s]。3 回に
+    # するのは、これが `sf pilot bench` が既に 20 回取っている測定の繰り返しだから
+    # である（§4: p50 232ms / p95 442ms / max 502ms）。ここでの問いは分布が
+    # どうかではなく、いまこの部屋から網が働いているかである。
+    #
+    # 関門は Judge 自身の期限にする。まさに意味のある問い —— 答えは使える時間内に
+    # 届くか —— を問うためである。これを満たせないリンクは飛行を止めない。止めるのは
+    # **Jev の下での**飛行であり、規則ベースの judge で実機を飛ばす道が `--fake`
+    # である。
+    jev_probe_count: int = 3
+
+    # -- in flight / 飛行中 ------------------------------------------------
+
+    # How long telemetry may be silent before the flight is ended [s].
+    #
+    # This is the rule §2 says the FIRMWARE does not have: the vehicle holds
+    # position indefinitely when the PC goes quiet and only the transmitter's
+    # ESP-NOW link triggers COMM_LOST (`sf_failsafe/failsafe.cpp`). So the PC
+    # side has to notice its own silence and land.
+    #
+    # 1.5 s against a 58% delivery rate: the measured loss comes in bursts of
+    # 4-10 consecutive packets (§4.8.2), which at 50 Hz is 0.08-0.20 s, so
+    # this is roughly seven times the worst burst actually seen. Shorter would
+    # land the aircraft over a bad half-second of radio; much longer and the
+    # craft drifts for seconds under a PC that has stopped watching.
+    #
+    # テレメトリが無音でいられる時間 [s]。これを超えたら飛行を終える。
+    #
+    # これは §2 が「ファームは持たない」と言っている規則そのものである。PC が
+    # 黙っても機体は位置を保ち続け、COMM_LOST を起こすのは送信機の ESP-NOW リンク
+    # だけである（`sf_failsafe/failsafe.cpp`）。したがって、自分の無音に気づいて
+    # 着陸するのは PC 側の仕事になる。
+    #
+    # 到達率 58% に対して 1.5 秒とする根拠: 実測の欠損は連続 4〜10 個の塊で来る
+    #（§4.8.2）。50Hz では 0.08〜0.20 秒なので、実際に見えた最悪の塊の約 7 倍で
+    # ある。これより短ければ、電波の悪い 0.5 秒で機体を着陸させることになる。
+    # ずっと長ければ、見張りをやめた PC の下で機体が数秒流されることになる。
+    telemetry_silence_land_s: float = 1.5
+
+    # How late a monitor cycle may be before the watchdog decides the loop
+    # has stopped [s]. The loop's period is 20 ms; 0.5 s is 25 periods, far
+    # beyond any scheduling jitter on a laptop and far inside the time the
+    # craft would drift. See `watchdog.py` for what it does about it.
+    # 監視ループが止まったと番人が判ずるまでの、周期の遅れ [s]。ループの周期は
+    # 20ms で、0.5 秒はその 25 周期ぶん。ノートパソコンの実行遅れとしては大きく、
+    # 機体が流される時間としては十分短い。何をするかは `watchdog.py` を参照。
+    watchdog_stall_s: float = 0.5
+
+    # How often the watchdog checks [s]. Shorter than the stall it detects,
+    # so a stall is caught within one extra tick of it.
+    # 番人が確認する間隔 [s]。検出する停滞より短くし、停滞を 1 刻み以内で捕らえる。
+    watchdog_period_s: float = 0.1
+
+    # How long to wait for `land` to be acknowledged before sending it once
+    # more [s]. `land` is answered by the firmware when the descent BEGINS
+    # (api_task.cpp), not when it finishes, so this is a transport wait, not
+    # a landing wait.
+    # `land` の応答を待ち、もう一度送るまでの時間 [s]。ファームは降下の**開始**時に
+    # `land` へ応答する（api_task.cpp）のであって完了時ではないので、これは着陸を
+    # 待つ時間ではなく、電文が届くのを待つ時間である。
+    land_ack_wait_s: float = 1.0
+
+    # -- the flight's own length / 飛行そのものの長さ ---------------------
+
+    # The default and the hard ceiling on `--duration` [s]. A first hover is
+    # 20 s because that is long enough to watch the aircraft behave and short
+    # enough that nothing has time to go far wrong; 60 s is the ceiling
+    # because beyond it the flight is no longer something a person standing
+    # with a transmitter is watching closely.
+    # `--duration` の既定値と、動かせない上限 [s]。最初のホバリングを 20 秒に
+    # するのは、機体の挙動を見るには十分長く、何かが大きく狂うには短いからである。
+    # 60 秒を上限にするのは、それを超えると、送信機を持って立っている人が注意して
+    # 見ている飛行ではなくなるからである。
+    default_duration_s: float = 20.0
+    max_duration_s: float = 60.0
+
+    # The aircraft's own address, and how long to wait after `command` before
+    # the first measurement. The host is the SoftAP address the firmware
+    # serves (link.DEFAULT_DRONE_HOST); it is repeated as a field so a
+    # different address can be flown to without editing code.
+    # 機体のアドレスと、`command` の後、最初の測定までの待ち。ホストはファームが
+    # 提供する SoftAP のアドレス（link.DEFAULT_DRONE_HOST）である。コードを編集せず
+    # 別のアドレスへ飛ばせるよう、項目として重ねて持つ。
+    host: str = "192.168.10.1"
+
+
+@dataclass(frozen=True)
 class PilotConfig:
     """The whole configuration, passed as one object.
     設定一式。1 つのオブジェクトとして受け渡す。"""
@@ -1049,6 +1339,7 @@ class PilotConfig:
     sils: SilsConfig = field(default_factory=SilsConfig)
     forward: ForwardConfig = field(default_factory=ForwardConfig)
     explore: ExploreConfig = field(default_factory=ExploreConfig)
+    real: RealFlightConfig = field(default_factory=RealFlightConfig)
 
     monitor_hz: float = MONITOR_HZ
     executor_rc_hz: float = EXECUTOR_RC_HZ
@@ -1056,3 +1347,39 @@ class PilotConfig:
 
 
 DEFAULT_CONFIG = PilotConfig()
+
+
+def real_config(base: PilotConfig = DEFAULT_CONFIG) -> PilotConfig:
+    """`base` with the real aircraft's flight area in place of the SILS one.
+
+    One function rather than a second module-level constant, so a caller
+    that has already narrowed something (a `--deadline-ms` override) keeps
+    it: the real flight differs from the rehearsal in the ENVELOPE and in
+    `RealFlightConfig`, and everything else — the Monitor's bands, the
+    Arbiter's rules, the landing approach — is deliberately identical. The
+    layers that decide are the ones that were exercised in SILS, and giving
+    them different numbers on hardware would mean flying something that was
+    never rehearsed.
+
+    Why the whole config is rebuilt rather than the envelope handed round
+    separately: the Arbiter and the Executor each read `config.envelope`,
+    and a second path for "the real one" would be two places to keep in
+    step (`_run_config` in the CLI makes the same choice for the deadline).
+
+    `base` の飛行領域を、SILS 用から実機用に置き換えたもの。
+
+    2 つ目のモジュール定数ではなく関数にするのは、既に何かを狭めている
+    呼び出し側（`--deadline-ms` の上書き）がそれを保てるようにするためである。
+    実機の飛行が予行と違うのは**飛行領域**と `RealFlightConfig` だけで、
+    それ以外 —— Monitor の区分、Arbiter の規則、着陸前手順 —— は意図して同一に
+    する。判断する層は SILS で働かせた当のものであり、実機で別の数値を与えれば、
+    予行していないものを飛ばすことになる。
+
+    飛行領域だけを別に持ち回らず設定一式を作り直す理由: Arbiter も Executor も
+    `config.envelope` を読んでおり、「実機用のほう」という 2 本目の経路は、
+    足並みを揃え続ける場所が 2 つになることを意味する（CLI の `_run_config` も
+    期限について同じ選択をしている）。
+    """
+    from dataclasses import replace
+
+    return replace(base, envelope=RealEnvelopeConfig())

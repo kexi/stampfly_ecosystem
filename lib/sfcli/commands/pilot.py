@@ -37,6 +37,57 @@ BENCH_DEFAULT_N = 20
 WEB_DEFAULT_PORT = 8770
 
 
+def _add_real_refusal(parser: argparse.ArgumentParser) -> None:
+    """Accept `--real` on a subcommand that will refuse it.
+
+    Accepted rather than left undefined so that `sf pilot say --real ...`
+    is answered with the reason instead of argparse's "unrecognized
+    arguments", which reads as a typo and invites the operator to look for
+    the right spelling of a flag that is not supposed to work.
+
+    これから拒否するサブコマンドでも `--real` を受け付けておく。
+
+    定義しないままにせず受け付けるのは、`sf pilot say --real ...` に対して
+    argparse の「unrecognized arguments」ではなく理由を返すためである。あの文面は
+    打ち間違いに読め、そもそも働かせるつもりの無い指定の正しい綴りを、操作者に
+    探させることになる。
+    """
+    parser.add_argument(
+        "--real", action="store_true",
+        help="Refused: only `sf pilot run --real` flies hardware "
+             "（実機は run のみ）",
+    )
+
+
+def _refuse_real(subcommand: str) -> int:
+    """Say why this subcommand does not fly hardware. Returns the exit code.
+
+    All three refused subcommands command the aircraft to MOVE — an
+    instruction's steps, a route's legs, a sweep's turns — and no commanded
+    move has been flown on hardware. P5's first stage deliberately covers
+    only the flight whose every command has been: take off, hover, land
+    (docs/plans/jev-autopilot.md §4.12).
+
+    このサブコマンドが実機を飛ばさない理由を述べる。終了コードを返す。
+
+    拒否する 3 つはいずれも機体に**移動**を指令する —— 指示の手順、経路の区間、
+    掃引の旋回 —— が、指令された移動は実機で一度も飛ばされていない。P5 の第 1
+    段階は、すべての指令が確かめられている唯一の飛行、すなわち離陸・ホバリング・
+    着陸だけを意図して対象にしている（docs/plans/jev-autopilot.md §4.12）。
+    """
+    console.error(
+        f"実機は run のみです（`sf pilot {subcommand}` は --real を受け付けません）"
+        f" / real hardware is supported by `run` only"
+    )
+    console.info(
+        "実機で飛ばせるのは `sf pilot run --real`（離陸→ホバリング→監視→着陸）"
+        "だけです。点検だけなら `sf pilot run --real --preflight-only`。"
+        "移動を伴う飛行は実機で未確認のため、P5 の第 1 段階には含めていません"
+        "（docs/plans/jev-autopilot.md §4.12）"
+    )
+    return 1
+
+
 def _add_web_arguments(parser: argparse.ArgumentParser) -> None:
     """Give a flying subcommand the `--web` family of options.
 
@@ -131,8 +182,36 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     run_parser.add_argument(
         "--sils", action="store_true",
-        help="Fly the SILS emulator. Required: real hardware is not supported yet "
-             "（実機は未対応）",
+        help="Fly the SILS emulator （SILS を飛ばす）",
+    )
+    run_parser.add_argument(
+        "--real", action="store_true",
+        help="Fly the REAL aircraft: preflight, take off, hover, watch, land "
+             "（実機を飛ばす。離陸→ホバリング→監視→着陸）",
+    )
+    run_parser.add_argument(
+        "--preflight-only", dest="preflight_only", action="store_true",
+        help="With --real, run the preflight checks and stop. Nothing takes off "
+             "（点検だけ行い、離陸しない）",
+    )
+    run_parser.add_argument(
+        "--host", default=None,
+        help="The aircraft's address for --real (default: the SoftAP address)",
+    )
+    # Accepted and deliberately ineffective on --real. The refusal message
+    # tells the operator that `--yes` does not skip the confirmation, so
+    # the flag has to EXIST for that sentence to be about something --
+    # otherwise the next thing they type is answered with argparse's
+    # "unrecognized arguments", which reads as a typo and teaches nothing.
+    # 受け付けたうえで、--real では意図して効かせない。拒否の文言は「`--yes` でも
+    # 省略されない」と操作者に告げるので、その文が何かについて述べたものであるため
+    # には、指定が**存在**せねばならない。さもなければ、操作者が次に打つものは
+    # argparse の「unrecognized arguments」で答えられる。打ち間違いに読め、何も
+    # 教えない。
+    run_parser.add_argument(
+        "-y", "--yes", action="store_true",
+        help="Skip the confirmation. Has NO effect with --real, where the "
+             "checklist cannot be skipped （--real では省略できません）",
     )
     run_parser.add_argument(
         "--scene", default="nominal", choices=list(scene_names()),
@@ -142,9 +221,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--fake", action="store_true",
         help="Use the deterministic FakeJudge (no API key, no network)",
     )
+    # Defaulted to None rather than to a number, because the two modes have
+    # different right answers: a SILS rehearsal runs a minute, a first real
+    # hover runs 20 s (`RealFlightConfig.default_duration_s`). Resolving it
+    # here would put the real flight's length in the CLI instead of beside
+    # the reason it was chosen.
+    # 既定を数値ではなく None にする。2 つのモードで正しい答えが違うためである。
+    # SILS の予行は 1 分、最初の実機ホバリングは 20 秒
+    #（`RealFlightConfig.default_duration_s`）。ここで解決すれば、実機の飛行の
+    # 長さが、それを選んだ理由の傍らではなく CLI に置かれることになる。
     run_parser.add_argument(
-        "--duration", type=float, default=RUN_DEFAULT_DURATION_S,
-        help=f"Flight length in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
+        "--duration", type=float, default=None,
+        help=f"Flight length in seconds (SILS default {RUN_DEFAULT_DURATION_S:g}; "
+             f"--real defaults to 20 and is capped at 60)",
     )
     run_parser.add_argument(
         "--deadline-ms", type=float, default=None,
@@ -197,6 +286,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--duration", type=float, default=RUN_DEFAULT_DURATION_S,
         help=f"Ceiling on the flight in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
     )
+    _add_real_refusal(say_parser)
     _add_web_arguments(say_parser)
     say_parser.set_defaults(func=run_say)
 
@@ -234,6 +324,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--duration", type=float, default=None,
         help="Override the mission time limit in seconds",
     )
+    _add_real_refusal(mission_parser)
     _add_web_arguments(mission_parser)
     mission_parser.set_defaults(func=run_mission)
 
@@ -264,6 +355,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "--duration", type=float, default=RUN_DEFAULT_DURATION_S,
         help=f"Ceiling on the flight in seconds (default: {RUN_DEFAULT_DURATION_S:g})",
     )
+    _add_real_refusal(explore_parser)
     _add_web_arguments(explore_parser)
     explore_parser.set_defaults(func=run_explore)
 
@@ -501,15 +593,29 @@ def run_run(args: argparse.Namespace) -> int:
     from sfpilot.scenes import get_scene
     from sfpilot.trace import Trace
 
+    if args.real:
+        return run_real(args)
     if not args.sils:
         console.error(
-            "`sf pilot run` currently supports --sils only — flying real hardware "
-            "is P5 in docs/plans/jev-autopilot.md and is deliberately not wired up "
-            "（実機飛行は未対応です）"
+            "`sf pilot run` は飛ばす先の指定が要ります: SILS なら --sils、実機なら "
+            "--real（実機は点検だけなら --real --preflight-only） "
+            "/ choose --sils or --real"
+        )
+        return 1
+    if args.preflight_only:
+        console.error(
+            "--preflight-only は --real のためのものです（SILS に飛行前点検はありません）"
+            " / --preflight-only applies to --real"
         )
         return 1
 
     config = _run_config(args)
+    # SILS keeps its own default: the rehearsal's length was chosen for the
+    # scenes, which need a minute to play out.
+    # SILS は自前の既定値を保つ。予行の長さは場面に合わせて選ばれており、場面が
+    # 進み切るには 1 分を要する。
+    if args.duration is None:
+        args.duration = RUN_DEFAULT_DURATION_S
     scene = get_scene(args.scene, config)
     judge = _open_run_judge(args, config)
     if judge is None:
@@ -982,11 +1088,383 @@ def _print_run_summary(outcome: dict, trace, recording=None) -> None:
 
 
 # =============================================================================
+# sf pilot run --real
+# =============================================================================
+
+# What the operator confirms before a real flight. Five statements, each of
+# which is a thing that has actually gone wrong for somebody flying a small
+# multirotor indoors, and none of which this program can check for itself:
+# no sensor reports whether the propellers are on, whether a person is in
+# the room, or whether anyone is holding the transmitter.
+#
+# The transmitter one is the load-bearing item. §2 records that the vehicle
+# does NOT land itself when the PC goes quiet and that COMM_LOST watches
+# only the transmitter's ESP-NOW link, while INV-2 gives a stick MOVEMENT
+# immediate priority over API guidance. So the person holding it is the
+# only control path that does not depend on this program still working.
+#
+# 実機の飛行の前に操作者が確認すること。5 項目。どれも、小型マルチロータを屋内で
+# 飛ばした誰かに実際に起きたことであり、どれもこのプログラムには確かめられない。
+# プロペラが付いているか、部屋に人がいるか、送信機を誰かが持っているかを報告する
+# センサは無い。
+#
+# 要となるのは送信機の項目である。§2 は「PC が黙っても機体は自分で着陸しない」
+# 「COMM_LOST が見るのは送信機の ESP-NOW リンクだけ」と記録し、INV-2 はスティックの
+# **動き**に API 誘導への即時の優先権を与える。したがって、それを持つ人だけが、
+# このプログラムが動き続けることに依存しない唯一の制御経路である。
+REAL_CHECKLIST = (
+    "プロペラを取り付けたか（4 枚とも、回転方向どおりに）",
+    "送信機を手に持ち、いつでも操縦を奪える状態か（スティックを動かせば即座に奪える）",
+    "機体の周囲 2m に人と障害物が無いか",
+    "機体を平らな床に置き、水平にしたか",
+    "`sf telemetry` で電池電圧を確認したか",
+)
+
+
+def run_real(args: argparse.Namespace) -> int:
+    """Fly the real aircraft: preflight, take off, hover, watch, land.
+
+    Only `run` reaches here. `say`, `mission` and `explore` refuse `--real`
+    where they parse their own arguments, because each of them commands the
+    aircraft to MOVE and no commanded move has been flown on hardware
+    (docs/plans/jev-autopilot.md §4.12).
+
+    実機を飛ばす: 飛行前点検・離陸・ホバリング・監視・着陸。
+
+    ここに来るのは `run` だけである。`say`・`mission`・`explore` は自分の引数を
+    読む場所で `--real` を拒む。いずれも機体に**移動**を指令するものであり、
+    指令された移動は実機で一度も飛ばされていないからである
+    （docs/plans/jev-autopilot.md §4.12）。
+    """
+    from sfpilot.config import real_config
+    from sfpilot.trace import Trace
+
+    if args.sils:
+        console.error(
+            "--sils と --real は同時に指定できません（飛ばす先は 1 つです） "
+            "/ --sils and --real are mutually exclusive"
+        )
+        return 1
+
+    config = real_config(_run_config(args))
+    host = args.host or config.real.host
+    judge = _open_real_judge(args, config)
+    if judge is _JUDGE_FAILED:
+        return 1
+
+    link, error = _open_real_link(host)
+    if link is None:
+        console.error(error)
+        return 1
+
+    trace = Trace()
+    try:
+        if args.preflight_only:
+            return _real_preflight_only(link, judge, config, trace, host)
+        return _real_flight(args, link, judge, config, trace, host)
+    finally:
+        trace.close()
+        if judge is not None:
+            judge.close()
+        link.close()
+
+
+# Returned by `_open_real_judge` when the judge could not be opened and the
+# reason has been printed. Distinct from None, which means "--fake asked
+# for no judge at all" — a value, not a failure.
+# judge を開けず、理由を表示済みであることを `_open_real_judge` が返す値。
+# None とは区別する。None は「--fake が judge そのものを求めていない」という
+# 意味であり、失敗ではなく 1 つの値である。
+_JUDGE_FAILED = object()
+
+
+def _open_real_judge(args, config):
+    """The Judge for a real flight: Jev, or None for `--fake`.
+
+    `--fake` on hardware is not a rehearsal: the aircraft really flies and
+    the safety layer really watches it. What changes is who answers the
+    safety question — the rule-based `FakeJudge` instead of Jev. That is
+    the right flight to make when the network is the thing in doubt, and
+    the preflight's Jev check is what tells the operator it is.
+
+    実機の飛行が使う Judge。Jev か、`--fake` なら None。
+
+    実機での `--fake` は予行ではない。機体は実際に飛び、安全層は実際にそれを
+    見張る。変わるのは安全の質問に誰が答えるかだけで、Jev の代わりに規則ベースの
+    `FakeJudge` が答える。網のほうが疑わしいときに行うべきはその飛行であり、
+    そうだと操作者に告げるのが飛行前点検の Jev の項目である。
+    """
+    from sfpilot.judge import FakeJudge, JevJudge, MissingApiKey
+
+    if args.fake:
+        return FakeJudge()
+    try:
+        return JevJudge(config)
+    except MissingApiKey as exc:
+        console.error(str(exc))
+        console.info("Use --fake to fly on the rule-based judge instead "
+                     "（キー無しで飛ばすなら --fake）")
+        return _JUDGE_FAILED
+
+
+def _open_real_link(host: str):
+    """A `RealLink` to `host`, or (None, reason).
+
+    The two ports this binds are contended on the PC side: :8890 is taken
+    by any djitellopy script or another `sf blocks` session, and :5005 by
+    a running `sf telemetry`. Both are ordinary situations with an obvious
+    fix, so the failure names them rather than showing a bare OSError.
+
+    `host` への `RealLink`。開けなければ (None, 理由)。
+
+    bind する 2 つのポートは PC 側で競合する。:8890 は djitellopy のスクリプトや
+    別の `sf blocks` が、:5005 は動作中の `sf telemetry` が取る。どちらもよくある
+    状況で直し方も明らかなので、素の OSError ではなく名指しして伝える。
+    """
+    from sfpilot.link import RealLink
+
+    try:
+        return RealLink(host), ""
+    except OSError as exc:
+        return None, (
+            f"機体との通信を開けません: {exc}。`sf telemetry`・`sf blocks`・"
+            f"djitellopy のセッションが残っていないか確認してください "
+            f"/ cannot open the vehicle link"
+        )
+
+
+def _real_preflight_only(link, judge, config, trace, host: str) -> int:
+    """Run the checks against the real aircraft and stop.
+
+    No confirmation is asked for and the checklist is not shown: nothing
+    takes off, the only thing transmitted is `command`, and asking a person
+    to confirm something that cannot move the aircraft teaches them that
+    the confirmation does not mean anything.
+
+    実機に対して点検を走らせ、そこで終える。
+
+    確認は求めず、確認事項も表示しない。何も離陸せず、送出するのは `command`
+    だけである。機体を動かしえないことに同意を求めれば、その確認には意味が無いと
+    人に教えることになる。
+    """
+    from sfpilot.preflight import format_table
+    from sfpilot.real_run import preflight_only
+
+    console.info(f"飛行前点検（離陸しません） / preflight only — {host}")
+    report = preflight_only(link, judge, config, trace=trace)
+    print()
+    for line in format_table(report):
+        print(line)
+    print()
+    print(f"  trace       : {trace.path}")
+    print()
+    if not report.ok:
+        console.warning("点検に通らなかった項目があります（上表の FAIL / SKIP）")
+    return 0 if report.ok else 1
+
+
+def _real_flight(args, link, judge, config, trace, host: str) -> int:
+    """Confirm with the operator, then fly the real aircraft.
+    操作者に確認をとってから実機を飛ばす。"""
+    from sfpilot.real_run import fly_real
+
+    if not _real_confirmed(args, config):
+        return 1
+
+    bus, server = _open_live_view(args, {
+        "command": "sf pilot run --real",
+        "scene": "real",
+        "judge": "FakeJudge" if args.fake else "Jev",
+    })
+    live = _LiveFeed(bus)
+    trace.bus = bus
+    console.info(f"実機で飛行します / flying the real aircraft — {host}")
+    try:
+        outcome = fly_real(link, judge, config, trace=trace,
+                           duration_s=args.duration,
+                           on_cycle=live.sample, on_decisions=live.watch,
+                           on_event=console.info)
+    finally:
+        if server is not None:
+            server.stop()
+
+    _print_real_summary(outcome, trace, config)
+    return 0 if outcome.took_off and outcome.landed else 1
+
+
+def _real_confirmed(args, config) -> bool:
+    """Show the checklist and require a typed `y`.
+
+    `--yes` does NOT skip this. Everywhere else in `sf pilot` it does, and
+    that is right there: those flights are SILS, where an unattended `--yes`
+    in a script is a reasonable thing to want. A real flight is not
+    unattended by definition — the third item is that a person is watching
+    and the second is that a person is holding the transmitter — so a flag
+    that says "nobody needs to be asked" is asserting the opposite of what
+    the checklist is for.
+
+    Refused outright when stdin is not a terminal: silence is not consent,
+    and a non-interactive session has nobody in it to be holding anything.
+
+    確認事項を示し、`y` の入力を求める。
+
+    `--yes` でも省略できない。`sf pilot` の他の場所では省略できるし、そこでは
+    それが正しい。あちらは SILS であり、スクリプト中の無人の `--yes` は望んで
+    当然のものである。実機の飛行は定義上、無人ではない —— 第 3 項は人が見ている
+    こと、第 2 項は人が送信機を持っていることである —— ので、「誰にも尋ねる必要が
+    無い」と述べる指定は、確認事項の目的の正反対を主張することになる。
+
+    stdin が端末でなければ即座に拒否する。無言は同意ではなく、非対話の
+    セッションには、何かを手に持っている人がそもそも居ない。
+    """
+    if not sys.stdin.isatty():
+        console.error(
+            "非対話のため実機は飛ばしません。実機の確認は省略できません"
+            "（--yes でも省略されません）。点検だけなら --preflight-only "
+            "/ a real flight needs an interactive confirmation"
+        )
+        return False
+
+    print()
+    print("  実機を飛ばします。次をすべて確認してください "
+          "/ about to fly a real aircraft — confirm all of these:")
+    for position, item in enumerate(REAL_CHECKLIST, start=1):
+        print(f"    {position}. {item}")
+    print()
+    print(f"    飛行の長さ / duration : "
+          f"{_duration_note(args, config)}")
+    print(f"    飛行領域 / flight area: 高度 {config.envelope.altitude_min_m:g}"
+          f"〜{config.envelope.altitude_max_m:g}m、離陸点から半径 "
+          f"{config.envelope.radius_max_m:g}m、水平 "
+          f"{config.envelope.speed_max_mps:g}m/s まで")
+    print()
+    answer = input("  すべて確認しましたか / all confirmed? [y/N]: ").strip().lower()
+    if answer in ("y", "yes"):
+        return True
+    console.info("cancelled / 中止しました")
+    return False
+
+
+def _duration_note(args, config) -> str:
+    """The flight's length as the confirmation should state it, including
+    the ceiling when the request was above it.
+    確認に載せるべき飛行の長さ。要求が上限を超えていた場合はその旨も含める。"""
+    cfg = config.real
+    if args.duration is None:
+        return f"{cfg.default_duration_s:g}s（既定）"
+    if args.duration > cfg.max_duration_s:
+        return (f"{cfg.max_duration_s:g}s（要求 {args.duration:g}s は上限で "
+                f"切り詰め）")
+    return f"{args.duration:g}s"
+
+
+def _print_real_summary(outcome, trace, config) -> None:
+    """Report the flight: what was decided, what was measured, what was sent.
+    飛行の報告: 何が決まり、何が測られ、何が送られたか。"""
+    from sfpilot.preflight import format_table
+
+    print()
+    if outcome.preflight is not None:
+        for line in format_table(outcome.preflight):
+            print(line)
+        print()
+    if not outcome.took_off:
+        print(f"  離陸しなかった / did not take off: {outcome.ended_because}")
+        print(f"  trace       : {trace.path}")
+        print()
+        return
+
+    print(f"  flown       : {outcome.flown_s:.1f} s")
+    print(f"  ended       : {outcome.ended_because}")
+    print(f"  landed      : {'yes' if outcome.landed else 'no'}"
+          f"{'' if outcome.land_acknowledged else '（応答なし / unacknowledged）'}")
+    _print_decisions(outcome)
+    _print_real_links(outcome)
+    if outcome.keys:
+        print(f"  keys        : {', '.join(outcome.keys)}")
+    print("  commands sent / 送信したコマンド列:")
+    for line in outcome.commands:
+        print(f"    {line}")
+    print(f"  trace       : {trace.path}")
+    print()
+
+
+def _print_decisions(outcome) -> None:
+    """The decisions and the reasons the aircraft was asked to wait.
+    判断と、機体に待機を求めた理由。"""
+    pilot = outcome.pilot
+    if pilot is None:
+        return
+    actions: dict = {}
+    hover_reasons: dict = {}
+    for row in pilot.decisions:
+        verdict = row["verdict"]
+        actions[verdict.action] = actions.get(verdict.action, 0) + 1
+        if verdict.action == "hover":
+            hover_reasons[verdict.reason] = hover_reasons.get(verdict.reason, 0) + 1
+    print(f"  decisions   : {len(pilot.decisions)}")
+    for action, count in sorted(actions.items(), key=lambda kv: -kv[1]):
+        print(f"    {action:<10}: {count}")
+    if hover_reasons:
+        print("  hold reasons / 待機の理由:")
+        for reason, count in sorted(hover_reasons.items(), key=lambda kv: -kv[1]):
+            print(f"    {count:>4}x  {reason}")
+
+
+def _print_real_links(outcome) -> None:
+    """Telemetry delivery and the two round trips.
+
+    The delivery rate is printed for every real flight because §4.8.2's 58%
+    is one measurement from one room, and this is the number that says
+    whether this room is like that one.
+
+    テレメトリの到達率と、2 つの往復時間。
+
+    到達率は実機の飛行ごとに表示する。§4.8.2 の 58% は 1 つの部屋での 1 回の
+    測定であり、この部屋がその部屋と同じかどうかを述べるのがこの数値だからである。
+    """
+    rate = outcome.delivery_rate
+    print(f"  telemetry   : {outcome.samples_received}/{outcome.samples_expected} "
+          f"受信（{rate * 100:.0f}%）")
+    vehicle = outcome.vehicle_rtt.get("vehicle") or {}
+    if vehicle.get("p95_ms") is not None:
+        print(f"  vehicle RTT : p50 {vehicle.get('p50_ms')} ms   "
+              f"p95 {vehicle.get('p95_ms')} ms  （飛行前点検での実測）")
+    jev = outcome.vehicle_rtt.get("jev") or {}
+    if jev.get("p95_ms") is not None:
+        print(f"  Jev RTT     : p95 {jev.get('p95_ms')} ms  （飛行前点検での実測）")
+    _print_flight_jev_rtt(outcome)
+
+
+def _print_flight_jev_rtt(outcome) -> None:
+    """Jev's round trips during the flight itself, which the preflight's
+    three samples cannot stand in for.
+    飛行そのものでの Jev の往復時間。点検の 3 回では代わりにならない。"""
+    pilot = outcome.pilot
+    if pilot is None:
+        return
+    latencies = [row["judgement"].latency_ms for row in pilot.decisions
+                 if row["judgement"] is not None]
+    overdue = sum(1 for row in pilot.decisions
+                  if row["judgement"] is not None
+                  and row["judgement"].error == "deadline exceeded")
+    if not latencies:
+        return
+    print(f"  Jev in flight / 飛行中の往復時間 (n={len(latencies)}): "
+          f"p50 {_percentile(latencies, 50):.0f} ms   "
+          f"p95 {_percentile(latencies, 95):.0f} ms   "
+          f"max {max(latencies):.0f} ms")
+    print(f"  over deadline / 期限超過: {overdue}")
+
+
+# =============================================================================
 # sf pilot say
 # =============================================================================
 def run_say(args: argparse.Namespace) -> int:
     """Translate an instruction into steps, then fly them if asked.
     指示を手順に変換し、求められれば飛ばす。"""
+    if args.real:
+        return _refuse_real("say")
     if args.eval_file:
         return _run_eval(args)
     if not args.instruction:
@@ -1394,6 +1872,9 @@ def run_mission(args: argparse.Namespace) -> int:
     する。この分け方は `lib/sfcli/commands/` に対するリポジトリの方針であり、
     同じ経路を argparse を通さず試験から飛ばせる理由でもある。
     """
+    if args.real:
+        return _refuse_real("mission")
+
     from dataclasses import replace
 
     from sfpilot.config import DEFAULT_CONFIG
@@ -1596,6 +2077,16 @@ def run_explore(args: argparse.Namespace) -> int:
     終了コードは 1 とする。操作者は掃引を求め、それを得られなかったからである。
     0 を返せば、起きていない飛行を成功として報告することになる。
     """
+    # Before the `enabled` check, because "real hardware is run-only" is the
+    # answer to what was asked. Reporting that exploration is disabled
+    # instead would tell the operator to go and lift a restriction that
+    # would not get them a real flight either.
+    # `enabled` の確認より先に置く。問われたことへの答えは「実機は run のみ」
+    # だからである。代わりに「探索は無効」と告げれば、解いたところで実機の飛行は
+    # 得られない制限を解きに行かせることになる。
+    if args.real:
+        return _refuse_real("explore")
+
     from sfpilot.config import DEFAULT_CONFIG
 
     config = DEFAULT_CONFIG

@@ -171,12 +171,64 @@ def _parse(argv: list) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def test_run_without_sils_is_refused_before_anything_is_launched():
-    """Real hardware is P5: `run` without --sils fails, it does not fly.
-    実機は P5。--sils 無しの `run` は飛ばずに失敗すること。"""
+def test_run_without_a_target_is_refused_before_anything_is_launched():
+    """`run` with neither --sils nor --real fails and names both.
+
+    Since P5 there are two places to fly, so silence is no longer a
+    request for the only one: it is an unanswered question, and guessing
+    at it would either start an emulator nobody asked for or take off.
+
+    --sils も --real も無い `run` は、両方を名指しして失敗すること。
+
+    P5 以降、飛ばす先は 2 つある。無指定はもはや唯一の選択肢への要求ではなく、
+    答えられていない問いである。推測すれば、誰も求めていないエミュレータを
+    起動するか、離陸させるかのどちらかになる。
+    """
     args = _parse(["pilot", "run", "--fake"])
 
     assert pilot_cmd.run_run(args) == 1
+
+
+def test_run_refuses_both_targets_at_once():
+    """--sils with --real fails: there is one aircraft to fly, not two.
+    --sils と --real の同時指定は失敗すること。飛ばす機体は 1 つである。"""
+    args = _parse(["pilot", "run", "--sils", "--real", "--fake"])
+
+    assert pilot_cmd.run_run(args) == 1
+
+
+def test_preflight_only_is_refused_without_real():
+    """--preflight-only on a SILS run fails: SILS has no preflight.
+
+    Accepted by the parser and refused here, so the answer is the reason
+    rather than argparse's "unrecognized arguments", which reads as a typo.
+
+    SILS の実行での --preflight-only は失敗すること。SILS に飛行前点検は無い。
+
+    引数解釈では受け付け、ここで拒否する。答えが、打ち間違いに読める argparse の
+    「unrecognized arguments」ではなく理由になるようにするためである。
+    """
+    args = _parse(["pilot", "run", "--sils", "--preflight-only", "--fake"])
+
+    assert pilot_cmd.run_run(args) == 1
+
+
+def test_the_flight_length_is_not_defaulted_at_the_parser():
+    """--duration defaults to None, so each mode supplies its own.
+
+    A SILS rehearsal runs a minute and a first real hover runs 20 s
+    (`RealFlightConfig.default_duration_s`). Defaulting here would put the
+    real flight's length in the CLI instead of beside the reason it was
+    chosen.
+
+    --duration の既定は None であり、長さは各モードが与えること。
+
+    SILS の予行は 1 分、最初の実機ホバリングは 20 秒
+    （`RealFlightConfig.default_duration_s`）である。ここで既定値を与えれば、
+    実機の飛行の長さが、それを選んだ理由の傍らではなく CLI に置かれる。
+    """
+    assert _parse(["pilot", "run", "--sils", "--fake"]).duration is None
+    assert _parse(["pilot", "run", "--real", "--fake"]).duration is None
 
 
 def test_run_defaults_to_the_nominal_scene():
@@ -396,3 +448,96 @@ def test_the_mission_time_limit_defaults_to_the_configured_one():
     """With no override the route uses config.py's limit, not a literal here.
     上書きが無ければ config.py の上限を使い、ここの直書き値は使わないこと。"""
     assert _parse(["pilot", "mission", "square", "--sils"]).duration is None
+
+
+# =============================================================================
+# Hardware is `run` only / 実機は run のみ
+# =============================================================================
+
+def test_say_mission_and_explore_all_refuse_hardware():
+    """Only `sf pilot run --real` flies hardware; the other three refuse.
+
+    Each of the three commands the aircraft to MOVE -- an instruction's
+    steps, a route's legs, a sweep's turns -- and no commanded move has
+    been flown on hardware. P5's first stage deliberately covers only the
+    flight whose every command has been: take off, hover, land
+    (docs/plans/jev-autopilot.md §4.12).
+
+    実機を飛ばせるのは `sf pilot run --real` だけであり、他の 3 つは拒否すること。
+
+    3 つはいずれも機体に**移動**を指令する ―― 指示の手順、経路の区間、掃引の旋回
+    ―― が、指令された移動は実機で一度も飛ばされていない。P5 の第 1 段階は、すべての
+    指令が確かめられている唯一の飛行、すなわち離陸・ホバリング・着陸だけを意図して
+    対象にしている（docs/plans/jev-autopilot.md §4.12）。
+    """
+    refusals = (
+        (pilot_cmd.run_say, ["pilot", "say", "--real", "--fake", "前に進んで"]),
+        (pilot_cmd.run_mission, ["pilot", "mission", "line", "--real", "--fake"]),
+        (pilot_cmd.run_explore, ["pilot", "explore", "--real", "--fake"]),
+    )
+
+    for handler, argv in refusals:
+        assert handler(_parse(argv)) == 1
+
+
+def test_the_refusal_says_real_hardware_is_run_only(capsys):
+    """The message names `run` as the way to fly hardware.
+
+    A refusal that only said "no" would leave the operator looking for a
+    spelling of the flag that works, when what they need is the other
+    subcommand.
+
+    拒否の文言が、実機を飛ばす手段として `run` を名指しすること。
+
+    「駄目だ」とだけ言う拒否は、操作者に「通る綴り」を探させる。必要なのは別の
+    サブコマンドのほうである。
+    """
+    pilot_cmd.run_say(_parse(["pilot", "say", "--real", "--fake", "前に進んで"]))
+
+    output = capsys.readouterr().out + capsys.readouterr().err
+    assert "run" in output
+
+
+def test_explore_refuses_hardware_before_it_mentions_being_disabled(capsys):
+    """`explore --real` answers what was asked, not that exploration is off.
+
+    Reporting the `enabled` flag instead would send the operator to lift a
+    restriction that would not get them a real flight either.
+
+    `explore --real` は、探索が無効であることではなく、問われたことに答えること。
+
+    代わりに `enabled` の話をすれば、解いたところで実機の飛行は得られない制限を
+    解きに行かせることになる。
+    """
+    pilot_cmd.run_explore(_parse(["pilot", "explore", "--real", "--fake"]))
+
+    output = capsys.readouterr().out
+    assert "run" in output
+    assert "ヨー" not in output
+
+
+def test_yes_does_not_skip_the_real_confirmation(monkeypatch):
+    """`--real --yes` still refuses when there is nobody to confirm.
+
+    Everywhere else in `sf pilot`, `--yes` skips the prompt, and there that
+    is right: those flights are SILS, where an unattended `--yes` in a
+    script is a reasonable thing to want. A real flight is not unattended
+    by definition -- the checklist asks whether a person is watching and
+    whether a person is holding the transmitter -- so a flag meaning
+    "nobody needs to be asked" asserts the opposite of what it is for.
+
+    `--real --yes` でも、確認する人が居なければ拒否すること。
+
+    `sf pilot` の他の場所では `--yes` が確認を省略するし、そこではそれが正しい。
+    あちらは SILS であり、スクリプト中の無人の `--yes` は望んで当然のものである。
+    実機の飛行は定義上、無人ではない —— 確認事項は、人が見ているか、人が送信機を
+    持っているかを問う —— ので、「誰にも尋ねる必要が無い」と述べる指定は、その
+    目的の正反対を主張することになる。
+    """
+    from sfpilot.config import real_config
+
+    monkeypatch.setattr(pilot_cmd.sys.stdin, "isatty", lambda: False)
+
+    args = _parse(["pilot", "run", "--real", "--yes", "--fake"])
+
+    assert pilot_cmd._real_confirmed(args, real_config()) is False
