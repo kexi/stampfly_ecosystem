@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<!--
+  sf pilot - -web — the autopilot's flight and its reasoning, side by side.
+
+  The 3D view is NOT a copy: it is the shared module /asset/stampfly3d.js,
+  which `sf telemetry - -web` mounts too (extracted from that page in
+  2026-09-19). three.js and the STL parts are served locally from
+  simulator/shared/assets -- NOT a CDN. See web_assets.py for why.
+
+  sf pilot - -web — 自動操縦の飛行と、その判断の根拠を並べて表示する。
+
+  3D 表示は複製ではなく、共有モジュール /asset/stampfly3d.js である
+  （`sf telemetry - -web` も同じものを読み込む。2026-09-19 に同ページから切り
+  出した）。three.js と STL はローカル配信で CDN ではない（理由は web_assets.py）。
+-->
+<html lang="ja"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StampFly autopilot — Jev の判断</title>
+<script type="importmap">
+{ "imports": {
+    "three": "/vendor/three/three.module.min.js",
+    "three/addons/": "/vendor/three/addons/"
+} }
+</script>
+<style>
+/* Light and dark both supported: a workshop projector is usually light,
+   a desk at night is usually dark. One token set, redefined per scheme.
+   明暗どちらにも対応する（講習の投影は明るい部屋、夜の机は暗い）。
+   トークンを 1 組定義し、配色ごとに定義し直す。 */
+:root{
+  --bg:#f4f6f9; --panel:#ffffff; --line:#d3dae4; --ink:#161b22; --muted:#5b6673;
+  --accent:#1d6fd0; --ok:#15803d; --warn:#a16207; --bad:#c2410c; --drop:#9ca3af;
+  --bar:#e3e8ef; --shadow:0 1px 2px rgba(16,24,40,.06);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10141a; --panel:#1a212b; --line:#2a3442; --ink:#dde3ea; --muted:#7a8694;
+    --accent:#3b82f6; --ok:#22c55e; --warn:#eab308; --bad:#f97316; --drop:#6b7280;
+    --bar:#2a3442; --shadow:none;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10141a; --panel:#1a212b; --line:#2a3442; --ink:#dde3ea; --muted:#7a8694;
+  --accent:#3b82f6; --ok:#22c55e; --warn:#eab308; --bad:#f97316; --drop:#6b7280;
+  --bar:#2a3442; --shadow:none;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);margin:0;padding:16px;
+     font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
+h1{font-size:15px;margin:0 0 10px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.muted{color:var(--muted)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+      padding:10px 12px;box-shadow:var(--shadow)}
+.pill{padding:2px 9px;border-radius:999px;background:var(--bar);font-size:12px}
+.pill.FLYING{background:var(--ok);color:#fff}
+.pill.LANDING{background:var(--bad);color:#fff}
+.pill.TAKEOFF,.pill.ARMED_GROUND{background:var(--warn);color:#fff}
+
+/* Status strip: the running totals. `auto-fit` drops the column count as the
+   width does, so a tile never gets too narrow to hold its label on one line.
+   現在値の帯。`auto-fit` により幅が狭まると列数が減るので、見出しが 1 行に
+   収まらないほど細いタイルにはならない。 */
+#status{display:grid;gap:8px;margin-bottom:12px;
+        grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+#status .card{display:flex;flex-direction:column;gap:3px}
+#status .k{color:var(--muted);font-size:11px;line-height:1.2}
+#status .v{font-size:18px;font-weight:bold;line-height:1.25}
+
+/* Main split: 3D + map on the left, decisions on the right. Collapses to
+   one column below 900px so a laptop half-screen still reads.
+   主要部: 左に 3D と上から見た図、右に判断。900px 未満では 1 列にし、
+   画面半分の幅でも読めるようにする。 */
+#main{display:grid;gap:12px;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr)}
+@media (max-width:900px){ #main{grid-template-columns:1fr} }
+#canvasWrap{width:100%;aspect-ratio:4/3;position:relative;background:var(--bg);
+            border:1px solid var(--line);border-radius:6px;overflow:hidden}
+#scene{width:100%;height:100%;display:block;cursor:grab}
+#scene:active{cursor:grabbing}
+#mapWrap{margin-top:10px}
+#map{width:100%;height:auto;display:block;background:var(--bg);
+     border:1px solid var(--line);border-radius:6px}
+.hint{font-size:11px;color:var(--muted);margin-top:6px}
+.readouts{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+          gap:8px;margin-top:10px}
+.readouts div{display:flex;flex-direction:column;gap:2px}
+.readouts div span{display:block}
+.readouts .k{font-size:11px;line-height:1.2}
+.readouts .v{font-size:15px;font-weight:bold;line-height:1.25}
+
+/* Decision list: newest on top, one decision per row.
+   判断の一覧: 新しいものが上。1 判断 1 行。 */
+#decisions{max-height:72vh;overflow-y:auto;display:flex;flex-direction:column;gap:8px}
+.dec{border:1px solid var(--line);border-left-width:4px;border-radius:6px;padding:8px 10px}
+.dec.accept{border-left-color:var(--ok)}
+.dec.hover{border-left-color:var(--warn)}
+.dec.land{border-left-color:var(--bad)}
+.dec.discard{border-left-color:var(--drop)}
+.dec .head{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;
+           align-items:baseline}
+.dec .t{color:var(--muted);font-size:11px}
+.dec .verdict{font-weight:bold}
+.dec .reason{color:var(--muted);font-size:11px;margin-top:2px;word-break:break-word}
+.dec .cmd{margin-top:4px;font-size:12px}
+.dec .cmd code{background:var(--bar);padding:1px 5px;border-radius:4px}
+.dec .late{color:var(--bad);font-weight:bold}
+.sit{margin-top:5px;font-size:11px;color:var(--muted);word-break:break-word}
+.sit b{color:var(--accent);font-weight:bold}   /* what changed / 変わった区分 */
+
+/* Probability bars for the three safety choices.
+   安全行動 3 択の確率の棒。 */
+.probs{margin-top:5px;display:grid;gap:2px}
+.prob{display:grid;grid-template-columns:62px 1fr 42px;gap:6px;align-items:center;
+      font-size:11px}
+/* Both the track and its fill must be block boxes: they are <span>s, and an
+   INLINE box ignores width and height, so the bar would render 0px wide
+   however large its percentage is.
+   トラックと中身はどちらもブロックにする。いずれも <span> であり、インライン
+   ボックスは width・height を無視するため、割合をいくつにしても棒の幅が 0px
+   になってしまう。 */
+.prob .track{display:block;height:9px;background:var(--bar);
+             border-radius:3px;overflow:hidden}
+.prob .fill{display:block;height:100%;background:var(--accent)}
+.prob.pick .fill{background:var(--ok)}
+.prob .pc{text-align:right;color:var(--muted)}
+.empty{color:var(--muted);padding:16px;text-align:center}
+</style></head><body>
+
+<h1>StampFly autopilot
+ <span class="pill" id="phasePill">--</span>
+ <span class="muted" id="meta">接続中… / connecting</span>
+ <span class="muted" id="ctx"></span>
+</h1>
+
+<div id="status">
+ <div class="card"><span class="k">飛行フェーズ / phase</span><span class="v" id="sPhase">--</span></div>
+ <div class="card"><span class="k">実行中 / step・leg</span><span class="v" id="sStep">--</span></div>
+ <div class="card"><span class="k">判断 / decisions</span><span class="v" id="sDec">0</span></div>
+ <div class="card"><span class="k">待機の連続 / hold</span><span class="v" id="sHold">0.0 s</span></div>
+ <div class="card"><span class="k">往復 p50 / p95</span><span class="v" id="sLat">-- / --</span></div>
+ <div class="card"><span class="k">期限超過 / overdue</span><span class="v" id="sOver">0</span></div>
+</div>
+
+<div id="main">
+ <div>
+  <div class="card">
+   <div class="muted">3D view — SILS GUI・sf telemetry と同一</div>
+   <div id="canvasWrap"><canvas id="scene"></canvas></div>
+   <div class="hint">ドラッグ=回転 / ホイール・ピンチ=ズーム / 右ドラッグ=パン</div>
+   <div class="readouts">
+    <div><span class="k muted">alt [m]</span><span class="v" id="rAlt">--</span></div>
+    <div><span class="k muted">N / E [m]</span><span class="v" id="rPos">--</span></div>
+    <div><span class="k muted">roll/pitch [deg]</span><span class="v" id="rAtt">--</span></div>
+    <div><span class="k muted">battery [%]</span><span class="v" id="rBatt">--</span></div>
+    <div><span class="k muted">ToF [m]</span><span class="v" id="rTof">--</span></div>
+    <div><span class="k muted">前方 / front [m]</span><span class="v" id="rFront">--</span></div>
+   </div>
+  </div>
+  <div class="card" id="mapWrap">
+   <div class="muted">上から見た図 / horizontal track — 離陸点・飛行領域 2m・経路</div>
+   <canvas id="map" width="520" height="520"></canvas>
+  </div>
+ </div>
+
+ <div class="card">
+  <div class="muted">判断の流れ / decisions（新しいものが上）</div>
+  <div id="decisions"><div class="empty">判断を待っています… / waiting</div></div>
+ </div>
+</div>
+
+<script type="module">
+// ============================================================================
+// Live view: one SSE stream drives the 3D view, the map and the decision list.
+// ライブ表示: 1 本の SSE が 3D 表示・上から見た図・判断一覧を動かす。
+// ============================================================================
+import { mountStampFly3D } from "/asset/stampfly3d.js";
+
+const R2D = 180 / Math.PI;
+const MAX_DECISIONS = 120;          // keep the DOM small / DOM を小さく保つ
+const ENVELOPE_R_M = 2.0;           // config.py's horizontal envelope / 水平飛行領域
+// ForwardConfig.safety_margin_m: the FLOOR under the stopping distance, which
+// is what the code stops at when the craft is barely moving. Mirrored here
+// only to colour the forward ray; the decision itself is made in Python, and
+// this page never decides anything.
+//
+// The real threshold is not a constant any more -- it grows with the closing
+// speed (`Monitor.stop_distance`), so the code can stop further out than this
+// line is drawn. The page deliberately shows the FLOOR rather than tracking
+// the live figure: a boundary that moved every cycle would read as flicker,
+// and the one thing a viewer needs from this colour is "the craft is at the
+// distance where stopping begins". See jev-autopilot.md §4.9.10.
+//
+// ForwardConfig.safety_margin_m。停止距離の**下限**であり、機体がほとんど動いて
+// いないときにコードが止まる距離である。ここに写すのは前方の線の色を変えるため
+// だけで、判断そのものは Python 側にあり、このページは何も決めない。
+//
+// 実際のしきい値はもはや定数ではなく、接近速度とともに伸びる
+//（`Monitor.stop_distance`）ので、コードはこの線より手前で止まりうる。ページが
+// 現在値ではなく**下限**を描くのは意図的である。毎周期動く境界はちらつきとして
+// しか読めず、この色から見る側が必要とするのは「停止が始まる距離に機体が居る」
+// ことだけだからである。jev-autopilot.md 4.9.10 節参照。
+const FORWARD_STOP_M = 0.5;
+const $ = (id) => document.getElementById(id);
+const fmt = (x, d = 2) => (x >= 0 ? "+" : "") + x.toFixed(d);
+
+const view = mountStampFly3D({ canvas: $("scene"), wrap: $("canvasWrap") });
+
+// --- horizontal track (top view) --------------------------------------------
+// Drawn here rather than in the 3D scene because a route is read far better
+// from directly above than from a perspective camera.
+// 上から見た図はここで描く。経路は透視投影より真上から見るほうが読み取り
+// やすいためである。
+const track = [];
+let missionLegs = [], currentLeg = -1;
+// The newest forward reading and the heading it was taken on, or null when
+// the sensor measured nothing. Only the LATEST is kept: a forward distance
+// describes where the craft is now, and a trail of old rays would draw
+// obstacles at positions the craft has already left.
+// 最新の前方の読み値と、それを取った機首方位。測れなかったときは null。最新の
+// 1 本だけを保つ: 前方距離は「今どこに居るか」を語るものであり、古い線を並べると、
+// 機体が既に離れた位置に障害物を描くことになる。
+let forwardHit = null;   // {n, e, yaw, metres}
+// The latest look around, drawn as a fan of sectors around the point the
+// sweep was taken from. Only the newest is kept, for the same reason the
+// forward ray keeps only the newest: an older fan describes a room the
+// craft has since travelled through.
+//
+// The sector's radius is the nearest surface that bearing found, so the
+// fan's SHAPE is the shape of the space around the aircraft. A bearing
+// nothing could be measured on has no radius, and is drawn hollow at the
+// sensor's range instead of solid at zero -- "we looked and could not
+// tell" must not look like "there is a wall touching us".
+//
+// 最新の見回し。掃引を行った地点のまわりに扇形の集まりとして描く。最新の 1 つ
+// だけを保つのは、前方の線と同じ理由による。古い扇形は、機体がその後に通り抜けて
+// しまった部屋を語る。
+//
+// 扇形の半径は、その方位が見つけた最も近い面までの距離である。したがって扇形の
+// **形**が、機体のまわりの空間の形になる。何も測れなかった方位には半径が無く、
+// 0 の塗りではなくセンサの射程に輪郭だけで描く ——「見たが判別できなかった」が
+//「壁が接している」に見えてはならない。
+let sweepFan = null;     // {n, e, bearings: [{deg, clearance, metres?}]}
+// The sweep's own range, for drawing an unmeasured bearing. Mirrored from
+// Plant's `tof_front_max_m`, and used for nothing but the picture.
+// 掃引の射程。測れなかった方位を描くために使う。Plant の `tof_front_max_m` から
+// 写したもので、図を描く以外には使わない。
+const FORWARD_RANGE_M = 2.0;
+// The classification words the sectors are coloured by. They arrive from
+// Python as `monitor.FORWARD_*`, so they are compared against, never
+// built here -- a second spelling would silently colour a wall as open.
+// 扇形の色分けに使う区分の語。Python から `monitor.FORWARD_*` として届くので、
+// ここでは組み立てず比較するだけにする。綴りが 2 つあれば、壁が黙って「開けて
+// いる」の色で描かれることになる。
+const CLEAR_OPEN = "開けている";
+const CLEAR_SOMEWHAT = "やや近い";
+const CLEAR_WALL = "壁が近い";
+
+function drawMap() {
+  const cv = $("map"), ctx = cv.getContext("2d");
+  // Match the backing store to the CSS size times the device pixel ratio,
+  // or the circle, the track and the labels are drawn at one size and then
+  // stretched to another -- which reads as a blurred picture.
+  // バッキングストアを CSS 上の大きさ × 画素比に合わせる。合わせないと、円・
+  // 軌跡・文字をある大きさで描いてから別の大きさへ引き伸ばすことになり、
+  // ぼやけて見える。
+  const cssW = cv.clientWidth || 520;
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  const want = Math.round(cssW * ratio);
+  if (cv.width !== want) { cv.width = want; cv.height = want; }
+  const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+  const style = getComputedStyle(document.body);
+  const line = style.getPropertyValue("--line").trim();
+  const muted = style.getPropertyValue("--muted").trim();
+  const accent = style.getPropertyValue("--accent").trim();
+  const ok = style.getPropertyValue("--ok").trim();
+  ctx.clearRect(0, 0, W, H);
+
+  // Scale so the envelope always fits, growing if the craft leaves it.
+  // A margin is reserved so the envelope's own label is not drawn off the
+  // right edge -- the circle may reach the border, its text must not.
+  // 飛行領域が常に収まる倍率。機体が外へ出れば広げる。飛行領域の凡例が右端の外に
+  // 描かれないよう余白を確保する（円は端に達してよいが、その文字は不可）。
+  const margin = 54 * ratio;
+  let reach = ENVELOPE_R_M * 1.15;
+  for (const p of track) reach = Math.max(reach, Math.hypot(p[0], p[1]) * 1.15);
+  for (const leg of missionLegs) reach = Math.max(reach, Math.hypot(leg[0], leg[1]) * 1.15);
+  const scale = (Math.min(W, H) / 2 - margin) / reach;
+  const X = (e) => cx + e * scale;        // east -> right / 東は右
+  const Y = (n) => cy - n * scale;        // north -> up   / 北は上
+
+  ctx.strokeStyle = line; ctx.lineWidth = 1 * ratio;
+  ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy);
+  ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+
+  ctx.setLineDash([5 * ratio, 4 * ratio]); ctx.strokeStyle = muted;
+  ctx.beginPath(); ctx.arc(cx, cy, ENVELOPE_R_M * scale, 0, Math.PI * 2); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = muted;
+  ctx.font = `${11 * ratio}px ui-monospace,monospace`;
+  ctx.textAlign = "left";
+  ctx.fillText(`飛行領域 ${ENVELOPE_R_M} m`,
+               cx + ENVELOPE_R_M * scale + 4 * ratio, cy - 4 * ratio);
+  ctx.fillText("N", cx + 4 * ratio, 12 * ratio);
+
+  if (missionLegs.length) {
+    ctx.strokeStyle = muted; ctx.lineWidth = 1.5 * ratio;
+    ctx.beginPath(); ctx.moveTo(X(0), Y(0));
+    missionLegs.forEach((leg) => ctx.lineTo(X(leg[1]), Y(leg[0])));
+    ctx.stroke();
+    missionLegs.forEach((leg, i) => {
+      ctx.fillStyle = i === currentLeg ? accent : muted;
+      ctx.beginPath();
+      ctx.arc(X(leg[1]), Y(leg[0]), (i === currentLeg ? 5 : 3) * ratio, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  // The look around, as a fan of sectors. Drawn BEFORE the track and the
+  // craft so it reads as the space they sit in rather than as something
+  // painted over them.
+  //
+  // Each sector spans the step between bearings and is centred on the
+  // bearing itself, so the fan tiles the circle exactly and no direction
+  // is claimed to have been measured twice or not at all.
+  //
+  // 見回しを扇形の集まりとして描く。軌跡と機体より**先に**描き、それらの上に
+  // 塗ったものではなく、それらが在る空間として読めるようにする。
+  //
+  // 各扇形は方位の刻みぶんの角度を占め、方位そのものを中心に置く。これにより
+  // 扇形は円をちょうど敷き詰め、どの向きも「二重に測った」とも「測っていない」
+  // とも主張しない。
+  if (sweepFan && sweepFan.bearings.length) {
+    const bad = style.getPropertyValue("--bad").trim() || "#e55";
+    const span = (Math.PI * 2) / sweepFan.bearings.length;
+    sweepFan.bearings.forEach((b) => {
+      const measured = typeof b.metres === "number";
+      const radius = (measured ? b.metres : FORWARD_RANGE_M) * scale;
+      // Canvas angles run clockwise from east(+x); a bearing runs
+      // clockwise from north. The quarter turn converts between them.
+      // Canvas の角度は東(+x)から時計回り、方位は北から時計回りである。
+      // 1/4 回転がその間の変換になる。
+      const mid = (b.deg * Math.PI) / 180 - Math.PI / 2;
+      ctx.beginPath();
+      ctx.moveTo(X(sweepFan.e), Y(sweepFan.n));
+      ctx.arc(X(sweepFan.e), Y(sweepFan.n), radius, mid - span / 2, mid + span / 2);
+      ctx.closePath();
+      if (!measured) {
+        // Hollow, and dashed: an outline says "this is the edge of what we
+        // know", where a fill would say "this much space is there".
+        // 輪郭だけ、破線で描く。輪郭は「ここまでが分かっている範囲だ」と言い、
+        // 塗りなら「これだけの空間がある」と言ってしまう。
+        ctx.setLineDash([4 * ratio, 4 * ratio]);
+        ctx.strokeStyle = muted; ctx.lineWidth = 1 * ratio;
+        ctx.stroke();
+        ctx.setLineDash([]);
+        return;
+      }
+      ctx.fillStyle = b.clearance === CLEAR_WALL ? bad
+                    : b.clearance === CLEAR_SOMEWHAT ? muted : ok;
+      ctx.globalAlpha = 0.18;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = b.clearance === CLEAR_WALL ? bad : muted;
+      ctx.lineWidth = 1 * ratio;
+      ctx.stroke();
+    });
+  }
+
+  if (track.length > 1) {
+    ctx.strokeStyle = accent; ctx.lineWidth = 2 * ratio; ctx.beginPath();
+    track.forEach((p, i) => (i ? ctx.lineTo(X(p[1]), Y(p[0])) : ctx.moveTo(X(p[1]), Y(p[0]))));
+    ctx.stroke();
+  }
+  // The forward distance, as a ray from the craft along its heading ending
+  // at what the sensor found. Drawn before the craft marker so the marker
+  // sits on top of the line's origin rather than under it.
+  //
+  // Why a ray and not a number: the reading only means something together
+  // with where the craft is pointing, and the picture carries both at once.
+  // The colour follows the same threshold the stop rule uses, so what the
+  // watcher sees turn red is exactly what stops the aircraft.
+  //
+  // 前方距離を、機体から機首方位に沿って伸び、センサが見つけた点で終わる線として
+  // 描く。機体の印より先に描き、印が線の起点の上に来るようにする。
+  //
+  // 数値ではなく線にする理由: 読み値は機体がどちらを向いているかと合わせて初めて
+  // 意味を持ち、図はその両方を一度に運ぶ。色は停止則と同じしきい値に従うので、
+  // 見ている人が赤くなるのを見たそのものが、機体を止めるものである。
+  if (forwardHit) {
+    const hn = forwardHit.n + Math.cos(forwardHit.yaw) * forwardHit.metres;
+    const he = forwardHit.e + Math.sin(forwardHit.yaw) * forwardHit.metres;
+    const isNear = forwardHit.metres <= FORWARD_STOP_M;
+    ctx.strokeStyle = isNear ? style.getPropertyValue("--bad").trim() || "#e55"
+                             : muted;
+    ctx.lineWidth = 2 * ratio;
+    ctx.beginPath();
+    ctx.moveTo(X(forwardHit.e), Y(forwardHit.n));
+    ctx.lineTo(X(he), Y(hn));
+    ctx.stroke();
+    // A tick across the end marks the surface itself, so the line reads as
+    // "something is here" rather than as a direction of travel.
+    // 終端の横棒が面そのものを表す。線が「進む向き」ではなく「ここに何かがある」と
+    // 読めるようにするためである。
+    const tick = 7 * ratio;
+    ctx.beginPath();
+    ctx.arc(X(he), Y(hn), tick / 2, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Takeoff point, then the craft where it is now.
+  // 離陸点、続いて現在位置。
+  ctx.fillStyle = ok;
+  ctx.beginPath(); ctx.arc(cx, cy, 4 * ratio, 0, Math.PI * 2); ctx.fill();
+  if (track.length) {
+    const last = track[track.length - 1];
+    ctx.fillStyle = accent;
+    ctx.beginPath(); ctx.arc(X(last[1]), Y(last[0]), 5 * ratio, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
+// Redraw on resize: the backing store is sized from the CSS width, which
+// changes when the column layout does.
+// 大きさが変わったら描き直す。バッキングストアは CSS 上の幅から決めており、
+// 段組みが変われば幅も変わるためである。
+window.addEventListener("resize", () => drawMap());
+
+// --- decisions ---------------------------------------------------------------
+// The situation is shown as the WORDS the code sent to Jev, with whatever
+// changed since the previous decision emphasised: that is the whole input,
+// and seeing it change is what makes a decision explicable.
+// 状況は、コードが Jev に送った**語**で示し、前回から変わった区分を強調する。
+// それが入力の全部であり、その変化が見えることが、判断を説明可能にする。
+let previousSituation = {};
+
+function flatten(state, prefix = "") {
+  const out = {};
+  for (const [k, v] of Object.entries(state || {})) {
+    if (v && typeof v === "object") Object.assign(out, flatten(v, `${prefix}${k}.`));
+    else out[`${prefix}${k}`] = v;
+  }
+  return out;
+}
+
+// Every value below reaches this page from the event stream, and part of it is
+// text a person typed (the spoken instruction of `sf pilot say`, leg names from
+// a mission file). It is interpolated into markup, so it is escaped first.
+// Why not build DOM nodes with textContent everywhere: the rows are assembled
+// as strings in one place, and one escape helper keeps that readable; the rule
+// is simply "no interpolation without esc()".
+// 以下の値はすべて出来事の流れから届き、その一部は人が打った文字列である
+// （`sf pilot say` の指示文、ミッションファイルの区間名）。マークアップへ差し込む
+// ため、先にエスケープする。textContent で DOM を組まない理由: 行は 1 か所で
+// 文字列として組んでおり、エスケープ関数 1 つのほうが読みやすい。規則は
+// 「esc() を通さずに差し込まない」だけである。
+const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
+
+function situationHtml(state) {
+  const flat = flatten(state);
+  const parts = [];
+  for (const [k, v] of Object.entries(flat)) {
+    const name = k.split(".").pop();
+    const changed = previousSituation[k] !== undefined && previousSituation[k] !== v;
+    const pair = `${esc(name)}: ${esc(v)}`;
+    parts.push(changed ? `<b>${pair}</b>` : pair);
+  }
+  previousSituation = flat;
+  return parts.join(" · ");
+}
+
+const VERDICT_CLASS = { accept: "accept", hold: "hover", hover: "hover",
+                        land: "land", discard: "discard", override: "discard" };
+
+function probsHtml(answers) {
+  const safety = answers && answers.safety_action;
+  if (!safety || !safety.probabilities) return "";
+  const rows = Object.entries(safety.probabilities)
+    .sort((a, b) => b[1] - a[1])
+    .map(([choice, p]) => {
+      const pick = choice === safety.choice ? " pick" : "";
+      // Number() so a non-numeric probability cannot carry markup into style.
+      // 数値でない確率が style へマークアップを持ち込めないよう Number() を通す。
+      const percent = (Math.min(Math.max(Number(p) || 0, 0), 1) * 100).toFixed(0);
+      return `<div class="prob${pick}"><span>${esc(choice)}</span>`
+           + `<span class="track"><span class="fill" style="width:${percent}%"></span></span>`
+           + `<span class="pc">${percent}%</span></div>`;
+    });
+  return `<div class="probs">${rows.join("")}</div>`;
+}
+
+function addDecision(ev) {
+  const list = $("decisions");
+  const placeholder = list.querySelector(".empty");
+  if (placeholder) placeholder.remove();
+
+  const verdict = ev.arbiter_verdict || {};
+  const answers = ev.answers || {};
+  const node = document.createElement("div");
+  node.className = "dec " + (VERDICT_CLASS[verdict.action] || "");
+
+  const late = answers.error === "deadline exceeded";
+  const latency = ev.latency_ms === null || ev.latency_ms === undefined
+    ? "--" : `${Number(ev.latency_ms).toFixed(0)} ms`;
+  const abnormal = answers.abnormal && answers.abnormal.noul !== null
+    && answers.abnormal.noul !== undefined
+    ? ` · abnormal ${(Number(answers.abnormal.noul) * 100).toFixed(0)}%` : "";
+  const nextMove = answers.next_move
+    ? ` · next_move <b>${esc(answers.next_move.choice)}</b>` : "";
+
+  node.innerHTML =
+    `<div class="head"><span class="verdict">${esc(verdict.action || "--")}</span>`
+    + `<span class="t">t=${Number(ev.t_mono ?? 0).toFixed(1)}s · `
+    + `<span class="${late ? "late" : ""}">${late ? "期限超過 " : ""}${latency}</span></span></div>`
+    + `<div class="reason">${esc(verdict.reason)}`
+    + (verdict.source ? ` <span class="muted">[${esc(verdict.source)}]</span>` : "") + `</div>`
+    + probsHtml(answers)
+    + (abnormal || nextMove ? `<div class="reason">${abnormal}${nextMove}</div>` : "")
+    + (ev.command ? `<div class="cmd">送信 / sent <code>${esc(ev.command)}</code></div>` : "")
+    + `<div class="sit">${situationHtml(ev.state)}</div>`;
+
+  list.prepend(node);                                   // newest on top / 新しいものが上
+  while (list.children.length > MAX_DECISIONS) list.lastChild.remove();
+}
+
+// --- status ------------------------------------------------------------------
+let holdSince = null, holdSeconds = 0;
+
+function renderStatus(ev) {
+  if (ev.phase !== undefined) { $("sPhase").textContent = ev.phase; $("phasePill").textContent = ev.phase; }
+  if (ev.step !== undefined) $("sStep").textContent = ev.step || "—";
+  if (ev.decisions !== undefined) $("sDec").textContent = ev.decisions;
+  if (ev.overdue !== undefined) $("sOver").textContent = ev.overdue;
+  const p50 = ev.latency_p50_ms, p95 = ev.latency_p95_ms;
+  $("sLat").textContent = p50 === null || p50 === undefined
+    ? "-- / --" : `${p50.toFixed(0)} / ${(p95 ?? p50).toFixed(0)} ms`;
+}
+
+function noteHold(action) {
+  const holding = action === "hover" || action === "hold";
+  if (!holding) { holdSince = null; holdSeconds = 0; }
+  else if (holdSince === null) holdSince = performance.now();
+  $("sHold").textContent = holdSince === null
+    ? "0.0 s" : `${((performance.now() - holdSince) / 1000).toFixed(1)} s`;
+}
+setInterval(() => { if (holdSince !== null) noteHold("hover"); }, 200);
+
+// --- the stream --------------------------------------------------------------
+let sampleCount = 0;
+
+const es = new EventSource("/events");
+es.onmessage = (raw) => {
+  const ev = JSON.parse(raw.data);
+  if (ev.kind === "sample") {
+    sampleCount++;
+    view.update({
+      pos_n: ev.pos_n ?? 0, pos_e: ev.pos_e ?? 0, alt: ev.altitude_m ?? 0,
+      roll: ev.roll ?? 0, pitch: ev.pitch ?? 0, yaw: ev.yaw ?? 0,
+    });
+    $("meta").textContent = `t=${(ev.t ?? 0).toFixed(1)}s · samples ${sampleCount}`;
+    if (ev.flight_state) { $("phasePill").textContent = ev.flight_state;
+                           $("phasePill").className = "pill " + ev.flight_state; }
+    $("rAlt").textContent  = ev.altitude_m === undefined ? "--" : fmt(ev.altitude_m);
+    $("rPos").textContent  = ev.pos_n === undefined ? "--"
+      : `${fmt(ev.pos_n, 1)} ${fmt(ev.pos_e ?? 0, 1)}`;
+    $("rAtt").textContent  = ev.roll === undefined ? "--"
+      : `${fmt(ev.roll * R2D, 0)} ${fmt(ev.pitch * R2D, 0)}`;
+    $("rBatt").textContent = ev.battery_pct === undefined ? "--" : ev.battery_pct.toFixed(0);
+    $("rTof").textContent  = ev.tof_m === undefined ? "--" : ev.tof_m.toFixed(2);
+    $("rFront").textContent = ev.tof_front_m === undefined
+      ? "--" : ev.tof_front_m.toFixed(2);
+    if (ev.pos_n !== undefined && ev.pos_e !== undefined) {
+      track.push([ev.pos_n, ev.pos_e]);
+      if (track.length > 4000) track.shift();
+      // A missing reading clears the ray rather than leaving the last one
+      // drawn: a stale obstacle on the picture is worse than none, because
+      // it looks exactly like a measured one.
+      // 読み値が無いときは線を消す。直前の線を残さない: 図に残った古い障害物は、
+      // 実測したものとまったく同じに見えるぶん、何も無いより悪い。
+      forwardHit = ev.tof_front_m === undefined ? null : {
+        n: ev.pos_n, e: ev.pos_e, yaw: ev.yaw ?? 0, metres: ev.tof_front_m,
+      };
+      drawMap();
+    }
+    return;
+  }
+  if (ev.kind === "decision") {
+    addDecision(ev);
+    noteHold((ev.arbiter_verdict || {}).action);
+    return;
+  }
+  if (ev.kind === "status") { renderStatus(ev); return; }
+  if (ev.kind === "sweep") {
+    // Replaces the previous fan rather than adding to it: only the newest
+    // look around describes where the craft is now.
+    // 前の扇形に足すのではなく置き換える。今いる場所を語るのは、最新の見回し
+    // だけだからである。
+    sweepFan = { n: ev.n ?? 0, e: ev.e ?? 0, bearings: ev.bearings || [] };
+    $("sStep").textContent = `見回し / look around (${sweepFan.bearings.length})`;
+    drawMap();
+    return;
+  }
+  if (ev.kind === "phase") {
+    if (ev.legs) { missionLegs = ev.legs; }
+    if (ev.leg_index !== undefined) currentLeg = ev.leg_index;
+    if (ev.label) $("sStep").textContent = ev.label;
+    drawMap();
+  }
+};
+es.onerror = () => { $("meta").textContent = "接続が切れました — 再接続中 / reconnecting"; };
+
+// What this flight is, shown once: the scene, the judge, where it records.
+// この飛行が何かを 1 度だけ表示する（場面・判断役・記録先）。
+fetch("/context").then((r) => r.json()).then((ctx) => {
+  const bits = [];
+  if (ctx.command) bits.push(ctx.command);
+  if (ctx.scene) bits.push(`scene=${ctx.scene}`);
+  if (ctx.judge) bits.push(ctx.judge);
+  $("ctx").textContent = bits.join(" · ");
+  if (ctx.legs) { missionLegs = ctx.legs; drawMap(); }
+}).catch(() => {});
+
+drawMap();
+</script>
+</body></html>

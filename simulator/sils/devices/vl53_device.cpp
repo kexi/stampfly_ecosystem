@@ -122,13 +122,23 @@ struct State {
     uint32_t frame      = 0xFFFFFFFF; // free-running frame index (first MODE_START -> 0); NON-wrapping
     float    pushed_mm  = -1.0f;      // board-pushed Plant distance [mm] (-1 = none)
 };
-State g_st;
+// One chip state per physical part. See vl53_device.hpp's `Part` for why these
+// must not be shared: the gen4 decode is stateful across frames.
+// 物理的な部品ごとに 1 つのチップ状態。共有してはならない理由はヘッダの `Part`
+// を参照（gen4 の復号はフレームをまたいで状態を持つ）。
+State g_bottom_st;
+State g_front_st;
+
+State& state_of(Part part)
+{
+    return (part == Part::Front) ? g_front_st : g_bottom_st;
+}
 
 // Resolve the target down-range distance [mm]: the env override SILS_VL53_TEST_MM
 // (cached once) wins; otherwise the last board-pushed Plant distance; otherwise 0.
 // 目標下向き距離[mm]: 環境変数 SILS_VL53_TEST_MM（一回キャッシュ）が優先、無ければ
 // 直近にボードが渡した Plant 距離、無ければ 0。
-float target_mm()
+float target_mm(const State& st)
 {
     static float override_mm = -1.0f;
     static bool  checked = false;
@@ -137,8 +147,8 @@ float target_mm()
         const char* e = std::getenv("SILS_VL53_TEST_MM");
         if (e != nullptr && e[0] != '\0') override_mm = (float)std::atof(e);
     }
-    if (override_mm >= 0.0f)    return override_mm;
-    if (g_st.pushed_mm >= 0.0f) return g_st.pushed_mm;
+    if (override_mm >= 0.0f)  return override_mm;
+    if (st.pushed_mm >= 0.0f) return st.pushed_mm;
     return 0.0f;
 }
 
@@ -162,12 +172,12 @@ void pack_bin(uint8_t* d, uint32_t v)
 // state settles (frames 0,1=6 NO_WRAP_CHECK, frame 2=4 transient, frame 3+=0).
 // 83バイト histogram を構築。ambient floor＋サブbin分解パルス（gen4 復号重心が距離を符号化）。
 // b0/b0+1 の2分割で重心を連続移動→復号レンジが ~±17mm で追従（単峰±96mm 比）。
-void fill_histogram(uint8_t* d, size_t n)
+void fill_histogram(uint8_t* d, size_t n, const State& st)
 {
     std::memset(d, 0, n);
     if (n < (size_t)HIST_BYTES) return;
 
-    float dist_mm = target_mm();
+    float dist_mm = target_mm(st);
     if (dist_mm < 0.0f) dist_mm = 0.0f;
 
     // Beyond the sensor's usable histogram range there is NO return pulse: a real
@@ -193,7 +203,7 @@ void fill_histogram(uint8_t* d, size_t n)
     // このフレームをドライバがどちらの設定で復号するか。rd_timing_status は最初の2フレームは0
     // (設定A)、以後毎フレーム反転 → A,A,B,A,B,…（設定B=period49152/amb0 は frame 2,4,6,…）。
     // d[3] のパリティは uint8 wrap で desync するため、非wrap の自前フレーム番号で位相を固定する。
-    const bool config_b = (g_st.frame >= 2u) && ((g_st.frame % 2u) == 0u);
+    const bool config_b = (st.frame >= 2u) && ((st.frame % 2u) == 0u);
     const int  strip    = config_b ? 0 : AMBIENT_BIN_STRIP;  // ambient bins: 0 (B) vs 4 (A)
 
     uint32_t bins[24];
@@ -238,7 +248,7 @@ void fill_histogram(uint8_t* d, size_t n)
     d[0] = 0x03;                    // interrupt_status (cosmetic)
     d[1] = 0x09;                    // range_status = RANGECOMPLETE (no abort)
     d[2] = 0x00;                    // report_status
-    d[3] = g_st.stream;             // stream_count (advances per frame)
+    d[3] = st.stream;               // stream_count (advances per frame)
     d[4] = 0x00; d[5] = 0xC0;       // dss_actual_effective_spads = 192 (BE)
     for (int k = 0; k < 24; ++k) pack_bin(d + 6 + 3 * k, bins[k]);
     // phasecal_result__reference_phase (BE u16). config A: 0 -> zdp 22528. config B:
@@ -254,17 +264,18 @@ void fill_histogram(uint8_t* d, size_t n)
 
 }  // namespace
 
-void set_distance_mm(float mm)
+void set_distance_mm(float mm, Part part)
 {
-    g_st.pushed_mm = mm;
+    state_of(part).pushed_mm = mm;
 }
 
 // One VL53 I2C transaction. 16-bit BE register pointer in wbuf[0..1].
 // VL53 の1 I2Cトランザクション。16bit BE レジスタポインタは wbuf[0..1]。
-int xfer(const uint8_t* wbuf, size_t wlen, uint8_t* rbuf, size_t rlen)
+int xfer(const uint8_t* wbuf, size_t wlen, uint8_t* rbuf, size_t rlen, Part part)
 {
+    State& st = state_of(part);
     if (wbuf != nullptr && wlen >= 2) {
-        g_st.ptr = (uint16_t)((wbuf[0] << 8) | wbuf[1]);
+        st.ptr = (uint16_t)((wbuf[0] << 8) | wbuf[1]);
     }
     // Write-only (transmit): config writes — ACK. A real sensor latches a NEW result
     // (incrementing result__stream_count) when a measurement (re)starts. The driver
@@ -278,27 +289,27 @@ int xfer(const uint8_t* wbuf, size_t wlen, uint8_t* rbuf, size_t rlen)
     // ため、0x0087 を含む書き込みで stream_count を進める（先頭ポインタは下位アドレスなので
     // 完全一致では捕捉できない）。
     if (rbuf == nullptr) {
-        const uint16_t write_end = (uint16_t)(g_st.ptr + (wlen >= 2 ? wlen - 2 : 0));
-        if (g_st.ptr <= REG_MODE_START && REG_MODE_START < write_end) {
-            g_st.stream = (uint8_t)((g_st.stream + 1) & 0xFF);  // 8-bit field for d[3]
-            g_st.frame  = g_st.frame + 1u;                      // free-running; drives config A/B parity
+        const uint16_t write_end = (uint16_t)(st.ptr + (wlen >= 2 ? wlen - 2 : 0));
+        if (st.ptr <= REG_MODE_START && REG_MODE_START < write_end) {
+            st.stream = (uint8_t)((st.stream + 1) & 0xFF);  // 8-bit field for d[3]
+            st.frame  = st.frame + 1u;                      // free-running; drives config A/B parity
         }
         return 0;
     }
     // Read phase.
     std::memset(rbuf, 0, rlen);
-    if (g_st.ptr == REG_SYS_STATUS) {
+    if (st.ptr == REG_SYS_STATUS) {
         rbuf[0] = 0x01;                                       // boot complete (bit0=1)
-    } else if (g_st.ptr == REG_GPIO_STAT) {
+    } else if (st.ptr == REG_GPIO_STAT) {
         rbuf[0] = 0x00;                                       // data ready (ACTIVE_LOW: bit0=0)
-    } else if (g_st.ptr == REG_OSC_CAL && rlen >= 2) {
+    } else if (st.ptr == REG_OSC_CAL && rlen >= 2) {
         // RESULT__OSC_CALIBRATE_VAL (BE word) — MUST be non-zero or the driver's
         // set_inter_measurement_period_ms returns DIVISION_BY_ZERO during init. The
         // value only scales the (unused, back-to-back) inter-measurement timer.
         // 非ゼロ必須（0だと init で DIVISION_BY_ZERO）。back-to-back では未使用の計時係数。
         rbuf[0] = 0x06; rbuf[1] = 0x00;                       // 0x0600
-    } else if (g_st.ptr == REG_HIST) {
-        fill_histogram(rbuf, rlen);
+    } else if (st.ptr == REG_HIST) {
+        fill_histogram(rbuf, rlen, st);
     }
     // else: NVM/identity/config read-back → zeros (driver self-heals).
     return 0;

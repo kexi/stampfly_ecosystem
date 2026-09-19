@@ -11,17 +11,25 @@
  * @brief Telemetry implementation — Phase 2a UDP broadcast
  *        テレメトリ実装 — Phase 2a UDPブロードキャスト
  *
- * Sends a single 104-byte binary packet (TelemetryPacket, see telemetry.hpp
+ * Sends a single 140-byte binary packet (TelemetryPacket, see telemetry.hpp
  * static_assert) over UDP to the broadcast address 255.255.255.255:UDP_TELEMETRY_PORT
  * at 50 Hz. WiFi STA mode is owned by sf_comm; this module merely waits until WiFi
  * reports an IP address.
  *
- * 104バイトのバイナリパケット（TelemetryPacket、telemetry.hpp の static_assert 参照）を
+ * 140バイトのバイナリパケット（TelemetryPacket、telemetry.hpp の static_assert 参照）を
  * 255.255.255.255:UDP_TELEMETRY_PORT に 50 Hz でUDPブロードキャストする。WiFi STAモードは
  * sf_comm が所有しており、本モジュールは IP 取得を待つだけ。
  *
- * @design architecture.md §6 — Telemetry subsystem                     [OK]
- * @design detailed_design.md §8 — UDP telemetry packet format          [OK]
+ * Packet size does not affect cost here: lwIP's sendto() on ESP32 costs ~2.5ms
+ * per CALL regardless of payload (117B and 840B measure the same), so the 104->140B
+ * growth is free as long as the call rate stays at 50Hz. See
+ * docs/architecture/udp-telemetry-design.md §3.
+ * パケットサイズはコストに影響しない: ESP32 の lwIP sendto() はペイロードによらず
+ * 1「回」あたり約2.5ms（117B と 840B で同じ実測）。呼び出し回数が 50Hz のままなら
+ * 104→140B の増加は無償である。docs/architecture/udp-telemetry-design.md §3 参照。
+ *
+ * @design detailed_design.md §10 — UDP telemetry wire format           [OK]
+ * @design architecture.md §6 — TelemetryTask (50Hz, priority 13)       [OK]
  */
 
 #include "telemetry.hpp"
@@ -187,8 +195,23 @@ void Telemetry::update()
 // -----------------------------------------------------------------------------
 // buildPacket — fill the packet from sf::* topic latest() snapshots
 // パケット構築 — sf::* トピックの latest() スナップショットを詰める
+//
+// Split into the frozen v1 region and the appended v2 sensor block so each
+// half stays within the 50-line limit (coding_and_education.md §2).
+// 凍結された v1 部と追記した v2 センサ部に分割し、各々を50行以内に保つ
+// （coding_and_education.md §2）。
 // -----------------------------------------------------------------------------
 void Telemetry::buildPacket(TelemetryPacket& pkt)
+{
+    packBaseFields(pkt);
+    packSensorFields(pkt);
+}
+
+// -----------------------------------------------------------------------------
+// packBaseFields — the v1 region: header, estimate, IMU, control, motors
+// v1 部 — ヘッダ・推定値・IMU・制御・モータ
+// -----------------------------------------------------------------------------
+void Telemetry::packBaseFields(TelemetryPacket& pkt)
 {
     // Snapshot all topics first to minimize skew between fields.
     // フィールド間のずれを最小化するため、まず全トピックをスナップショット。
@@ -247,6 +270,126 @@ void Telemetry::buildPacket(TelemetryPacket& pkt)
     // System mode (flight state byte; sub_mode/armed are not in Phase 2a).
     // システムモード（FlightState のみ。sub_mode/armed は Phase 2a 対象外）。
     pkt.system_mode = mode.state;
+}
+
+// -----------------------------------------------------------------------------
+// packSensorFields — the v2 block: power + mirrored async sensors
+// v2 部 — 電源＋ミラーされた非同期センサ
+//
+// Reads sensor_snapshot rather than sensor_tof/flow/mag/baro directly: those
+// are destructive single-consumer queues drained by ImuTask, and a second
+// reader would steal samples from the estimator (R5). sensor_snapshot exists
+// precisely so monitors can peek without stealing.
+// sensor_tof/flow/mag/baro を直接読まず sensor_snapshot を読む: 前者は ImuTask が
+// 排出する破壊的読み出しの単一 consumer キューで、二人目の読み手は推定器から
+// サンプルを奪う（R5）。sensor_snapshot はまさに「奪わずに覗く」ために存在する。
+// -----------------------------------------------------------------------------
+void Telemetry::packSensorFields(TelemetryPacket& pkt)
+{
+    const SensorSnapshot snapshot = sensor_snapshot.latest();
+    const PowerData      power    = sensor_power.latest();
+    const uint32_t       now_us   = static_cast<uint32_t>(esp_timer_get_time());
+
+    // Freshness per sensor (R16): a mirrored value persists across cycles, so
+    // without an age check a stopped sensor would be reported as working
+    // indefinitely.
+    // Timestamps are uint32 microseconds and wrap every ~71 minutes; unsigned
+    // subtraction stays correct across that wrap, so it is used deliberately.
+    // センサ毎の鮮度（R16）: ミラー値は周期跨ぎで保持されるため、経過時間を見ないと
+    // 停止したセンサが動作中だと誤って報告され続ける。タイムスタンプは uint32 マイクロ秒で
+    // 約71分で桁あふれして 0 に戻るが、符号なし減算はその折り返しを跨いでも正しいので
+    // 意図的にそれを用いる。
+    auto is_fresh = [now_us](uint32_t stamp) -> bool {
+        if (stamp == 0) return false;                 // never published / 未発行
+        return (now_us - stamp) < kTelemSensorStaleUs;
+    };
+
+    uint8_t flags = 0;
+
+    // Power is a Latest topic like the sensor mirror, so it too keeps its last
+    // value after PowerTask stops — the age check is what stops a dead monitor
+    // from reporting a plausible voltage forever. 10Hz (100ms) is well inside
+    // the 500ms threshold.
+    // 電源もセンサミラーと同じ Latest トピックなので、PowerTask が止まっても最終値を
+    // 保持し続ける。応答しなくなった監視装置がもっともらしい電圧を報告し続けるのを
+    // 防ぐのが経過時間の判定である。10Hz（100ms）はしきい値 500ms に十分収まる。
+    pkt.voltage = power.voltage;
+    if (power.voltage > kTelemVoltageUnknown && is_fresh(power.timestamp)) {
+        flags |= TELEM_VALID_POWER;
+    }
+
+    // Bottom ToF: forward the published fact (tof_valid), do not re-derive it
+    // — detection belongs to the sensor layer, not to telemetry (INV-3).
+    // 底面 ToF: publish 済みの事実（tof_valid）をそのまま転送し、判定をやり直さない
+    // — 検出はセンサ層の責務でテレメトリの責務ではない（INV-3）。
+    pkt.tof_bottom = snapshot.tof_distance;
+    if (snapshot.tof_valid && is_fresh(snapshot.tof_timestamp)) {
+        flags |= TELEM_VALID_TOF_BOTTOM;
+    }
+
+    // Front ToF: same two-condition rule as every other mirrored sensor — the
+    // sensor's own published validity AND freshness (R16). Forward the fact,
+    // do not re-derive it (INV-3).
+    //
+    // When the front sensor is absent (not fitted, disabled by
+    // tof.front.enable, or failed to initialise on USB-only power), TofTask
+    // never publishes, so the snapshot keeps its zero-initialised fields: the
+    // stamp stays 0, the freshness check fails, and bit1 stays clear. We still
+    // send kTelemTofFrontUnavailable rather than that 0.0 so a receiver reading
+    // the raw value sees the documented "no reading" marker instead of a
+    // distance of zero metres. THE BIT REMAINS THE AUTHORITY either way.
+    //
+    // 前方 ToF: 他のミラーされたセンサと同じ 2 条件 — センサ自身が publish した
+    // 有効性「かつ」鮮度（R16）。事実を転送し、判定をやり直さない（INV-3）。
+    //
+    // 前方が無い場合（未実装、tof.front.enable による無効化、USB 給電のみでの初期化
+    // 失敗）、TofTask は publish しないのでスナップショットはゼロ初期化のまま残る:
+    // 刻印は 0 のままで鮮度判定が落ち、bit1 は立たない。それでも 0.0 ではなく
+    // kTelemTofFrontUnavailable を送るのは、生値を読む受信側に「距離 0m」ではなく
+    // 文書化された「測っていない」の印を見せるためである。いずれにせよ「正はビット」。
+    const bool front_tof_measured =
+        snapshot.tof_front_valid && is_fresh(snapshot.tof_front_timestamp);
+    pkt.tof_front = front_tof_measured ? snapshot.tof_front_distance
+                                       : kTelemTofFrontUnavailable;
+    if (front_tof_measured) {
+        flags |= TELEM_VALID_TOF_FRONT;
+    }
+
+    // Send the total itself, truncated to its low 16 bits, and let the
+    // receiver take the difference. Truncation is exactly what is wanted here
+    // — unlike a difference, a total is only ever read modulo 2^16, so the
+    // discarded high bits carry no information the receiver needs.
+    //
+    // Why not the difference since the previous packet, which this field held
+    // until 2026-09-19: UDP:5005 is a broadcast and WiFi does not retransmit
+    // broadcasts. 42% of packets were measured lost on hardware, and a
+    // difference that a lost packet was carrying is gone for good. A total
+    // survives the loss: the next packet to arrive states the whole position
+    // again. See kTelemFlowWrapSpan for the one remaining limit.
+    //
+    // 累計そのものを下位 16 ビットに切り詰めて送り、差を取るのは受信側に任せる。
+    // ここでの切り捨てはまさに望むところである — 差分と違い、累計は常に 2^16 を法と
+    // して読まれるので、捨てた上位ビットに受信側が必要とする情報は無い。
+    //
+    // なぜ 2026-09-19 までこの枠が持っていた「前回送信からの差分」をやめたか:
+    // UDP:5005 はブロードキャストで、WiFi はブロードキャストを再送しない。実機では
+    // 42% のパケットが失われており、失われたパケットが運んでいた差分は永久に戻らない。
+    // 累計なら欠損を越えて生き残る。次に届いたパケットが現在地をあらためて述べる
+    // からである。残る唯一の限界は kTelemFlowWrapSpan を参照。
+    pkt.flow_dx_total16 = static_cast<uint16_t>(snapshot.flow_dx_total);
+    pkt.flow_dy_total16 = static_cast<uint16_t>(snapshot.flow_dy_total);
+    pkt.flow_squal      = snapshot.flow_squal;
+    if (is_fresh(snapshot.flow_timestamp)) flags |= TELEM_VALID_FLOW;
+
+    pkt.mag_x = snapshot.mag[0];
+    pkt.mag_y = snapshot.mag[1];
+    pkt.mag_z = snapshot.mag[2];
+    if (is_fresh(snapshot.mag_timestamp)) flags |= TELEM_VALID_MAG;
+
+    pkt.baro_altitude = snapshot.baro_altitude;
+    if (is_fresh(snapshot.baro_timestamp)) flags |= TELEM_VALID_BARO;
+
+    pkt.valid_flags = flags;
 }
 
 // -----------------------------------------------------------------------------

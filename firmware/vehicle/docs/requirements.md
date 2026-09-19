@@ -142,8 +142,8 @@ PairingState（FlightState と並行）
 | IMU | BMI270 | SPI | 400Hz | 姿勢推定の主センサ |
 | 地磁気 | BMM150 | I2C | 25Hz | ヨー推定（研究対象） |
 | 気圧 | BMP280 | I2C | 50Hz | 高度推定（ToF範囲外） |
-| ToF（下面） | VL53L3CX | I2C | 30Hz | 高度計測 |
-| ToF（前面） | VL53L3CX | I2C | 30Hz | 障害物検知・SLAM・ナビゲーション |
+| ToF（下面） | VL53L3CX | I2C | 30Hz | 高度計測。**Critical** — 高度推定の唯一の鉛直観測（気圧は既定で非融合） |
+| ToF（前面） | VL53L3CX | I2C | 30Hz | 障害物検知・SLAM・ナビゲーション。**Optional**、バッテリー電源が要る。2026-09-19 に駆動開始（`sensor_tof_front`、実機未確認）。**推定器には入れない** — 機体の状態ではなく障害物の観測であるため。`tof.front.enable` で無効化可 |
 | OpticalFlow | PMW3901 | SPI | 100Hz | 水平位置推定 |
 | 電源モニタ | INA3221 | I2C | 10Hz | バッテリー電圧・電流 |
 
@@ -396,8 +396,8 @@ PairingState (parallel to FlightState)
 | IMU | BMI270 | SPI | 400Hz | Primary sensor for attitude estimation |
 | Magnetometer | BMM150 | I2C | 25Hz | Yaw estimation (research target) |
 | Barometer | BMP280 | I2C | 50Hz | Altitude estimation (beyond ToF range) |
-| ToF (bottom) | VL53L3CX | I2C | 30Hz | Altitude measurement |
-| ToF (front) | VL53L3CX | I2C | 30Hz | Obstacle detection, SLAM, navigation |
+| ToF (bottom) | VL53L3CX | I2C | 30Hz | Altitude measurement. **Critical** — the only vertical observation (the barometer is not fused by default) |
+| ToF (front) | VL53L3CX | I2C | 30Hz | Obstacle detection, SLAM, navigation. **Optional**, needs battery power. Driven since 2026-09-19 (`sensor_tof_front`, not yet verified on hardware). **Not fed to the estimator** — it observes obstacles, not the vehicle's state. Can be switched off with `tof.front.enable` |
 | Optical Flow | PMW3901 | SPI | 100Hz | Horizontal position estimation |
 | Power Monitor | INA3221 | I2C | 10Hz | Battery voltage/current |
 

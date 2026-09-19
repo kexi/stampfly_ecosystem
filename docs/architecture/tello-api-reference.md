@@ -21,7 +21,7 @@ StampFly の主力ファーム `firmware/vehicle` は DJI Tello SDK 互換のテ
 | UDP 8889 | PC→機体（コマンド）、機体→PC（応答） | Tello 互換テキストコマンド | `tasks/api_task.cpp`（`ApiTask`） |
 | UDP 8890（送信専用） | 機体→PC | Tello 互換の状態文字列、10Hz | `tasks/api_task.cpp`（`TelloStateTask`）。書式は `components/sf_telemetry/include/tello_state.hpp` |
 | UDP 8890（機体側 bind の別ソケット、`sf log wifi` 用） | PC↔機体 | 400Hz サンプルをまとめたバイナリ統合パケット（50Hz 送出）。上記の状態文字列とは別プロトコルで、**同時使用不可**（どちらも PC 側で同じポートを使う） | `components/sf_telemetry/{data_stream.hpp,data_stream.cpp}`。詳細は `docs/architecture/udp-telemetry-design.md` |
-| UDP 5005（ブロードキャスト） | 機体→ブロードキャスト | `sf::TelemetryPacket`（104バイト、姿勢・角速度・加速度・位置・速度・推力/トルク・モータduty）、50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
+| UDP 5005（ブロードキャスト） | 機体→ブロードキャスト | `sf::TelemetryPacket`（140バイト、姿勢・角速度・加速度・位置・速度・推力/トルク・モータduty＋電池電圧・ToF・フロー・地磁気・気圧高度。旧ファームは 104バイト）、50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
 | TCP 23 | PC↔機体（対話式） | telnet 的 CLI（`param`/`status`/`sensor`/`version`/`mac`/`pair`/`unpair`/`sound`/`led`/`motor`/`wifi`/`magcal`/`reboot`）。**飛行コマンドは無い** | `tasks/cli_task.cpp` |
 
 Tello 実機の映像ポート（UDP 11111）は StampFly には無い（カメラ非搭載）。
@@ -170,7 +170,7 @@ By default the vehicle runs a **SoftAP** addressed at **`192.168.10.1`**, the sa
 | UDP 8889 | PC→vehicle (commands), vehicle→PC (replies) | Tello-compatible text commands | `tasks/api_task.cpp` (`ApiTask`) |
 | UDP 8890 (send-only) | vehicle→PC | Tello-compatible state string, 10Hz | `tasks/api_task.cpp` (`TelloStateTask`); format in `components/sf_telemetry/include/tello_state.hpp` |
 | UDP 8890 (a separate socket bound on the vehicle, for `sf log wifi`) | PC↔vehicle | Binary bundle packets of 400Hz samples (sent at 50Hz). A different protocol from the state string above — **cannot be used at the same time** (both use the same port on the PC side) | `components/sf_telemetry/{data_stream.hpp,data_stream.cpp}`; details in `docs/architecture/udp-telemetry-design.md` |
-| UDP 5005 (broadcast) | vehicle→broadcast | `sf::TelemetryPacket` (104 bytes: attitude, angular rate, acceleration, position, velocity, thrust/torque, motor duty), 50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
+| UDP 5005 (broadcast) | vehicle→broadcast | `sf::TelemetryPacket` (140 bytes: attitude, angular rate, acceleration, position, velocity, thrust/torque, motor duty, plus battery voltage, ToF, optical flow, magnetometer, pressure altitude; 104 bytes on older firmware), 50Hz | `components/sf_telemetry/{telemetry.hpp,telemetry.cpp}` |
 | TCP 23 | PC↔vehicle (interactive) | telnet-style CLI (`param`/`status`/`sensor`/`version`/`mac`/`pair`/`unpair`/`sound`/`led`/`motor`/`wifi`/`magcal`/`reboot`). **No flight commands here** | `tasks/cli_task.cpp` |
 
 There is no video port (UDP 11111, as on the real Tello) on StampFly — there is no camera.

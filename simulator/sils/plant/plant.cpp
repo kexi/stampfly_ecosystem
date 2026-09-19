@@ -178,10 +178,22 @@ void Plant::setImuBias(const sf::math::Vec3& accel_bias, const sf::math::Vec3& g
 
 void Plant::setStartHeight(float z)
 {
-    // Free-joint state: position (0,0,z) ENU, level orientation, zero velocity.
-    // フリージョイント状態: 位置(0,0,z) ENU・水平姿勢・速度ゼロ。
+    // Free-joint state: position (0,0,z) ENU, level + NORTH-facing attitude, zero velocity.
+    // The MuJoCo quat comes from frames (qnb_to_mujoco_quat of q_nb = identity), NOT the
+    // literal identity quat: MuJoCo world axes are ENU, so an identity framequat points the
+    // body's +X (forward) at world +X = EAST, i.e. NED yaw=+90 deg, while the firmware boots
+    // its estimator at yaw=0 (north). Writing the identity here also SILENTLY OVERRODE the
+    // MJCF body's own quat, so fixing the model alone had no effect on this path.
+    // フリージョイント状態: 位置(0,0,z) ENU・水平かつ北向き姿勢・速度ゼロ。
+    // MuJoCo quat は frames 経由（q_nb=単位元の qnb_to_mujoco_quat）で求める。単位元を直接
+    // 書かない理由: MuJoCo の世界軸は ENU なので、単位 framequat では機体 +X（前方）が
+    // 世界 +X＝東を向き NED yaw=+90° になる。一方ファームは推定器を yaw=0（北）で起動する。
+    // さらにここで単位元を書くと MJCF 側の quat を黙って上書きするため、モデルだけ直しても
+    // この経路には効かなかった。
+    const Quat q_mj_level_north = frames::qnb_to_mujoco_quat(Quat{1.0f, 0.0f, 0.0f, 0.0f});
     d_->qpos[0] = 0.0; d_->qpos[1] = 0.0; d_->qpos[2] = z;
-    d_->qpos[3] = 1.0; d_->qpos[4] = 0.0; d_->qpos[5] = 0.0; d_->qpos[6] = 0.0;
+    d_->qpos[3] = q_mj_level_north.w; d_->qpos[4] = q_mj_level_north.x;
+    d_->qpos[5] = q_mj_level_north.y; d_->qpos[6] = q_mj_level_north.z;
     for (int i = 0; i < 6; ++i) d_->qvel[i] = 0.0;
     ground_rest_z_enu_ = z;   // remember the ground rest height for handling placement
     mj_forward(m_, d_);
@@ -314,8 +326,16 @@ void Plant::handlingSubstep(float h)
         //（機体は地面に静止、再 ARM 可能）。
         Vec3 rest_enu = frames::ned_to_enu(
             {handle_place_x_ned_, handle_place_y_ned_, handle_ground_z_ned_});
+        // Level + NORTH-facing, via frames — same reason as setStartHeight(): the literal
+        // identity framequat would place the craft facing EAST (NED yaw=+90 deg), so being
+        // "placed level" would silently re-yaw the craft by 90 deg mid-scenario.
+        // 水平かつ北向き（frames 経由）。setStartHeight() と同じ理由: 単位 framequat では
+        // 東向き（NED yaw=+90°）に置かれるため、「水平に設置」がシナリオ途中で機体を
+        // 90° 回してしまう。
+        const Quat q_mj_level_north = frames::qnb_to_mujoco_quat(Quat{1.0f, 0.0f, 0.0f, 0.0f});
         d_->qpos[0] = rest_enu.x; d_->qpos[1] = rest_enu.y; d_->qpos[2] = rest_enu.z;
-        d_->qpos[3] = 1.0; d_->qpos[4] = 0.0; d_->qpos[5] = 0.0; d_->qpos[6] = 0.0;
+        d_->qpos[3] = q_mj_level_north.w; d_->qpos[4] = q_mj_level_north.x;
+        d_->qpos[5] = q_mj_level_north.y; d_->qpos[6] = q_mj_level_north.z;
         for (int i = 0; i < 6; ++i) d_->qvel[i] = 0.0;
         mj_forward(m_, d_);
         handle_accel_frd_ = {0.0f, 0.0f, -9.81f};
@@ -834,6 +854,115 @@ sf::TofData Plant::tof() const
     }
     out.status = 0;
     out.timestamp = (uint32_t)(d_->time * 1e6);
+    return out;
+}
+
+// -----------------------------------------------------------------------------
+// addWall / tofFront — forward range against scene obstacles (jev-autopilot P4b).
+// addWall / tofFront — 場面の障害物に対する前方測距（jev-autopilot P4b）。
+// -----------------------------------------------------------------------------
+void Plant::addWall(float n0_m, float e0_m, float n1_m, float e1_m)
+{
+    walls_.push_back(Wall{n0_m, e0_m, n1_m, e1_m});
+}
+
+// Forward distance along body +X, as the ray-to-segment intersection nearest the
+// craft. The walls are vertical and the beam is horizontal at the craft's own
+// height, so the geometry collapses to 2-D in the NED horizontal plane — that is
+// why this is solved analytically rather than with mj_ray: a wall added at run
+// time is not in the mjModel at all (adding geoms to a live model is not
+// supported), and the 2-D solution is exact for the vertical walls scenes use.
+//
+// The beam direction is the body +X axis expressed in NED, obtained by rotating
+// the unit forward vector with the truth attitude. The rotation is q_nb's own
+// operation, so no coordinate transform is written here — coordinate_frames.md
+// requires every frame change to live in frames.hpp or in the quaternion itself.
+//
+// 機体 +X 方向の前方距離。機体に最も近いレイ-線分交点として求める。壁は垂直で
+// ビームは機体自身の高さの水平線なので、幾何は NED 水平面の 2 次元に落ちる ――
+// mj_ray ではなく解析的に解く理由がこれである: 実行時に足した壁はそもそも mjModel
+// に無く（生きたモデルへの geom 追加は非対応）、2 次元の解は場面が使う垂直な壁に
+// 対して厳密である。
+//
+// ビームの向きは NED で表した機体 +X 軸で、単位前方ベクトルを真値姿勢で回して得る。
+// 回転は q_nb 自身の演算なので、ここに座標変換は書いていない ―― coordinate_frames.md
+// は全ての系の変換を frames.hpp かクォータニオン自身に置くことを求めている。
+sf::TofData Plant::tofFront() const
+{
+    sf::TofData out{};
+    out.timestamp = (uint32_t)(d_->time * 1e6);
+    // "No target" is the real part's answer for an empty room (§4.8.6 measured
+    // status=255, value 0). It must never look like a distance.
+    // 「対象なし」が空の部屋に対する実機の答えである（§4.8.6 の実測は status=255・
+    // 値 0）。これが距離に見えてはならない。
+    out.distance = 0.0f;
+    out.status   = 255;
+    out.valid    = false;
+
+    const bool no_obstacles = walls_.empty();
+
+    if (no_obstacles) return out;
+
+    const Truth t = truth();
+    // Body +X (forward) expressed in NED. Only the horizontal part steers the
+    // beam; a pitched craft shortens its own reach, which the 2-D solution
+    // represents by the shrinking horizontal component below.
+    // NED で表した機体 +X（前方）。ビームを向けるのは水平成分だけである。機首を
+    // 上下させた機体は自身の到達距離を縮めるが、それは下の 2 次元の解では水平成分が
+    // 小さくなることとして表れる。
+    const Vec3 forward_ned = t.q_nb.rotate(Vec3{1.0f, 0.0f, 0.0f});
+    const float dn = forward_ned.x;
+    const float de = forward_ned.y;
+    const float horiz = std::sqrt(dn * dn + de * de);
+    // Pointing (near) straight up or down: no horizontal beam, so nothing ahead.
+    // ほぼ真上/真下を向いている: 水平のビームが無く、前方には何も無い。
+    constexpr float kMinHorizontalBeam = 1e-3f;
+    if (horiz < kMinHorizontalBeam) return out;
+
+    const float ox = t.pos_ned.x;
+    const float oy = t.pos_ned.y;
+    float nearest = cfg_.tof_front_max_m;
+    bool hit = false;
+
+    for (const Wall& w : walls_) {
+        // Ray (o + s·d, s>0) against segment (p0 + u·(p1−p0), u∈[0,1]).
+        // Solve o + s·d = p0 + u·e by Cramer's rule; the denominator is the 2-D
+        // cross product of the two directions and vanishes when they are parallel.
+        // レイ (o + s·d, s>0) と線分 (p0 + u·e, u∈[0,1]) の交点。Cramer の公式で
+        // 解く。分母は 2 方向の 2 次元外積で、平行なときに 0 になる。
+        const float ex = w.n1 - w.n0;
+        const float ey = w.e1 - w.e0;
+        const float denom = dn * ey - de * ex;
+        const bool is_parallel = std::fabs(denom) < 1e-9f;
+        if (is_parallel) continue;
+
+        const float qx = w.n0 - ox;
+        const float qy = w.e0 - oy;
+        const float s = (qx * ey - qy * ex) / denom;   // along the beam
+        const float u = (qx * de - qy * dn) / denom;   // along the wall
+
+        const bool is_behind = s <= 0.0f;
+        const bool is_off_the_end = (u < 0.0f || u > 1.0f);
+        if (is_behind || is_off_the_end) continue;
+
+        // s is measured along the FULL 3-D forward direction because d was not
+        // normalized to the horizontal; scaling by `horiz` converts the
+        // horizontal-plane solution back to a slant range along the beam.
+        // s は水平に正規化していない 3 次元の前方方向に沿って測られているため、
+        // `horiz` で割って水平面の解をビームに沿った斜距離へ戻す。
+        const float range = s / horiz;
+        if (range < nearest) {
+            nearest = range;
+            hit = true;
+        }
+    }
+
+    const bool is_too_close = hit && nearest < cfg_.tof_front_min_m;
+    if (!hit || is_too_close) return out;   // nothing in the reliable band
+
+    out.distance = nearest;
+    out.status   = 0;
+    out.valid    = true;
     return out;
 }
 

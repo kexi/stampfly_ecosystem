@@ -25,9 +25,12 @@ void loop_400Hz(float dt)
     ws::print(">baro_alt:%.2f", ws::baro_altitude());
 
     // ToF (Time-of-Flight) bottom distance / ToF下向き距離
-    // Note: the vehicle sensing pipeline does not use a front ToF sensor,
-    // so tof_front() is intentionally not read here.
-    // 注: vehicleのセンシングでは前方ToFを使用しないため、tof_front()はここでは読まない。
+    // Note: tof_front() also works now, but the forward sensor needs battery
+    // power and does not start on USB alone, so this lesson stays on the
+    // bottom ToF, which works while the board is being flashed over USB.
+    // 注: tof_front() も動くようになったが、前方センサはバッテリー電源が要り
+    // USB給電のみでは起動しない。そのため本レッスンは、USB書き込み中でも動く
+    // 底面ToFに留める。
     ws::print(">tof_bottom:%.3f", ws::tof_bottom());
 
     // ESKF estimation values (ws:: API) / ESKF推定値（ws:: API）

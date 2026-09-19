@@ -924,6 +924,18 @@ def _finalize_flightlog(flightlog_dir: Path, zip_path: Path, *, notes: str,
     return zip_path
 
 
+# The public spelling for callers outside this module. `sf pilot` records its
+# SILS flights the same way `sf sils fly` does, and it reaches the launch side
+# through `realtime_emu_env` / `launch_realtime_emu` already -- the bundling
+# side belongs in that same group, or `sf pilot` would grow a second way of
+# writing a flight-log bundle and the two would drift.
+# 本モジュール外から呼ぶときの公開名。`sf pilot` は `sf sils fly` と同じやり方で
+# SILS 飛行を記録し、起動側は既に `realtime_emu_env`・`launch_realtime_emu` 経由で
+# 触れている。束を作る側も同じ仲間に置く — さもないと `sf pilot` がフライトログ
+# 一式を書く 2 つ目のやり方を持ち、両者が食い違っていく。
+finalize_flightlog = _finalize_flightlog
+
+
 def run_run(args: argparse.Namespace) -> int:
     bd = _build_dir()
     exe = bd / _exe("hover_smoke")
@@ -1829,6 +1841,70 @@ def _fly_stdout_reader(proc: subprocess.Popen, log_tail: list, latest_state: dic
                 del log_tail[0]
 
 
+class RealtimeEmuUnavailable(RuntimeError):
+    """The real-time emulator cannot be started (not built, or launch failed).
+    実時間エミュレータを起動できない（未ビルド、または起動失敗）。"""
+
+
+def realtime_emu_env(bundle: Path, flightlog_dir: Path = None,
+                     extra_env: dict = None) -> dict:
+    """Environment for a real-time, stdin-driven emu_vehicle run.
+
+    `sf sils fly` (keyboard) and `sf pilot run --sils` (Jev) must start the
+    emulator the SAME way, or a decision rehearsed under one would not
+    reproduce under the other. Both go through this function rather than
+    each assembling its own env dict.
+
+    実時間・stdin 駆動で emu_vehicle を動かすための環境変数。
+
+    `sf sils fly`（キーボード）と `sf pilot run --sils`（Jev）は同じやり方で
+    エミュレータを起動する必要がある。別々に組み立てると、一方で試した判断が
+    他方で再現しなくなるためである。両者ともこの関数を通す。
+    """
+    build_dir = _build_dir()
+    env = dict(win_run_env(build_dir), SILS_EMU_REALTIME="1", SILS_EMU_RC_STDIN="1")
+    if flightlog_dir is not None:
+        env["SILS_EMU_FLIGHTLOG"] = str(flightlog_dir)
+    if extra_env:
+        env.update({k: str(v) for k, v in extra_env.items() if v is not None})
+    return env
+
+
+def launch_realtime_emu(duration_s: float, env: dict,
+                        scenario_path=None) -> subprocess.Popen:
+    """Spawn emu_vehicle in real-time mode with its stdin/stdout piped.
+
+    Raises RealtimeEmuUnavailable rather than printing and returning a code:
+    the caller decides how to report it (`sf sils fly` prints, `sf pilot run`
+    also has to close a Judge and a trace first).
+
+    実時間モードで emu_vehicle を起動し、stdin/stdout をパイプで繋ぐ。
+
+    表示して終了コードを返すのではなく RealtimeEmuUnavailable を投げる。
+    報告の仕方は呼び出し側が決める（`sf sils fly` は表示するだけだが、
+    `sf pilot run` は先に Judge と記録を閉じる必要がある）。
+    """
+    exe = _build_dir() / _exe("emu_vehicle")
+    if not exe.exists():
+        raise RealtimeEmuUnavailable(
+            f"{exe.name} not built — run 'sf sils build' first"
+        )
+    if not os.environ.get("SF_SILS_SKIP_FRESHNESS_CHECK"):
+        _check_build_freshness(exe)
+
+    argv = [str(exe), str(_model()), str(int(duration_s * 1e6))]
+    if scenario_path is not None:
+        argv.append(str(scenario_path))
+    try:
+        return subprocess.Popen(
+            argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+            errors="replace", bufsize=1, env=env,
+        )
+    except OSError as exc:
+        raise RealtimeEmuUnavailable(f"failed to launch {exe.name}: {exc}") from exc
+
+
 def run_fly(args: argparse.Namespace) -> int:
     """Real-time, keyboard-piloted SILS flight (P6 stage 1) — see the module
     comment above `_FLY_KEY_HELP` for the design.
@@ -1840,19 +1916,10 @@ def run_fly(args: argparse.Namespace) -> int:
         console.error("`sf sils fly` requires an interactive terminal")
         return 1
 
-    bd = _build_dir()
-    exe = bd / _exe("emu_vehicle")
-    if not exe.exists():
-        console.error(f"{exe.name} not built — run 'sf sils build' first")
-        return 1
-    if not os.environ.get("SF_SILS_SKIP_FRESHNESS_CHECK"):
-        _check_build_freshness(exe)
-
     bundle = _sils_dir() / "viz" / "out_fly"
     bundle.mkdir(parents=True, exist_ok=True)
     flightlog_dir = bundle / "flightlog"
-    env = dict(win_run_env(bd), SILS_EMU_REALTIME="1", SILS_EMU_RC_STDIN="1",
-               SILS_EMU_FLIGHTLOG=str(flightlog_dir))
+    env = realtime_emu_env(bundle, flightlog_dir)
 
     # --param NAME=VALUE: same SILS_EMU_PARAMS_FILE mechanism as `sf sils
     # scenario --param` (see its own help text for the full rationale).
@@ -1871,14 +1938,12 @@ def run_fly(args: argparse.Namespace) -> int:
         env["SILS_EMU_PARAMS_FILE"] = str(override_path)
         console.info(f"{len(valid_lines)} param(s) queued via --param")
 
-    argv = [str(exe), str(_model()), str(int(args.duration * 1e6))]
     scenario_path = None
     if getattr(args, "scenario", None):
         scenario_path = Path(args.scenario)
         if not scenario_path.exists():
             console.error(f"scenario not found: {scenario_path}")
             return 1
-        argv.append(str(scenario_path))
 
     console.info("Starting sf sils fly (real-time SILS, keyboard control)")
     console.print(_FLY_KEY_HELP)
@@ -1888,11 +1953,9 @@ def run_fly(args: argparse.Namespace) -> int:
                      "keyboard's both write live; see README's known-limitations note)")
 
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
-                                errors="replace", bufsize=1, env=env)
-    except OSError as e:
-        console.error(f"failed to launch {exe.name}: {e}")
+        proc = launch_realtime_emu(args.duration, env, scenario_path)
+    except RealtimeEmuUnavailable as exc:
+        console.error(str(exc))
         return 1
 
     log_tail: list = []
@@ -2333,7 +2396,16 @@ def run_video(args: argparse.Namespace) -> int:
     if not any(bundle.glob("*.sflog.zip")):
         console.error(f"No flight-log bundle in {bundle} — run 'sf sils run' first"); return 1
     fps = getattr(args, "fps", 50)
-    out = bundle / f"{args.milestone.lower()}_flight.mp4"
+    # Name the file after the LAST segment only. A milestone may name one run
+    # inside a directory of runs (`-m pilot/<datetime>`, which `sf pilot`
+    # prints), and using the whole string would put the mp4 in a subdirectory
+    # that does not exist.
+    # 名前に使うのは**末尾の区切り**だけにする。マイルストーンは実行の入った
+    # ディレクトリの中の 1 回を指すことがあり（`sf pilot` が表示する
+    # `-m pilot/<日時>`）、文字列全体を使うと存在しないディレクトリに mp4 を
+    # 置こうとしてしまう。
+    run_name = args.milestone.lower().replace("\\", "/").rstrip("/").split("/")[-1]
+    out = bundle / f"{run_name}_flight.mp4"
     console.info("Rendering review video (MuJoCo 3D + state graphs)...")
     r = subprocess.run([str(py), str(_sils_dir() / "viz" / "render_video.py"),
                         "--model", str(_model()), "--bundle", str(bundle),

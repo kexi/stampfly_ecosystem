@@ -1,13 +1,24 @@
 # attitude_trim_test.scn — validate the all-mode attitude trim against a steady wind
 # 全モード姿勢トリム検証: 定常横風に対する平衡傾き
 #
-# At yaw=0 the craft's forward (FRD body X) points to ENU east = the trajectory px
-# axis = NED east = wind component fy. So a wind along fy is a HEAD/TAIL wind that
-# pitch trim is the correct axis to cancel. (A north wind fx hits the body Y axis,
-# which pitch trim cannot cancel — that was the earlier mistake.)
-# yaw=0 で機体前方(FRD body X)は ENU east=軌跡 px 軸=NED east=風成分 fy を向く。よって
-# fy 方向の風は pitch トリムが打ち消すべき正面/背面風（north 風 fx は body Y に当たり
-# pitch では打ち消せない — これが前回の誤り）。
+# 2026-09-19: the SILS start attitude was corrected (it used to be the MuJoCo
+# identity quaternion, which is level but faces EAST because MuJoCo's world is
+# ENU; it is now level-and-NORTH, matching the firmware's yaw=0 boot state).
+# So at yaw=0 the craft's forward (FRD body X) now points NORTH = NED +x = wind
+# component fx. A wind along fx is the HEAD/TAIL wind that PITCH trim cancels;
+# a wind along fy (east) is a CROSS wind that ROLL trim cancels.
+# The wind below is still on fy, so as written this scenario now exercises the
+# ROLL axis. Measured after the fix (hover window [20,28] s): mean roll
+# +0.0008 deg, mean pitch -0.0000 deg, drift on pos_y only. Re-point the wind to
+# fx if a PITCH-trim test is what is wanted.
+# 2026-09-19: SILS の初期姿勢を修正した（以前は MuJoCo の単位クォータニオン＝水平
+# だが東向き。MuJoCo の世界が ENU のため。現在は「水平かつ北向き」で、ファームが
+# yaw=0 で起動する状態と一致する）。よって yaw=0 で機体前方(FRD body X)は北＝NED +x
+# ＝風成分 fx を向く。fx 方向の風が pitch トリムの打ち消すべき正面/背面風であり、
+# fy（東）方向の風は roll トリムが打ち消すべき横風である。
+# 下の風は依然 fy にあるため、現状この手順は roll 軸を動かす。修正後の実測
+# （ホバー窓 [20,28]s）: 平均 roll +0.0008°、平均 pitch -0.0000°、ドリフトは pos_y のみ。
+# pitch トリムの検証が目的なら風を fx へ振り直すこと。
 #
 # The wind is applied from t=0 (sustained) so trim and wind balance from the moment
 # of takeoff. Injecting a boot-time pitch trim while there is NO wind tips the craft
@@ -16,9 +27,11 @@
 # 風は t=0 から持続。起動時トリムを風が無い状態で入れると climb 中に横へ倒れて着地する
 # ため、釣り合いを見るには風を常時与える。
 #
-# Run twice and compare px drift in the hover window [20, 28] s:
-#   (1) trim=0 (default):     drifts +px (downwind, east)
-#   (2) trim=+0.0552 (pitch): SILS_EMU_PARAMS_FILE=/tmp/trim.txt -> holds px (cancels wind)
+# Run twice and compare the downwind drift in the hover window [20, 28] s. With
+# the wind still on fy (east) this is truth.csv's pos_y and the ROLL trim axis:
+#   (1) trim=0 (default):    drifts +pos_y (downwind, east)
+#   (2) trim=+0.0552 (roll): SILS_EMU_PARAMS_FILE=/tmp/trim.txt -> holds pos_y
+# 風が fy（東）のままなので、比較するのは truth.csv の pos_y、効くのは roll トリム。
 # Steady wind 0.02 N east -> equilibrium pitch asin(0.02/(0.037*9.80665)) = 0.0552 rad.
 #
 #  <t>  ch    <thr> <roll> <pitch> <yaw> <arm> <hold_ms> <rate_hz> <alt>

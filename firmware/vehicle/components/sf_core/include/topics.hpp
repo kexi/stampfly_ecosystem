@@ -36,7 +36,17 @@ void topics_init();
 // =============================================================================
 
 extern Topic<ImuData,         RingBuffer, 8>  sensor_imu;
-extern Topic<TofData,         Queue, 2>       sensor_tof;
+extern Topic<TofData,         Queue, 2>       sensor_tof;         // bottom ToF (altitude) / 底面 ToF（高度）
+// Front ToF gets its OWN topic, never a shared one with the bottom sensor.
+// The bottom ToF is the vehicle's only vertical observation, so a front-sensor
+// fault must not be able to disturb it — separate topics make that structural
+// rather than a matter of care (R5, detailed_design.md §10,
+// docs/architecture/udp-telemetry-design.md §2 "one data source = one variable").
+// 前方 ToF は底面と共有せず「専用」トピックを持つ。底面 ToF は機体唯一の鉛直観測
+// であり、前方の異常がそれを乱してはならない — トピックを分ければ注意ではなく
+// 構造でそれを保証できる（R5、detailed_design.md §10、
+// docs/architecture/udp-telemetry-design.md §2「1 データソース = 1 変数」）。
+extern Topic<TofData,         Queue, 2>       sensor_tof_front;   // front ToF (obstacle) / 前方 ToF（障害物）
 extern Topic<FlowData,        Queue, 2>       sensor_flow;
 extern Topic<MagData,         Queue, 2>       sensor_mag;
 extern Topic<BaroData,        Queue, 2>       sensor_baro;

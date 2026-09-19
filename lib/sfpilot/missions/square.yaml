@@ -1,0 +1,92 @@
+# A square, flown once, and back to where it started.
+# 一辺 0.6m の四角形を一周し、離陸点へ戻る。
+#
+# **This route cannot be flown in SILS today, and is shipped as the route
+# P4 is FOR rather than the route P4 can demonstrate.** Any move along the
+# east/west axis that follows a move along the north/south axis disarms the
+# emulated craft through the impact detector, about a second in
+# (`[WARN] failsafe: Impact detected: 5.5G`). It is not this package's
+# doing: it reproduces by typing two `api` moves into a bare emulator with
+# none of `sf pilot` running, and it reproduces for `forward`+`right`,
+# `right`+`forward`, `left`+`forward` and a diagonal `go` alike, while two
+# moves on the SAME axis, and a vertical move after a horizontal one, are
+# both fine. See docs/plans/jev-autopilot.md §4.4.
+#
+# Use `line.yaml` to exercise a mission end to end until that is fixed.
+#
+# **この経路は現状 SILS では飛べない。P4 が「何のためのものか」を示す経路として
+# 同梱してあり、P4 を実演できる経路ではない。** 南北軸の移動に続けて東西軸へ
+# 移動すると、1 秒ほどで衝撃検出により機体が解除される
+# （`[WARN] failsafe: Impact detected: 5.5G`）。本パッケージのせいではない。
+# `sf pilot` を一切動かさず、素のエミュレータへ `api` の移動を 2 つ打つだけで
+# 再現し、`forward`+`right`・`right`+`forward`・`left`+`forward`・斜めの `go`
+# のいずれでも再現する。一方、**同じ軸**の移動 2 回と、水平移動の後の垂直移動は
+# どちらも問題ない。docs/plans/jev-autopilot.md §4.4 を参照。
+#
+# それが直るまで、ミッションを端から端まで動かすには `line.yaml` を使う。
+#
+# Why the sides are 0.6 m: four of them reach a corner 0.85 m from the
+# takeoff point, well inside the 2 m envelope radius, and each side is long
+# enough that the firmware's 0.15 m arrival tolerance is a small part of it
+# -- a 20 cm side would be almost entirely tolerance, and "as planned"
+# would stop meaning anything.
+#
+# 一辺を 0.6m にした理由: 4 辺で離陸点から 0.85m の角に達し、飛行領域の半径 2m の
+# 十分内側に収まる。かつ、機体の到達許容 0.15m が各辺に占める割合が小さくなる
+# 長さでもある — 一辺 20cm ではほとんどが許容誤差になり、「目標どおり」が何も
+# 意味しなくなる。
+#
+# The square is flown sideways rather than by turning at each corner
+# because `api cw 90` disarms the craft the same way (§4.4 again). When
+# both faults are fixed, the turning version is the better route: it
+# exercises the heading bookkeeping, which this one does not.
+#
+# 角で旋回せず横移動で飛ぶのは、`api cw 90` も同じように機体を解除するためで
+# ある（同じく §4.4）。両方が直ったら、旋回する版のほうがよい経路である。
+# そちらは機首方位の積算を働かせるが、この版は働かせない。
+
+name: square
+purpose: fly a square once and come back to the takeoff point
+
+legs:
+  - verb: takeoff
+    label: 離陸
+
+  # North first. The SILS vehicle starts facing north (fixed in 1d99538c)
+  # and the nose stays there for the whole route, so each side runs along
+  # one `truth.csv` axis and the corners are easy to read off.
+  # まず北へ。SILS の機体は北を向いて始まり（1d99538c で修正）、経路の間ずっと
+  # 機首はそのままである。各辺が `truth.csv` の 1 軸に沿うので、角を読み取り
+  # やすい。
+  - verb: forward
+    amount: 60
+    label: 1 辺目（北へ）
+
+  - verb: right
+    amount: 60
+    label: 2 辺目（東へ）
+
+  - verb: back
+    amount: 60
+    label: 3 辺目（南へ）
+
+  - verb: left
+    amount: 60
+    label: 4 辺目（西へ）
+
+  # The square closes on paper, but four moves each leave a little error
+  # behind, so the route says where it wants to end rather than assuming it
+  # got there. `return_home` is resolved at this point in the flight, from
+  # the walk's own position -- which is why it works after a leg was redone
+  # or skipped as well. A route that is already home skips it rather than
+  # sending a `go` shorter than the firmware accepts.
+  # 四角形は机上では閉じるが、4 回の移動はそれぞれ誤差を残す。そこで経路は
+  # 「着いたはず」とせず、どこで終わりたいかを書く。`return_home` は飛行の
+  # この時点で、積算自身の位置から解決される — 区間をやり直した後でも飛ばした
+  # 後でも成り立つのはそのためである。既に離陸点にいる経路は、ファームが
+  # 受け付ける長さに満たない `go` を送らず、この区間を飛ばす。
+  - verb: return_home
+    label: 離陸点へ戻る
+
+  - verb: land
+    label: 着陸

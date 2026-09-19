@@ -1,0 +1,63 @@
+# yaw_crossaxis.scn — minimal deterministic reproduction of the CROSS-AXIS fall
+#                     水平軸をまたぐ移動での落下の、最小の決定論的再現
+#
+# REFERENCE ONLY — NO .expect / 参照用シナリオ — 合否判定は付けない
+#   This file has NO .expect on purpose. It reproduces a defect that is still
+#   open (simulation-policy.md backlog #12), so gating on it would add a
+#   permanent FAIL to `sf sils regression`. It is registered in TEST_MATRIX.md
+#   section 5 as a reference scenario and is skipped by the regression run.
+#   本ファイルには `.expect` を意図的に付けていない。未解決の不具合
+#   （simulation-policy.md 改修バックログ #12）を再現するものなので、合否判定を
+#   付けると `sf sils regression` に恒久的な FAIL が増える。TEST_MATRIX.md 5 節に
+#   「参照用・判定なし」として登録してあり、再確認試験からは除外される。
+#
+# PURPOSE / 目的
+#   Reproduce the fall documented in docs/plans/jev-autopilot.md section 4.3:
+#   "api: takeoff, forward 60, right 60" makes the vehicle touch the ground.
+#   Chain: sustained yaw torque saturates at rate.yaw.max_torque -> the mixer
+#   scales the differential by 0.25/kappa (~61 N per N*m) -> per-motor duty
+#   pins at the upper rail -> the clipped excess is NOT redistributed, so mean
+#   lift collapses. Attitude stays calm: ACTUATOR saturation, not control
+#   divergence.
+#   docs/plans/jev-autopilot.md 4.3 節の落下を再現する。連鎖は、ヨートルクが
+#   rate.yaw.max_torque で飽和 → ミキサーが差動を 0.25/kappa（約 61 N/N·m）倍に
+#   拡大 → モータ毎の duty が上限に張り付く → 切り落とした分が再配分されないため
+#   平均揚力が失われる、である。姿勢は乱れない（アクチュエータの飽和であって
+#   制御の発散ではない）。
+#
+# DELIBERATELY UNLIKE api_flight.scn / api_flight.scn との意図的な違い
+#   api_flight.scn AVOIDS the fall by climbing "up 70" to ~1.2 m before it
+#   turns. This scenario does NOT climb: it stays at the default 0.5 m
+#   take-off altitude so the sag reaches the ground.
+#   api_flight.scn は旋回前に約 1.2m へ登って落下を避けている。本シナリオは
+#   登らない（既定の 0.5m 離陸高度のまま）ので沈下が地面に届く。
+#
+# MANOEUVRE WINDOW / 操作の窓
+#   The cross-axis move begins at the "right 60" line (t=26 s). Absolute times
+#   are annotated per line (deterministic: virtual clock, noise off by default).
+#   軸をまたぐ移動は "right 60" 行（t=26 秒）から始まる。各行に絶対時刻を注記した
+#   （SILS は仮想時計・既定でノイズ無しのため決定論的）。
+#
+# MEASURED BASELINE (2026-09-19, HEAD 8a956654, window 26-34 s)
+# 実測の基準値（2026-09-19、HEAD 8a956654、窓 26-34 秒）
+#   alt_min 0.006078 m (t=27.23 s, i.e. touchdown) / alt_max 0.4708 m
+#   duty_max 1.0000 / frac_duty_upper 0.8156 / frac_torque_cap 0.8156
+#   Impact detected 5.2G -> emergency DISARM -> "error move timeout"
+#   frac_duty_upper と frac_torque_cap が完全に一致する（同じ標本である）点が、
+#   トルク飽和がそのまま duty 飽和に変換されていることの観測的な裏づけである。
+#
+# Run / 実行:
+#   sf sils scenario simulator/sils/scenarios/yaw_crossaxis.scn \
+#       --target vehicle --duration 40000000
+#
+#  <t>  ch  <thr> <roll> <pitch> <yaw> <arm> <hold_ms> <rate_hz> <alt> <acro> <pos>
+   0    rc   2048  2048   2048    2048  0     6000      50                       # A: boot at rest — still calibration completes (t=0-6)
+   +    api  "command"                                                           # B: enter SDK mode (t=6)
+   +    api  "takeoff"                                                           # C: take off -> POS_HOLD hover at the 0.5 m default (t=6)
+   +    rc   2048  2048   2048    2048  0     12000     50                       # D: neutral RC while the auto-takeoff climbs and settles (t=6-18)
+   +    api  "forward 60"                                                        # E: +60 cm forward (north at yaw 0) (t=18)
+   +    rc   2048  2048   2048    2048  0     8000      50                       # F: neutral RC — wait for the forward move to COMPLETE (t=18-26)
+   +    api  "right 60"                                                          # G: CROSS-AXIS move: +60 cm right (east) — the fall starts here (t=26)
+   +    rc   2048  2048   2048    2048  0     8000      50                       # H: neutral RC through the cross-axis move (t=26-34)
+   +    api  "land"                                                              # I: autonomous landing (t=34)
+   +    rc   2048  2048   2048    2048  0     6000      50                       # J: neutral RC through touchdown (t=34-40)

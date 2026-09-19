@@ -1,0 +1,108 @@
+# `sf pilot say --eval` の事例集 — 実際の Jev に対して指示の読み取りを評価する。
+# Evaluation cases for `sf pilot say --eval`: how the LIVE Jev reads an instruction.
+#
+# 使い方 / Usage:
+#   TYPESAFE_API_KEY=... sf pilot say --eval lib/sfpilot/tests/say_eval_cases.yaml
+#
+# キーが要る（実際のモデルに問うため）。キー無しで組み立て規則だけを確かめるなら
+# `pytest lib/sfpilot/tests/test_instruction.py` を使う。
+# A key is required, since the point is to ask the real model. To check the
+# assembly rules without one, use `pytest lib/sfpilot/tests/test_instruction.py`.
+#
+# `--fake` を付けて実行すると、ほとんどの事例が不一致になる。これは正常である:
+# FakeJudge は文を読まず固定の手順を返すだけなので、この表が測ろうとしている
+# 「Jev が文をどう読むか」がそもそも存在しない。`--fake` で分かるのは、照合の
+# 仕組み自体が動いていること（不一致をきちんと検出すること）だけである。
+# Run with `--fake` and most cases will FAIL. That is correct: FakeJudge does not
+# read the sentence, it returns a fixed sequence, so the very thing this table
+# measures -- how Jev reads a sentence -- is not present. `--fake` only shows that
+# the comparison harness itself works, i.e. that it does detect a mismatch.
+#
+# `expect_steps` は機体へ送られる API 行そのもの（docs/architecture/tello-api-reference.md）。
+# 手順の番号ではなく行で書くのは、本モジュールの内部を知らなくても検証できるようにするため。
+# `expect_steps` are the API lines actually sent to the vehicle
+# (docs/architecture/tello-api-reference.md). They are written as lines rather
+# than as step objects so that anyone who can read that reference can check them
+# without knowing this module's internals.
+#
+# 既定値の前提 / Assumed defaults (lib/sfpilot/config.py の InstructionConfig):
+#   small=20cm / medium=50cm / large=100cm、旋回 small=45 / medium=90 / large=180 度
+#   地上から始まるので先頭に `takeoff`、末尾に `land` が補われる
+#   A `takeoff` is prepended (the aircraft starts on the ground) and a `land` appended.
+
+cases:
+  # -- 単純（1 動作）/ Simple, one action ------------------------------------
+  - instruction: "前に進んで"
+    expect_steps: ["takeoff", "forward 50", "land"]
+    note: 量の指定が無いので既定の medium=50cm になる / no amount given, so the medium band
+
+  - instruction: "少し上に上がって"
+    expect_steps: ["takeoff", "up 20", "land"]
+    note: 「少し」が small と読まれるか / does "少し" read as the small band
+
+  # -- 複数手順 / Several actions --------------------------------------------
+  - instruction: "上がって前に進んで戻ってきて着陸して"
+    expect_steps: ["takeoff", "up 50", "forward 50", "go -50 0 0 50", "land"]
+    note: return_home は積算位置から go を計算する / return_home becomes a computed go
+
+  - instruction: "前に進んで右を向いてまた前に進んで"
+    expect_steps: ["takeoff", "forward 50", "cw 90", "forward 50", "land"]
+    note: 「右を向いて」が turn_right（移動ではなく旋回）と読まれるか
+
+  # -- 数値つき / With figures ------------------------------------------------
+  - instruction: "1m上がって前に70cm進んで"
+    expect_steps: ["takeoff", "up 100", "forward 70", "land"]
+    note: コードが抜き出した数値が Jev の量の区分に優先する / spoken figures override the bands
+
+  - instruction: "前に80cm進んで"
+    expect_steps: ["takeoff", "forward 80", "land"]
+    note: |
+      数値が 1 つで、Jev が動作を 2 つ（上昇＋前進）読むことがある事例。
+      2026-09-19 実測では `up 80` + `forward 50` になった —— 唯一の 80cm が、
+      文が名指ししていない上昇へ順序だけで渡っていた。文が名指しするのは前進
+      だけなので、80cm は前進のものである。組み立て側の固定は
+      `test_instruction.py::test_a_figure_goes_to_the_move_the_sentence_names_beside_it`。
+      One figure, while Jev may read two actions (a climb it adds, plus the
+      travel). Measured 2026-09-19 as `up 80` + `forward 50`: pairing by
+      order alone gave the only 80 cm to a climb the sentence never names.
+      The sentence names the travel, so the 80 cm is the travel's.
+
+  - instruction: "90度右に回ってから50cm前に進んで"
+    expect_steps: ["takeoff", "cw 90", "forward 50", "land"]
+    note: 度は旋回へ、cm は移動へ単位で割り当てられる / degrees to the turn, cm to the travel
+
+  - instruction: "一メートル前に進んで戻ってきて"
+    expect_steps: ["takeoff", "forward 100", "go -100 0 0 50", "land"]
+    note: 漢数字＋「メートル」も数値として読む / kanji numerals are read too
+
+  # -- 曖昧 / Vague -----------------------------------------------------------
+  - instruction: "ちょっと移動して"
+    expect_refusal: true
+    note: |
+      向きの指定が無い曖昧な指示。どの水平移動（forward / left / right / back）も
+      等しくありうるため、モデルはどれにも高い確信を持てない。2026-09-19 の実測は
+      forward・確信度 0.46 で、`min_step_confidence` 0.60 に届かず拒否された。
+      これは望ましい挙動である —— 行き先を当てずっぽうで決めて飛ぶより、操作者に
+      言い直してもらうほうがよい。したがって期待は「拒否」であり、ここで手順が
+      組まれてしまうほうが不具合である。
+      The direction is unspecified, so every horizontal move is equally
+      plausible and the model cannot be confident in any of them: measured
+      2026-09-19 at forward with confidence 0.46, below the 0.60
+      `min_step_confidence` gate, and refused. That is the wanted behaviour --
+      better to ask the operator to rephrase than to guess a direction and
+      fly it. The expectation is therefore a refusal, and building a
+      sequence here would be the defect.
+
+  # -- 範囲外 / Outside the envelope -------------------------------------------
+  - instruction: "前に10m進んで"
+    expect_refusal: true
+    note: |
+      1 回の移動が機体の上限 300cm を超えるため、飛ばす前に拒否される。
+      One move beyond the vehicle's 300 cm ceiling, refused before anything flies.
+
+  # -- 飛行と無関係 / Not about flying ------------------------------------------
+  - instruction: "今日の天気を教えて"
+    expect_refusal: true
+    note: |
+      飛行の指示ではない。step_1_move が `none` になり、手順が作られないこと。
+      Not a flight instruction: step_1_move should be `none` and no steps built.

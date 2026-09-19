@@ -36,6 +36,7 @@ namespace sf {
 
 Topic<ImuData,         RingBuffer, 8>  sensor_imu;
 Topic<TofData,         Queue, 2>       sensor_tof;
+Topic<TofData,         Queue, 2>       sensor_tof_front;
 Topic<FlowData,        Queue, 2>       sensor_flow;
 Topic<MagData,         Queue, 2>       sensor_mag;
 Topic<BaroData,        Queue, 2>       sensor_baro;
@@ -74,6 +75,7 @@ void topics_init()
 {
     sensor_imu.init();
     sensor_tof.init();
+    sensor_tof_front.init();
     sensor_flow.init();
     sensor_mag.init();
     sensor_baro.init();
@@ -668,6 +670,21 @@ namespace param_vars {
     // キャリブレーション — 起動時バイアス校正の ON/OFF（ImuTask が飛行前に静止で推定器へ
     // 種付け）。既定 ON。
     bool calibration_enable = true;
+
+    // Front ToF — drive the forward-facing VL53L3CX on/off. Default on.
+    // Read ONCE by TofTask at setup, before the bring-up sequence: the front
+    // sensor's I2C address is assigned during bring-up and cannot be handed
+    // back at runtime, so there is no live-reload callback. `param set
+    // tof.front.enable 0; param save; reboot` turns the sensor off for good —
+    // the escape hatch if the front sensor ever disturbs the bottom one in
+    // flight, since the bottom ToF is the only vertical observation.
+    // 前方 ToF — 前方 VL53L3CX を駆動するか。既定 ON。
+    // TofTask が setup で起動手順の「前」に 1 回だけ読む: 前方の I2C アドレスは
+    // 起動手順中に割り当てられ実行中に返上できないため、ライブ再読込コールバックは
+    // 持たない。`param set tof.front.enable 0; param save; reboot` で恒久的に
+    // 切れる — 底面 ToF が唯一の鉛直観測である以上、前方が飛行中に底面を乱した
+    // ときの退避手段である。
+    bool tof_front_enable = true;
 }
 
 namespace params {
@@ -875,6 +892,10 @@ static const ParamEntry table[] = {
 
     // Calibration — boot gyro/accel bias calibration on/off
     {"calibration.enable",     ParamType::BOOL,  &calibration_enable, 1.0f,   0.0f,   1.0f,    nullptr},
+
+    // Front ToF — drive the forward VL53L3CX on/off (read once at TofTask setup;
+    // takes effect on the next boot, see param_vars::tof_front_enable)
+    {"tof.front.enable",       ParamType::BOOL,  &tof_front_enable,   1.0f,   0.0f,   1.0f,    nullptr},
 };
 
 static constexpr int TABLE_SIZE = sizeof(table) / sizeof(table[0]);

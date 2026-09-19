@@ -713,6 +713,193 @@ Controller / Estimator / HW のことは何も触らずに、自分のロジッ�
 
 実装が進んだ時点で本節を更新し、`@design` ステータスを `[OK]` に更新する。
 
+## 10. UDP テレメトリ電文様式（UDP:5005）
+
+### この節の位置づけ
+
+`sf_telemetry` が 50Hz でブロードキャストするモニタ用テレメトリの電文様式を定義する。**本節を電文様式の基準とする。** 実装（`components/sf_telemetry/include/telemetry.hpp`）と PC 側デコーダ（`lib/sfcli/commands/telemetry.py`）は本節に従う。
+
+2026-09-19 制定。それ以前は様式を定義した文書が無く、`telemetry.hpp` の `@design` タグが実在しない節（旧「detailed_design.md §8 — UDP telemetry packet format」、実際の §8 はメモリ配置）を参照していた。その誤りを正すために本節を新設した。
+
+400Hz の解析用 Data Stream（`sf log wifi`）は別の電文で、`components/sf_telemetry/include/data_stream_wire.hpp` が定義する。混同しないこと。
+
+### 基本
+
+| 項目 | 値 |
+|------|-----|
+| 送信先 | 255.255.255.255:5005（UDP ブロードキャスト） |
+| 周期 | 50Hz（20ms） |
+| バイト順 | リトルエンディアン（ESP32 ネイティブ） |
+| 詰め方 | `#pragma pack(1)`（詰め物なし） |
+| magic | `0xCAFE` |
+| packet_type | `0x01`（`TELEM_TYPE_PHASE2A_BASIC`） |
+
+### 版の判別規則
+
+**受信側は「全長」で版を判別する。**
+
+| 全長 | 版 | 内容 |
+|------|-----|------|
+| 104 バイト | v1 | 姿勢・角速度・加速度・位置・速度・推力/トルク・モータ duty・飛行状態 |
+| 140 バイト | v2 | v1 の全項目＋末尾にセンサ部（電池電圧・ToF・フロー・地磁気・気圧高度） |
+
+v2 は v1 への**末尾追記**であり、先頭 104 バイトは両版でビット単位に同一である。よって旧受信機は 140 バイトのうち先頭 104 バイトをそのまま復号できる。`version` フィールド（v1 は 1、v2 は 2）は**検証にのみ**使い、版の選択には使わない。140 バイトなのに `version` が 2 でない電文は異常として破棄する。
+
+`packet_type` は v2 でも `0x01` に据え置く。中身の種別（基本テレメトリ）が変わっていないためで、`packet_type` も変えると受信側が `(種別, 版)` の2次元分岐になり、末尾追記による前方互換の利点を失う。Data Stream のステータス電文が 17/53/57 バイトの版を全長だけで判別しているのと同じ規則である。
+
+パケット長の増加は送信コストに影響しない。ESP32 の lwIP `sendto()` はペイロードによらず1「回」あたり約 2.5ms を要し（117 バイトと 840 バイトで同じ実測）、共存する ESP-NOW の品質を決めるのは呼び出し回数だからである（`docs/architecture/udp-telemetry-design.md` §3）。
+
+### v1 部（オフセット 0〜103、凍結）
+
+| オフセット | 名前 | 型 | 単位・意味 |
+|---|---|---|---|
+| 0 | magic | u16 | `0xCAFE` |
+| 2 | version | u8 | 1 または 2 |
+| 3 | packet_type | u8 | `0x01` |
+| 4 | timestamp_us | u32 | 機体起動からの経過時間 [us] |
+| 8 | roll, pitch, yaw | f32×3 | 姿勢 [rad] |
+| 20 | gyro_x, y, z | f32×3 | 機体角速度 [rad/s] |
+| 32 | accel_x, y, z | f32×3 | 機体加速度 [m/s²] |
+| 44 | pos_x, y, z | f32×3 | 位置 [m]（NED） |
+| 56 | vel_x, y, z | f32×3 | 速度 [m/s]（NED） |
+| 68 | thrust | f32 | 推力 [N] |
+| 72 | roll/pitch/yaw_torque | f32×3 | 機体トルク [Nm] |
+| 84 | motor_duty[4] | f32×4 | モータ duty M1〜M4 [0,1] |
+| 100 | system_mode | u8 | FlightState の値 |
+| 101 | reserved[3] | u8×3 | 0（4バイト境界合わせ） |
+
+**この領域は凍結する。** 項目の並べ替え・型変更・削除を行わない。追加は必ず末尾に行う。
+
+### v2 センサ部（オフセット 104〜139）
+
+| オフセット | 名前 | 型 | 単位・意味 |
+|---|---|---|---|
+| 104 | voltage | f32 | 電池電圧 [V]（0 = 不明） |
+| 108 | tof_bottom | f32 | 下向き ToF 距離 [m] |
+| 112 | tof_front | f32 | 前方 ToF 距離 [m]。測定値が無いときは `kTelemTofFrontUnavailable`（-1.0）。有効性は bit1 が正 |
+| 116 | flow_dx_total16 | u16 | フロー累計 dx [counts] の下位 16 ビット（折り返す）。**差分ではない** |
+| 118 | flow_dy_total16 | u16 | フロー累計 dy [counts] の下位 16 ビット（同上） |
+| 120 | flow_squal | u8 | 最新の表面品質 |
+| 121 | valid_flags | u8 | 有効ビット（下表） |
+| 122 | reserved2[2] | u8×2 | 0（地磁気を4バイト境界に置くため） |
+| 124 | mag_x, y, z | f32×3 | 地磁気 [uT]（補正済み） |
+| 136 | baro_altitude | f32 | 気圧高度 [m] |
+
+各オフセットは `telemetry.hpp` の `static_assert(offsetof(...))` で固定し、`lib/sfcli/commands/test_telemetry.py` が同じ表を持って Python の `struct` 書式と突き合わせる。片側だけ並べ替えると試験が落ちる。
+
+### 有効ビット（valid_flags）
+
+| ビット | 定数 | 対象 |
+|---|---|---|
+| bit0 | `TELEM_VALID_TOF_BOTTOM` | 下向き ToF |
+| bit1 | `TELEM_VALID_TOF_FRONT` | 前方 ToF（Optional。非搭載・無効化・USB 給電のみでの起動失敗時は 0） |
+| bit2 | `TELEM_VALID_FLOW` | オプティカルフロー |
+| bit3 | `TELEM_VALID_MAG` | 地磁気 |
+| bit4 | `TELEM_VALID_BARO` | 気圧高度 |
+| bit5 | `TELEM_VALID_POWER` | 電池電圧 |
+
+**有効性の基準はビットであり、値ではない。** 受信側はビットだけを見ること。`tof_front` の -1.0 のような値との比較で有効性を判定してはならない。実センサは異常時に負値を返しうるためである。
+
+ビットは 2 つの条件の積で立つ。(1) センサ自身が publish した有効性（下向き ToF は `tof_valid`、電池電圧は 0 より大きいこと）と、(2) 鮮度である。鮮度は各センサのタイムスタンプの経過時間が `kTelemSensorStaleUs`（500ms）未満であることで判定する（R16）。`sensor_snapshot` と `sensor_power` はどちらも Latest トピックで最終値を周期を跨いで保持するため、経過時間を見ないと停止したセンサが動作中だと誤って報告され続ける。500ms は対象で最も遅い気圧計（50Hz）の 25 周期にあたり、正常なセンサが誤って無効になることはない。
+
+### フローの 2 項目は「累計」である（2026-09-19 に差分から改めた）
+
+`flow_dx_total16` / `flow_dy_total16` は、**起動からの累計の下位 16 ビット**である。移動量ではない。受信側が「今回の累計 − 前回受信の累計」を **16 ビットの折り返しつきで** 引き算して、その間の移動量を得る。
+
+#### なぜ機体が差分を送らないのか
+
+フローセンサの `dx`/`dy` は「前回読み出しからの変位」という差分量で、絶対量ではない。センサは約 100Hz、テレメトリは 50Hz なので、差分量をそのまま 50Hz で覗くと各周期の最後の 1 件しか見えず残りが失われる。そのため `SensorSnapshot` に**起動からの累計** `flow_dx_total` / `flow_dy_total`（`uint32`）を持たせ、`ImuTask` が 400Hz のループで**全サンプル**をこれに加算している（`ImuTask` は `sensor_flow` キューの唯一の consumer であり全サンプルを通す）。書き手は `ImuTask` の 1 か所だけである（R5、`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」）。
+
+v2 は当初、この累計の差（＝前回**送信**からの変位）を `int16` の枠に入れて送っていた。**2026-09-19 の実機実測でこれが成り立たないことが分かった。** UDP:5005 は 255.255.255.255 へのブロードキャストで、WiFi はブロードキャストを再送しない。24.6 秒に約 1,230 個送って Mac が受け取ったのは 714 個（58%）で、連続 4〜10 個の欠損が何度も起きた（同じ時刻にユニキャストの Data Stream、`sf log wifi` は欠損 0%）。**空中で失われたパケットが運んでいた差分は、受信側では永久に失われる。** 「送信が飛んだ分を次のパケットに持ち越す」という当初の設計は、機体が送らなかった場合しか救わない。
+
+累計ならこの欠損を越えて生き残る。欠損の両側で受け取った 2 つの累計の差は、間で何個パケットが消えていても、その間の移動量の全量のままだからである。
+
+#### 折り返しと、唯一の限界
+
+累計は `uint32` だが電文の枠は 16 ビットなので、`static_cast<uint16_t>(snap.flow_dx_total)` で下位 16 ビットに切り詰めて送る。ここでの切り捨ては望むところである。差分と違い累計は常に 2^16 を法として読まれるので、捨てた上位ビットに受信側が必要とする情報は無い。
+
+受信側は `delta = int16(今回 − 前回)`、すなわち差を 2^16 で法として取り符号つきとして読む。**限界はただ一つ、「受信が途絶えている間の移動量が ±32767 カウントを超えた場合」である。** それを超えると、折り返しは逆向きの短い移動と区別がつかなくなる。実測では手で機体を振っても毎秒約 900 カウントだったので、これはおよそ **36 秒の連続欠損**にあたる。36 秒の途絶はどのみち復元できない。この値は `telemetry.hpp` の `kTelemFlowWrapSpan` に定数として置いてある。
+
+#### 受信側（PC）の作法
+
+差の取り方は `lib/sfcli/commands/telemetry.py` の `flow_delta(prev_total16, cur_total16)` **1 か所**にまとめてある。端末表示・CSV・ブラウザ表示・`lib/sfpilot/link.py` はいずれもこれを通す。状態（前回の累計と前回の `t_us`）を持つのは同ファイルの `FlowTracker` である。
+
+- `decode_packet()` は**生の累計**を返す。移動量に変えるのは呼び出し側の仕事で、復号器は 1 パケットの純粋な復号にとどめる
+- **機体の再起動を検出する。** タイムスタンプ `timestamp_us` は「その機体の起動」からのマイクロ秒なので、再起動すれば時刻もフロー累計も 0 から始まる。`FlowTracker` は `t_us` が**巻き戻ったら**基準を捨て、その 1 件だけ移動量を「不明」とする。これが無いと再起動後の最初のパケットが、古い累計との差を 1 回の巨大な移動として報告してしまう
+- CSV には**生の累計と、前回行からの移動量の両方**を出す（`flow_dx_total` / `flow_dx_delta` 等）。移動量はそのまま図に描ける量で、累計は記録側が飛ばした行をまたいだ移動量を解析側が取り直すためにある
+- 104B（v1）のパケットにはフロー項目が無いので、CSV は従来どおり空欄にする。**0 を書かない**（0 は「面が動かなかった」と読まれる）
+
+#### バージョン番号を 2 のまま据え置いた理由
+
+意味を変えたのに `TELEM_VERSION` を 3 へ上げなかったのは、**v2 自体が 2026-09-19 に `feat/jev-autopilot` ブランチで生まれ、同じ日・同じブランチで直したものであり、旧い意味（差分）を送った公開ファームが存在しない**ためである。3 へ上げれば、どこにも無いパケットのための復号経路を全受信側が抱えることになる。着手前に、リポジトリ内に v2 の差分を前提とした利用者が他に無いことを確認した（`flow_dx_sum` の読み手は `sf telemetry`・`telemetry_web`・その試験だけで、いずれも本変更に追随させた）。
+
+### 前方 ToF の供給経路（R11 の契約を実装）
+
+前方 ToF は 2026-09-19 に駆動を開始した（jev-autopilot P2b）。同日、実機で確認済みである（`docs/plans/jev-autopilot.md` §4.8）。かつて R11 に従って先に決めた 4 段階の契約を、そのまま実装したものである。
+
+| 段階 | 内容 | 実装 |
+|------|------|------|
+| 1 | `TofTask` が XSHUT を時差解除する 2 センサ起動手順を実装する | `tasks/tof_task.cpp::startTofSensors()` |
+| 2 | 専用トピック `sensor_tof_front` を新設する。**底面と変数・トピックを共有しない。** かつて底面と前方が同じタイムスタンプ変数を更新し、電池駆動時に前方が初期化に成功して 2 倍のレートに見えた不具合がある（`docs/architecture/udp-telemetry-design.md` §2「1 データソース = 1 変数」） | `sf_core/include/topics.hpp` |
+| 3 | `SensorSnapshot` に `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp` を追加し、`ImuTask` がミラーする | `sf_core/include/data_types.hpp`、`tasks/imu_task.cpp`（`tof_front_status` も併せて追加） |
+| 4 | テレメトリは `sensor_snapshot` からそれを読み、bit1 と `tof_front` を埋める | `sf_telemetry/telemetry.cpp` |
+
+#### 起動順序（この順序でなければならない）
+
+VL53L3CX は 2 個とも I2C 0x29 で起動する。前方を生かしたまま底面のアドレスを変更すると、変更が**両方に届いて**混線する。したがって順序は 1 通りしかない。
+
+| 段 | 動作 | なぜその順か |
+|----|------|------------|
+| 1 | 前方 XSHUT = LOW（リセット保持） | 0x29 に応答する部品を 1 個だけにする |
+| 2 | 底面を初期化し 0x30 へ、`startRanging()` まで完了 | **従来と全く同じ手順**。底面は高度推定の唯一の鉛直観測であり、その挙動を変えない |
+| 3 | 以降は周期ループの余り時間で 1 周期 1 段ずつ（`FrontBringUp`）: `Wake` で前方 XSHUT=HIGH → 次周期の `Probe` で `isPresentAt()`（model id 1 本読み）→ 本物なら `init()`→0x31→`startRanging()` | 底面が自分のアドレスへ移った後なので、0x29 に応答するのは前方だけである。**設定時に一括で行わない**: 前方が非搭載だとドライバが起動完了を最大 500ms ポーリングしてから失敗し（`VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS`）、底面が約 15 周期読まれなくなる。在否確認を先に置いて「居ない」を数 ms で決め、かつ起動待ちを「どのみち眠る周期のスリープ」に吸収させることで、**`last_wake` に触れず底面の 30Hz の位相を一切動かさない**（安全要件 2）|
+
+段 3 が失敗した場合は前方 XSHUT を LOW に戻し、`sensor_present(FrontToF) = false` として続行する（R4 の Optional）。**底面の失敗時の扱いは従来から変えていない。**
+
+#### 底面を乱さないための設計
+
+底面 ToF は高度推定の唯一の鉛直観測（気圧は既定で非融合）であり、Critical である（`hardware_init.md` §5）。前方は Optional にすぎない。したがって次を設計で保証する。
+
+| 要件 | 手段 |
+|------|------|
+| 前方の失敗が底面に及ばない | Topic・`SensorSnapshot` のフィールド・タイムスタンプ・`SensorId` をすべて別にする。前方の失敗経路は XSHUT を LOW に戻して終わり、底面の状態に一切触れない |
+| 底面の 30Hz が前方で遅れない | 1 周期内で**底面を先に、無条件で**読む。前方はその後、周期に余裕があるときだけ読む（`cycle_still_on_schedule`）。余裕が無ければ前方のサンプルを 1 つ捨てる |
+| 前方が推定器に入らない | `ImuTask` は `sensor_tof_front` を**ミラーするだけ**で `g_estimator` にも `g_takeoff_landing` にも渡さない。前方は機体の状態ではなく障害物の観測であり、状態ベクトルがモデル化していない |
+| 実機で問題が出たら即座に切れる | パラメータ `tof.front.enable`（既定 1）。`TofTask` が起動手順の前に 1 回読む。`param set tof.front.enable 0; param save` の後**再起動**で反映（アドレス割り当ては実行中に返上できないため、ライブ再読込は持たない） |
+
+#### I2C バス占有の見積もり
+
+底面の周期 33ms に対し、2 センサ分の読み出しがどれだけ占めるかを見積もる。バスは 400kHz、1 バイト ≈ 9 クロック（8 ビット + ACK）＝ 22.5µs。
+
+| 処理 | 転送量 | 所要 |
+|------|--------|------|
+| `isDataReady`（`GetMeasurementDataReady`） | 約 2 バイトの読み（レジスタアドレス 2 + データ 1、start/stop 込みで概算 6 バイト相当） | 約 0.14ms |
+| `getDistance`（`GetMultiRangingData`, `DEVICERESULTSLEVEL_FULL`） | 結果ブロックを 1 トランザクションで一括読み。レジスタ 0x0088〜0x010E の **134 バイト**（system 44 + core 33 + debug 56 を含む範囲）＋アドレス 2 | 約 3.1ms |
+| `clearInterruptAndStartMeasurement` | 数バイトの書き込み | 約 0.1ms |
+| **1 センサあたり合計** | | **約 3.3ms** |
+| **2 センサ合計** | | **約 6.6ms（33ms 周期の約 20%）** |
+
+残り約 27ms が同じバスを使う他タスク（BMP280 50Hz、BMM150 25Hz、INA3221 10Hz — いずれも 1 回あたり数十バイト）と余裕に充てられる。**前方を足してもバス占有は周期の 2 割程度**であり、底面の 30Hz を脅かさない。なお `getDistance` は新サンプルがある周期にしか走らないため、上の値は最悪値である。
+
+それでも `cycle_still_on_schedule` の間引きを置くのは、クロックストレッチや再試行中の部品でバスが想定外に遅くなったときに、**底面の次の読み出しを遅らせるのではなく前方のサンプルを捨てる**ためである。
+
+#### Data Stream（400Hz ログ）は今回対象外
+
+前方 ToF を Data Stream に載せることは**今回行わない**。テレメトリ（50Hz）で目的（監視・`sf pilot` への供給）は足りており、ワイヤ様式の変更は独立に検証すべき別の作業だからである。`lib/sflog` 側には既に `tof_front` ストリーム（ワイヤ id **0x47**）が定義済みで、載せるときはそれを使う。**0x49 は使用禁止**（`data_stream_wire.hpp:68-79`）。
+
+### 関連ファイル
+
+| ファイル | 役割 |
+|---|---|
+| `components/sf_telemetry/include/telemetry.hpp` | 構造体・定数・オフセット検査 |
+| `components/sf_telemetry/telemetry.cpp` | 構築と送信 |
+| `tasks/telemetry_task.cpp` | 50Hz 駆動、`@subscriber` 注記 |
+| `lib/sfcli/commands/telemetry.py` | PC 側デコーダ・端末表示・CSV |
+| `lib/sfcli/commands/telemetry_web.py` | ブラウザ表示（デコーダ共用） |
+| `lib/sfcli/commands/test_telemetry.py` | 復号試験・オフセット突き合わせ |
+
+なお本電文は `protocol/spec/messages.yaml` にまだ載っていない（同ファイルの `TelemetryPacket` は 22 バイトの ESP-NOW 版）。この乖離は `docs/plans/repository-cleanup-candidates.md` の課題 C2 として未解決である。
+
 ---
 
 <a id="english"></a>
@@ -816,3 +1003,190 @@ storage,   data, spiffs,  0x310000, 0x200000,   # 2MB Blackbox
 ### Task Stack Summary
 
 Total task stacks: ~102KB out of 512KB RAM. Remaining ~410KB for Pub-Sub buffers, ESKF matrices, heap, etc.
+
+## 10. UDP Telemetry Wire Format (UDP:5005)
+
+### Status of this section
+
+This section defines the wire format of the monitoring telemetry that `sf_telemetry` broadcasts at 50Hz. **It is the authority for that format.** The firmware (`components/sf_telemetry/include/telemetry.hpp`) and the PC decoder (`lib/sfcli/commands/telemetry.py`) follow it.
+
+Added 2026-09-19. Before that no document defined the format, and `telemetry.hpp` carried a `@design` tag pointing at a section that did not exist (formerly "detailed_design.md §8 — UDP telemetry packet format"; §8 is actually Memory Layout). This section was created to correct that.
+
+The 400Hz analysis Data Stream (`sf log wifi`) is a different wire format, defined by `components/sf_telemetry/include/data_stream_wire.hpp`. Do not confuse the two.
+
+### Basics
+
+| Item | Value |
+|------|-------|
+| Destination | 255.255.255.255:5005 (UDP broadcast) |
+| Rate | 50Hz (20ms) |
+| Byte order | Little-endian (ESP32 native) |
+| Packing | `#pragma pack(1)` (no padding) |
+| magic | `0xCAFE` |
+| packet_type | `0x01` (`TELEM_TYPE_PHASE2A_BASIC`) |
+
+### Version dispatch rule
+
+**Receivers select the layout by TOTAL LENGTH.**
+
+| Total length | Version | Contents |
+|---|---|---|
+| 104 bytes | v1 | Attitude, angular rate, acceleration, position, velocity, thrust/torque, motor duty, flight state |
+| 140 bytes | v2 | All of v1 plus an appended sensor block (battery voltage, ToF, optical flow, magnetometer, pressure altitude) |
+
+v2 is a pure **append** to v1: the first 104 bytes are bit-identical in both, so an older receiver can decode the leading 104 bytes of a 140-byte packet unchanged. The `version` field (1 for v1, 2 for v2) is used **only for validation**, never to select the layout; a 140-byte packet whose `version` is not 2 is rejected as malformed.
+
+`packet_type` stays `0x01` in v2 because the kind of content (basic telemetry) has not changed. Bumping it as well would force receivers into a two-dimensional (type, version) branch and throw away the forward compatibility the append buys. This is the same rule the Data Stream's status packet uses to tell its 17/53/57-byte revisions apart by total length alone.
+
+Growing the packet does not cost anything to send: lwIP's `sendto()` on ESP32 takes about 2.5ms per **call** regardless of payload (117 bytes and 840 bytes measure the same), and what determines coexistence quality with ESP-NOW is the call rate (`docs/architecture/udp-telemetry-design.md` §3).
+
+### v1 region (offsets 0–103, frozen)
+
+| Offset | Name | Type | Unit / meaning |
+|---|---|---|---|
+| 0 | magic | u16 | `0xCAFE` |
+| 2 | version | u8 | 1 or 2 |
+| 3 | packet_type | u8 | `0x01` |
+| 4 | timestamp_us | u32 | Time since boot [us] |
+| 8 | roll, pitch, yaw | f32×3 | Attitude [rad] |
+| 20 | gyro_x, y, z | f32×3 | Body angular rate [rad/s] |
+| 32 | accel_x, y, z | f32×3 | Body acceleration [m/s²] |
+| 44 | pos_x, y, z | f32×3 | Position [m] (NED) |
+| 56 | vel_x, y, z | f32×3 | Velocity [m/s] (NED) |
+| 68 | thrust | f32 | Thrust [N] |
+| 72 | roll/pitch/yaw_torque | f32×3 | Body torque [Nm] |
+| 84 | motor_duty[4] | f32×4 | Motor duty M1–M4 [0,1] |
+| 100 | system_mode | u8 | FlightState value |
+| 101 | reserved[3] | u8×3 | 0 (4-byte alignment) |
+
+**This region is frozen.** Do not reorder, retype, or remove fields. Additions always go at the end.
+
+### v2 sensor block (offsets 104–139)
+
+| Offset | Name | Type | Unit / meaning |
+|---|---|---|---|
+| 104 | voltage | f32 | Battery voltage [V] (0 = unknown) |
+| 108 | tof_bottom | f32 | Downward ToF distance [m] |
+| 112 | tof_front | f32 | Forward ToF distance [m]. `kTelemTofFrontUnavailable` (-1.0) when there is no reading; bit1 is the authority on validity |
+| 116 | flow_dx_total16 | u16 | Low 16 bits of the running flow total dx [counts], wrapping. **Not a difference** |
+| 118 | flow_dy_total16 | u16 | Low 16 bits of the running flow total dy [counts], same |
+| 120 | flow_squal | u8 | Latest surface quality |
+| 121 | valid_flags | u8 | Validity bits (table below) |
+| 122 | reserved2[2] | u8×2 | 0 (keeps the magnetometer 4-byte aligned) |
+| 124 | mag_x, y, z | f32×3 | Magnetometer [uT] (calibrated) |
+| 136 | baro_altitude | f32 | Pressure altitude [m] |
+
+Each offset is pinned by `static_assert(offsetof(...))` in `telemetry.hpp`, and `lib/sfcli/commands/test_telemetry.py` holds the same table and checks it against Python's `struct` formats. Reordering one side alone fails that test.
+
+### Validity bits (valid_flags)
+
+| Bit | Constant | Sensor |
+|---|---|---|
+| bit0 | `TELEM_VALID_TOF_BOTTOM` | Downward ToF |
+| bit1 | `TELEM_VALID_TOF_FRONT` | Forward ToF (Optional: 0 when not fitted, disabled, or not started on USB-only power) |
+| bit2 | `TELEM_VALID_FLOW` | Optical flow |
+| bit3 | `TELEM_VALID_MAG` | Magnetometer |
+| bit4 | `TELEM_VALID_BARO` | Pressure altitude |
+| bit5 | `TELEM_VALID_POWER` | Battery voltage |
+
+**The bit is the authority, not the value.** Receivers must test the bit and must never infer validity by comparing against a value such as `tof_front == -1.0`, because a live sensor can legitimately report a negative reading on error.
+
+A bit is set when two conditions hold: (1) the validity the sensor itself published (`tof_valid` for the downward ToF; greater than zero for the battery voltage), and (2) freshness. Freshness means the age of that sensor's own timestamp is below `kTelemSensorStaleUs` (500ms) (R16). Both `sensor_snapshot` and `sensor_power` are Latest topics that keep their last value across cycles, so without an age check a stopped sensor would be reported as working indefinitely. 500ms is 25 periods of the slowest source (the 50Hz barometer), so a healthy sensor never trips it.
+
+### The two flow fields are RUNNING TOTALS (changed from differences on 2026-09-19)
+
+`flow_dx_total16` / `flow_dy_total16` carry the **low 16 bits of a running total since boot**. They are not a movement. The receiver takes `current − previous` **as a wrapping 16-bit subtraction** to get the movement in between.
+
+#### Why the vehicle does not send a difference
+
+The sensor's `dx`/`dy` is an incremental quantity — displacement since the previous read, not an absolute value. The sensor runs at about 100Hz while telemetry sends at 50Hz, so reading the incremental value directly at 50Hz would show only the last sample of each interval and drop the rest. `SensorSnapshot` therefore carries **running totals since boot**, `flow_dx_total` / `flow_dy_total` (`uint32`), to which `ImuTask` adds **every sample** in its 400Hz loop (`ImuTask` is the sole consumer of the `sensor_flow` queue and sees all of them). `ImuTask` is the only writer (R5; `docs/architecture/udp-telemetry-design.md` §2, "one data source = one variable").
+
+v2 originally sent the difference between two of those totals (the displacement since the previous **send**) in an `int16` slot. **Measurement on hardware on 2026-09-19 showed that this does not hold.** UDP:5005 is a broadcast to 255.255.255.255, and WiFi does not retransmit broadcasts: of about 1,230 packets sent over 24.6 s the Mac received 714 (58%), with repeated runs of 4 to 10 consecutive losses (the unicast Data Stream, `sf log wifi`, lost nothing in the same session). **A difference carried by a packet lost in the air is gone for good on the receiving side.** The original design — "a suppressed send carries over to the next packet" — only covers the case where the vehicle did not send.
+
+A total survives that loss, because the difference between the two totals received either side of a gap is still the whole movement across it, however many packets vanished in between.
+
+#### The wrap, and the one limit
+
+The totals are `uint32` but the wire slot is 16 bits, so the firmware truncates with `static_cast<uint16_t>(snap.flow_dx_total)`. Truncation is exactly what is wanted: unlike a difference, a total is only ever read modulo 2^16, so the discarded high bits carry no information the receiver needs.
+
+The receiver computes `delta = int16(current − previous)`, that is, the difference modulo 2^16 read as signed. **There is exactly one limit: a movement of more than ±32767 counts while reception is interrupted.** Beyond that the wrap is indistinguishable from a shorter move the other way. Hand-waving the vehicle measured at most about 900 counts per second, so this is roughly **36 seconds of unbroken loss**, and nothing recovers a 36-second outage anyway. The bound is `kTelemFlowWrapSpan` in `telemetry.hpp`.
+
+#### What the PC side must do
+
+The subtraction lives in **one place**, `flow_delta(prev_total16, cur_total16)` in `lib/sfcli/commands/telemetry.py`. The terminal display, the CSV writer, the browser view and `lib/sfpilot/link.py` all go through it. The state (previous totals and previous `t_us`) belongs to `FlowTracker` in the same file.
+
+- `decode_packet()` returns the **raw totals**. Turning them into a movement is the caller's job; the decoder stays a pure decode of one packet.
+- **Detect a vehicle restart.** `timestamp_us` counts microseconds since *that vehicle's* boot, so a reboot restarts both it and the flow totals at zero. `FlowTracker` drops its reference when `t_us` goes **backwards** and reports the movement as unknown for that one packet. Without this, the first packet after a reboot would report the difference against the pre-reboot total as one enormous movement.
+- The CSV carries **both the raw total and the movement since the previous row** (`flow_dx_total` / `flow_dx_delta`, …). The movement is what an analysis plots directly; the total lets it re-derive a movement across rows the recorder itself skipped.
+- A 104-byte (v1) packet has no flow field, so the CSV leaves those cells empty as before. **Never a zero** — a zero would read as "the surface did not move".
+
+#### Why the version number stayed at 2
+
+`TELEM_VERSION` was not raised to 3 despite the change of meaning, because **v2 itself was born on the `feat/jev-autopilot` branch on 2026-09-19 and was corrected on the same day on the same branch: no released firmware ever sent the old meaning.** Raising it would make every receiver carry a decode path for a packet that exists nowhere. Before making the change, the repository was checked for other consumers assuming the v2 difference; the only readers of `flow_dx_sum` were `sf telemetry`, `telemetry_web` and their tests, all of which were updated with it.
+
+### How the forward ToF is supplied (the R11 contract, now implemented)
+
+The forward ToF started being driven on 2026-09-19 (jev-autopilot P2b), and was confirmed on hardware the same day (`docs/plans/jev-autopilot.md` §4.8). It implements, unchanged, the four-step contract that had been fixed in advance under R11.
+
+| Step | Content | Implementation |
+|------|---------|----------------|
+| 1 | `TofTask` performs an XSHUT-staggered two-sensor bring-up | `tasks/tof_task.cpp::startTofSensors()` |
+| 2 | A dedicated topic `sensor_tof_front`. **It shares no variable and no topic with the bottom sensor.** Bottom and front once updated the same timestamp variable, and on battery power the front sensor initialised successfully and made the rate appear doubled (`docs/architecture/udp-telemetry-design.md` §2, "one data source = one variable") | `sf_core/include/topics.hpp` |
+| 3 | `tof_front_distance` / `tof_front_valid` / `tof_front_timestamp` added to `SensorSnapshot`, mirrored by `ImuTask` | `sf_core/include/data_types.hpp`, `tasks/imu_task.cpp` (`tof_front_status` added alongside) |
+| 4 | Telemetry reads them from `sensor_snapshot` and fills bit1 and `tof_front` | `sf_telemetry/telemetry.cpp` |
+
+#### Bring-up order (there is only one possible order)
+
+Both VL53L3CX parts boot at I2C address 0x29. Re-addressing the bottom sensor while the front one is awake would reach **both** and interleave their ranging data. Hence the order is forced.
+
+| Stage | Action | Why in that order |
+|-------|--------|-------------------|
+| 1 | Front XSHUT = LOW (held in reset) | Leaves exactly one part answering at 0x29 |
+| 2 | Initialise the bottom sensor, move it to 0x30, through to `startRanging()` | **Exactly the previous procedure.** The bottom sensor is the only vertical observation the altitude estimate has, and its behaviour is not changed |
+| 3 | From then on, one stage per cycle in whatever time the cycle has left (`FrontBringUp`): `Wake` raises the front XSHUT → the next cycle's `Probe` calls `isPresentAt()` (a single model-id read) → only if the part is real, `init()` → 0x31 → `startRanging()` | The bottom sensor has already moved to its own address, so only the front part answers at 0x29. **This is deliberately not done all at once during setup**: with no front part fitted, the driver polls for boot completion for up to 500 ms before failing (`VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS`), which would leave the bottom sensor unread for about 15 cycles. Probing for presence first settles "not there" in a few ms, and the boot wait is absorbed into a sleep the cycle was going to take anyway, so **`last_wake` is never touched and the bottom sensor's 30 Hz phase does not move at all** (safety requirement 2) |
+
+If stage 3 fails, the front XSHUT goes back LOW and the task continues with `sensor_present(FrontToF) = false` (Optional, per R4). **Handling of a bottom-sensor failure is unchanged from before.**
+
+#### Design measures that keep the bottom sensor undisturbed
+
+The bottom ToF is the only vertical observation the altitude estimate has (the barometer is not fused by default) and is Critical (`hardware_init.md` §5). The front sensor is merely Optional. The design therefore guarantees the following.
+
+| Requirement | Means |
+|-------------|-------|
+| A front failure does not reach the bottom sensor | Topic, `SensorSnapshot` field, timestamp and `SensorId` are all separate. The front failure path returns XSHUT to LOW and ends there, touching no bottom-sensor state |
+| The bottom 30 Hz is not delayed by the front sensor | Within a cycle the bottom sensor is read **first and unconditionally**. The front one is read afterwards, only when the cycle has time to spare (`cycle_still_on_schedule`). With no time to spare, one front sample is dropped |
+| The front reading never enters the estimator | `ImuTask` **only mirrors** `sensor_tof_front`; it passes it to neither `g_estimator` nor `g_takeoff_landing`. The front reading observes an obstacle, not the vehicle's state, and the state vector does not model it |
+| It can be switched off at once if hardware misbehaves | Parameter `tof.front.enable` (default 1), read once by `TofTask` before the bring-up. `param set tof.front.enable 0; param save` takes effect **after a restart** (an address assignment cannot be surrendered at run time, so there is no live reload) |
+
+#### Estimated I2C bus occupancy
+
+How much of the bottom sensor's 33 ms period two sensors' reads take. The bus runs at 400 kHz and one byte is about 9 clocks (8 bits + ACK) = 22.5 µs.
+
+| Operation | Transfer | Time |
+|-----------|----------|------|
+| `isDataReady` (`GetMeasurementDataReady`) | About a 2-byte read (register address 2 + data 1; roughly 6 bytes including start/stop) | about 0.14 ms |
+| `getDistance` (`GetMultiRangingData`, `DEVICERESULTSLEVEL_FULL`) | The result block in one transaction: registers 0x0088–0x010E, **134 bytes** (covering system 44 + core 33 + debug 56), plus 2 for the address | about 3.1 ms |
+| `clearInterruptAndStartMeasurement` | A few bytes written | about 0.1 ms |
+| **Per sensor** | | **about 3.3 ms** |
+| **Both sensors** | | **about 6.6 ms (about 20% of the 33 ms period)** |
+
+The remaining 27 ms covers the other tasks on the same bus (BMP280 at 50 Hz, BMM150 at 25 Hz, INA3221 at 10 Hz — each a few tens of bytes per read) and the margin. **Adding the front sensor leaves bus occupancy at about a fifth of the period**, which does not threaten the bottom sensor's 30 Hz. Note that `getDistance` only runs on a cycle that has a new sample, so the figures above are worst cases.
+
+The `cycle_still_on_schedule` skip is kept even so, to **drop a front sample rather than delay the bottom sensor's next read** if clock stretching or a retrying part makes the bus unexpectedly slow.
+
+#### The Data Stream (400 Hz log) is out of scope here
+
+Carrying the forward ToF in the Data Stream is **not done here**. Telemetry at 50 Hz is enough for the purpose (monitoring, and supplying `sf pilot`), and changing the wire format is separate work that should be verified on its own. `lib/sflog` already defines a `tof_front` stream at wire id **0x47**, which is what to use when the time comes. **0x49 must not be used** (`data_stream_wire.hpp:68-79`).
+
+### Related files
+
+| File | Role |
+|---|---|
+| `components/sf_telemetry/include/telemetry.hpp` | Struct, constants, offset assertions |
+| `components/sf_telemetry/telemetry.cpp` | Build and send |
+| `tasks/telemetry_task.cpp` | 50Hz driver, `@subscriber` annotation |
+| `lib/sfcli/commands/telemetry.py` | PC decoder, terminal view, CSV |
+| `lib/sfcli/commands/telemetry_web.py` | Browser view (shared decoder) |
+| `lib/sfcli/commands/test_telemetry.py` | Decode tests, offset cross-check |
+
+This packet is not yet described in `protocol/spec/messages.yaml` (whose `TelemetryPacket` is the 22-byte ESP-NOW version). That divergence is tracked as open issue C2 in `docs/plans/repository-cleanup-candidates.md`.

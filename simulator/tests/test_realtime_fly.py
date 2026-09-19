@@ -83,8 +83,23 @@ ACRO_SCN = paths.root() / "simulator" / "sils" / "scenarios" / "acro_flight.scn"
 # trajectory.csv ハッシュが守っていたのと同じ性質（SILS_EMU_REALTIME/
 # SILS_EMU_RC_STDIN が両方未設定なら、P6 stage 1 機能追加前とbyte-identical）
 # を保護する。
+# 2026-09-19 re-captured: the SILS start attitude was corrected from the MuJoCo
+# identity quaternion (which is level but faces EAST, NED yaw=+90 deg, because
+# MuJoCo's world is ENU) to level-and-NORTH, so the firmware's yaw=0 boot state
+# and the physics now agree. Only truth.csv moved: its world-frame pos/vel/quat
+# columns are the previous run rotated -90 deg about down. Verified to be a pure
+# relabelling, not a dynamics change -- imu.csv is byte-identical across the fix,
+# the body rates match to 1e-6 rad/s, and the tilt magnitude hypot(roll,pitch)
+# matches to 3e-6 deg over the whole 25 s flight.
+# 2026-09-19 再採取: SILS の初期姿勢を MuJoCo の単位クォータニオン（水平だが
+# 東向き＝NED yaw=+90°。MuJoCo の世界が ENU のため）から「水平かつ北向き」へ
+# 修正し、ファームが yaw=0 で起動する状態と物理を一致させた。変化したのは
+# truth.csv だけで、その世界座標の pos/vel/quat 列は従来の走行を下方向まわりに
+# −90° 回したものである。動力学の変化ではなく純粋な付け替えであることを確認済み:
+# imu.csv は修正前後でバイト一致、機体角速度は 1e-6 rad/s 以内で一致、傾き
+# hypot(roll,pitch) は 25 秒の飛行全体で 3e-6° 以内で一致する。
 ACRO_FLIGHT_BASELINE_SHA256 = (
-    "0c557610394d79f99359e0bd6463197aee002670f320c29ab7ec271b30a414eb"
+    "e3cd84e0fe9544d791396caa52cdff7ba57b2156f6d57b795ada35937040b609"
 )
 
 

@@ -20,7 +20,7 @@
  * 状態推定値を発行し、制御タスクに通知する。
  *
  * @publisher sensor_imu, estimate_state, system_status
- * @subscriber sensor_tof, sensor_flow, sensor_mag, sensor_baro, estimator_command, system_mode
+ * @subscriber sensor_tof, sensor_tof_front, sensor_flow, sensor_mag, sensor_baro, estimator_command, system_mode
  * @design architecture.md §5 — Main pipeline: IMU → Estimation        [OK]
  * @design architecture.md §6 — ImuTask: Sensing(IMU) + Estimation     [OK]
  * @design detailed_design.md §8 — ImuTask: 400Hz, priority 24        [OK]
@@ -272,6 +272,26 @@ static void processAsyncSensors()
         snap_dirty = true;
     }
 
+    // Front ToF: MIRROR ONLY — the estimator never sees it. The front sensor
+    // observes obstacles ahead, not the vehicle's state, so feeding it to the
+    // estimator would be an observation of something the state vector does not
+    // model. It is drained here purely so telemetry and ws::tof_front() can read
+    // it, and into its OWN snapshot fields so a front-sensor fault cannot reach
+    // the bottom ToF above (R5, "one data source = one variable").
+    // 前方 ToF: 「ミラーのみ」 — 推定器には決して渡さない。前方は機体の状態ではなく
+    // 前方の障害物を観測するもので、推定器に入れれば状態ベクトルがモデル化していない
+    // 対象の観測になってしまう。ここで引き抜くのはテレメトリと ws::tof_front() が
+    // 読めるようにするためだけであり、格納先も「専用」フィールドとして上の底面 ToF に
+    // 前方の異常が及ばないようにする（R5「1 データソース = 1 変数」）。
+    sf::TofData tof_front;
+    while (sf::sensor_tof_front.read(tof_front)) {
+        snap.tof_front_distance  = tof_front.distance;
+        snap.tof_front_status    = tof_front.status;
+        snap.tof_front_valid     = tof_front.valid;
+        snap.tof_front_timestamp = tof_front.timestamp;
+        snap_dirty = true;
+    }
+
     sf::FlowData flow;
     while (sf::sensor_flow.read(flow)) {
         g_estimator->updateFlow(flow);
@@ -283,6 +303,17 @@ static void processAsyncSensors()
         // 失われる — オフライン再生には全量が要る。
         sf::log_flow.publish(flow);
         snap.flow_dx = flow.dx; snap.flow_dy = flow.dy; snap.flow_squal = flow.squal;
+        // Add EVERY sample to the running totals as well, so a reader slower
+        // than the sensor (the 50Hz telemetry) can recover the full
+        // displacement from the difference between two reads instead of
+        // sampling the incremental value and dropping what it did not see.
+        // Unsigned arithmetic: these are meant to wrap (see SensorSnapshot).
+        // 累積にも「全」サンプルを加える。これによりセンサより遅い読み手（50Hz の
+        // テレメトリ）は、差分量を覗いて見落とした分を失う代わりに、2回の読み取りの
+        // 差から変位の全量を復元できる。符号なし演算なのは折り返す前提だからである
+        // （SensorSnapshot 参照）。
+        snap.flow_dx_total += static_cast<uint32_t>(flow.dx);
+        snap.flow_dy_total += static_cast<uint32_t>(flow.dy);
         snap.flow_timestamp = flow.timestamp;
         snap_dirty = true;
     }

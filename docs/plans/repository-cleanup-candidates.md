@@ -22,7 +22,7 @@
 | # | 対象 | 事実 | 候補の処置 | 判断 |
 |---|------|------|-----------|------|
 | C1 | Python SDK が 2 系統: `lib/stampfly/`（Python パッケージ）と `tools/stampfly_py/`（配布用サンプル、`djitellopy` 互換） | 照合結果（2026-09-13）: `lib/stampfly/` は TCP 23 CLI＋WebSocket 80 前提で **`vehicle_old` 専用**（現行では接続不能）。`tools/stampfly_py/` は UDP 8889/8890 で現行 vehicle に対応。パッケージ化されているのは動かない方 | `lib/stampfly/` を `vehicle_old` と同時に削除（D1）。SDK は `tools/stampfly_py/` に一本化し、`lib/` へのパッケージ化は別途 | 中 |
-| C2 | `TelemetryPacket` の定義が 3 系統（`firmware/vehicle` の `telemetry.hpp`、`vehicle_old`、`firmware/common/protocol/udp_protocol.hpp`） | `messages.yaml` の `TelemetryPacket`（22B）は `vehicle_old` の ESP-NOW 版とのみ一致。現行 vehicle が実送信する 104B の UDP:5005 テレメトリは `messages.yaml` に無い＝正が崩れている | `messages.yaml` の `TelemetryPacket` を現行（UDP:5005、104B）の定義に置き換え、`check_messages.py` の検査対象に加える。`udp_protocol.hpp` は controller が使うなら残す | 要（D1 の後） |
+| C2 | `TelemetryPacket` の定義が 3 系統（`firmware/vehicle` の `telemetry.hpp`、`vehicle_old`、`firmware/common/protocol/udp_protocol.hpp`） | `messages.yaml` の `TelemetryPacket`（22B）は `vehicle_old` の ESP-NOW 版とのみ一致。現行 vehicle が実送信する 140B の UDP:5005 テレメトリ（v2。旧版は 104B。様式は `firmware/vehicle/docs/detailed_design.md` §10）は `messages.yaml` に無い＝正が崩れている | `messages.yaml` の `TelemetryPacket` を現行（UDP:5005、140B）の定義に置き換え、`check_messages.py` の検査対象に加える。`udp_protocol.hpp` は controller が使うなら残す | 要（D1 の後） |
 | C3 | 生成物の置き場 `analysis/reports/` と `analysis/out/`（どちらも非追跡） | 同じ役割の別名 | `reports/` に統一（解析スクリプト 4 本の既定出力先・`.gitignore`・原典 §7 を更新） | 済 |
 | C4 | `firmware/workshop/` の L0 API 層・ミキサ等に vehicle と重複する実装（HAL は 2026-07-18 から vehicle のコンポーネントを共有） | 横断ルール R12 との乖離（`architecture.md` §2.5 末尾） | Workshop（L0）の API・レッスン更新の中で解消 | 従属 |
 

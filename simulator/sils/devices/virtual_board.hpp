@@ -78,6 +78,37 @@ void sils_board_get_motor_duty(float out[4]);
 void sils_board_set_wind(float fx, float fy, float fz);
 void sils_board_set_motor_health(int motor, float gain);
 
+// GPIO output hook (driver/gpio.h → here). Only pins wired to a device model do
+// anything; every other pin is a no-op. Today the one wired pin is the front
+// ToF's XSHUT, whose level decides whether that part answers on I2C at all
+// (jev-autopilot P4b).
+// GPIO 出力フック。デバイスモデルにつながったピンだけが作用し、他は無動作。現在
+// つながっているのは前方 ToF の XSHUT で、そのレベルがその部品を I2C に応答させるか
+// を決める（P4b）。
+void sils_board_gpio_set_level(int gpio_num, int level);
+
+// Place a vertical wall (NED metres) for the forward ToF to see. A scene builds
+// its obstacles this way before the flight starts; the default world has none,
+// so the 33 regression scenarios are unaffected. See Plant::addWall.
+// 前方 ToF が見る垂直な壁を置く（NED メートル）。場面は飛行開始前にこうして障害物を
+// 組み立てる。既定の世界には 1 枚も無いので回帰 33 本は影響を受けない。
+void sils_board_add_wall(float n0_m, float e0_m, float n1_m, float e1_m);
+
+// Override the battery terminal voltage [V] the INA3221 shim reports, or pass a
+// non-positive value to return to the Plant's own discharge model. This is a
+// SILS-only bench seam for rehearsing a low-battery decision: the Plant's 300mAh
+// pack barely sags over a one-minute run, so `sf pilot run --scene battery_drop`
+// walks this value down instead of waiting for a real discharge. The firmware is
+// untouched — it reads the same INA3221 registers it always does, so power_task,
+// the failsafe thresholds and the thrust→duty compensation all see one voltage.
+// INA3221 シムが報告する電池端子電圧 [V] を上書きする。0 以下を渡すと Plant 自身の
+// 放電モデルに戻る。電池低下の判断を試すための SILS 専用の継ぎ目である: Plant の
+// 300mAh パックは 1 分程度の実行ではほとんど低下しないため、`sf pilot run
+// --scene battery_drop` は実際の放電を待たずにこの値を下げていく。ファームは
+// 無改変 — いつもどおり同じ INA3221 レジスタを読むので、power_task・フェイルセーフ
+// のしきい値・thrust→duty 補償はすべて同じ電圧を見る。
+void sils_board_set_battery_voltage(float volts);
+
 // Set a deterministic raw IMU bias (body FRD): accel [m/s²], gyro [rad/s]. Models a
 // pre-calibration MEMS offset so the firmware boot calibration has something to remove
 // (P2-3 contrast test). No-op until a Plant is attached.

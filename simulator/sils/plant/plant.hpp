@@ -325,6 +325,29 @@ public:
         // オプトイン方式）。
         float flow_vel_scale = 1.0f;  ///< multiplier on synthesized flow dx/dy (1.0 = OFF/no effect)
 
+        // --- Forward ToF obstacles (jev-autopilot P4b) ---------------------------
+        // A scene places obstacles by calling Plant::addWall() at run time rather
+        // than by editing stampfly.xml, because every scenario shares that one
+        // model file: a wall written into it would stand in front of all 33
+        // regression scenarios. Default: no walls, so tofFront() finds nothing and
+        // reports "no target" exactly as an empty room does.
+        //
+        // 場面は stampfly.xml を編集するのではなく実行時に Plant::addWall() を呼んで
+        // 障害物を置く。あのモデルファイルは全シナリオの共有物であり、壁を書き込むと
+        // 回帰 33 本すべての正面に立つことになるためである。既定は壁なし ―― tofFront()
+        // は何も見つけず、空の部屋とまったく同じ「対象なし」を返す。
+
+        /// Maximum reliable forward range [m]. Beyond this the model reports no
+        /// target, like the real part: §4.8.6 measured status=255 / value 0 with
+        /// nothing ahead, NOT a saturated constant that would read as a real wall.
+        /// 前方の信頼測距上限 [m]。超えると実機同様「対象なし」を返す（§4.8.6 の実測は
+        /// 対象なしで status=255・値 0 であり、壁に見える飽和定数ではない）。
+        float tof_front_max_m = 2.0f;
+        /// Minimum reliable forward range [m]; below it the part cannot resolve a
+        /// return, same close-range floor the downward model uses (kTofMinRange).
+        /// 前方の信頼下限 [m]。これ未満は復元できない（下向きモデルと同じ近接下限）。
+        float tof_front_min_m = 0.05f;
+
         SensorNoise::Config noise; ///< IMU sensor noise (N0, default OFF). RESET_PLAN §13
     };
 
@@ -474,6 +497,30 @@ public:
     sf::FlowData flow() const;  ///< PMW3901 dx/dy [counts] over the last step
     sf::MagData  mag()  const;  ///< body magnetic field [µT] (default ref, OFF by default)
 
+    /// Forward distance [m] along the body +X axis, by raycast against the static
+    /// geometry (MuJoCo mj_ray). `valid` is false when nothing is within the
+    /// reliable band, which is how the real part reports an empty room — see
+    /// Config::tof_front_max_m. Returns an invalid reading when no wall has been
+    /// added, so the default world (no obstacles) costs one early return.
+    ///
+    /// 機体 +X 方向の前方距離 [m]。静的ジオメトリへのレイキャスト（MuJoCo mj_ray）で
+    /// 求める。信頼帯域内に何も無ければ `valid` は false ―― 実機が空の部屋を報告する
+    /// のと同じ形である（Config::tof_front_max_m 参照）。壁を 1 枚も足していなければ
+    /// 無効を返すので、既定の世界（障害物なし）の費用は早期 return 1 回で済む。
+    sf::TofData  tofFront() const;
+
+    /// Place an axis-aligned vertical wall segment, in NED metres, at run time.
+    /// A wall is a finite segment from (n0,e0) to (n1,e1) spanning all heights:
+    /// the craft flies below 1.5 m by envelope, so a height-resolved wall would
+    /// add a dimension no scene needs. Walls accumulate; there is no removal,
+    /// because a scene is built once before the flight starts.
+    ///
+    /// 実行時に、NED メートルで軸に沿った垂直な壁を置く。壁は (n0,e0)〜(n1,e1) の
+    /// 有限の線分で、高さは全域に渡る: 飛行領域により機体は 1.5m 未満を飛ぶので、高さを
+    /// 分けた壁はどの場面も必要としない次元を増やすだけである。壁は積み上がり、
+    /// 取り除く手段は持たない（場面は飛行開始前に 1 度だけ組み立てるため）。
+    void addWall(float n0_m, float e0_m, float n1_m, float e1_m);
+
     const mjModel* model() const { return m_; }  ///< for the optional viewer / ビューア用
     mjData*        data()        { return d_; }   ///< for the optional viewer / ビューア用
 
@@ -531,6 +578,17 @@ private:
     /// Pointer to a named sensor's data inside d_->sensordata.
     /// 名前付きセンサの d_->sensordata 内の先頭ポインタ。
     const double* sensor(int sid) const { return d_->sensordata + m_->sensor_adr[sid]; }
+
+    /// One obstacle: a vertical wall as a horizontal segment in NED [m].
+    /// 障害物 1 つ: NED の水平線分としての垂直な壁 [m]。
+    struct Wall {
+        float n0, e0, n1, e1;
+    };
+    /// Walls added by addWall(). Empty in every default run, which is what keeps
+    /// tofFront() free for the 33 regression scenarios.
+    /// addWall() が足した壁。既定の実行では常に空であり、それが回帰 33 本にとって
+    /// tofFront() を無償に保つ。
+    std::vector<Wall> walls_;
 
     mjModel* m_ = nullptr;
     mjData*  d_ = nullptr;

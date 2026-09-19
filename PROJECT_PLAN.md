@@ -333,14 +333,17 @@ tools/
 lib/
 ├── sfcli/         # sf CLI 本体（commands/, utils/, assets/vendor/blockly = sf blocks の UI。UI が育てば lib/sfblocks/ へ独立）
 ├── sflog/         # フライトログ一式のスキーマと読み書き（schema.py は生成物、§5）
-└── stampfly/      # Tello 風 Python SDK（`tools/stampfly_py/` との二系統を整理中。`docs/plans/repository-cleanup-candidates.md` C1）
+└── sfpilot/       # Jev による自動操縦の判断層（`sf pilot`。`docs/plans/jev-autopilot.md`）
 ```
 
-（`stampfly_edu/`（大学講義用ヘルパ）は 2026-09-13 に削除。§11）
+（`stampfly_edu/`（大学講義用ヘルパ）と `stampfly/`（`vehicle_old` 専用の旧 Python SDK）は 2026-09-13 に削除。§11。Tello 風 SDK は `tools/stampfly_py/` に一本化した）
 
 - `pyproject.toml` の `package-dir = {"" = "lib"}` により `pip install -e .` で導入される
 - sf CLI は開発・書き込み・診断・ログ・シミュレーション・自作プロジェクト・講習の一貫した入口。
   コマンド実装は `lib/sfcli/commands/`、新コマンドの追加手順は `docs/contributing/adding-sf-commands.md`
+- `lib/sfpilot/` は TypeSafe の Jev モデルを判断役にした自動操縦の判断層（`sf pilot`）。
+  数値の判定はコード（Monitor）、言葉の判断は Jev（Judge）、実行の可否はコード（Arbiter）と役割を分ける。
+  機体と通信する `RealLink` はここが持ち、`sf blocks` も同じものを使う（実装を 2 つに分岐させない）
 - 利用者向けの二本柱（§1）: `sf app`（プログラミングツール）と `sf lesson`（教育補助ツール）。
   `sf lesson` は現在 `firmware/workshop/lessons/`（`lesson_manifest.yaml`）の L0 レッスンに結び付いているが、
   レッスンの置き場と階層に依存しない道具にし、全階層のレッスンを扱えるようにする。`sf competition` は講習会の競技運営を担う

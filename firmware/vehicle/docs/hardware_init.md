@@ -90,8 +90,12 @@ namespace sf::internal::board {
   ledc_timer_t            motor_timer();
 
   // === Sensor presence query (Optional 分類用) ===
-  enum class SensorId { Mag, FrontToF, /* … */ };
+  // Count は末尾に置く番兵で、board.cpp の格納配列の大きさを決める
+  enum class SensorId { Mag, BottomToF, FrontToF, Flow, Baro, Power, Count };
   bool sensor_present(SensorId id);
+  void set_sensor_present(SensorId id, bool present);
+  void set_sensor_update(SensorId id, uint32_t timestamp_us);  // R15 の鮮度
+  uint32_t sensor_last_update_us(SensorId id);
 }
 ```
 
@@ -155,13 +159,21 @@ Level 1: Bus peripherals
 Level 2: Critical sensors / actuators
   - BMI270 IMU 初期化 → 失敗時は abort()
   - Motor HAL 初期化 → 失敗時は abort()
-  - VL53L3CX Bottom ToF 初期化 → ALT/POS で必須、失敗時は abort()
+  - VL53L3CX Bottom ToF → ALT/POS で必須。実装上の初期化は TofTask が行う（下記）
 
 Level 3: Optional sensors
   - BMM150 Mag → 失敗時は sensor_present(Mag) = false で続行
-  - VL53L3CX Front ToF → 失敗時は sensor_present(FrontToF) = false
+  - VL53L3CX Front ToF → 失敗時は sensor_present(FrontToF) = false。
+    実装上の初期化は TofTask が行う（下記）
   - PMW3901 Flow → 失敗時は sensor_present(Flow) = false
   - BMP280 Baro → 高度推定の補助、失敗時は flag-only
+
+**ToF 2 個の初期化は TofTask が行う（Level 2/3 ではない）。** VL53L3CX は 2 個とも
+I2C 0x29 で起動するため、前方をリセット保持したまま底面を 0x30 へ移し、底面の測距
+開始を確認してから前方を起こして 0x31 へ移す、という時差のある手順が要る。この手順
+はバスを借用する 1 つのタスクに閉じているほうが読みやすく、`sf_board` は R1 どおり
+バスの所有者に留まる。手順の詳細は `detailed_design.md` §10、実装は
+`tasks/tof_task.cpp::startTofSensors()`。
 
 Level 4: Communication infrastructure
   - WiFi STA netif の生成（sf_board が所有・生成。R1: esp_netif の唯一の所有者は
@@ -208,7 +220,7 @@ ledc_timer     ─→  Motor / LED / Buzzer
 | Critical | I2C bus / SPI host / LEDC timer | `abort()` | 全 HAL が依存する基盤 |
 | Critical | VL53L3CX Bottom ToF | `abort()`（ALT/POS モード使用時のみ） | 高度推定の主観測 |
 | **Optional** | BMM150 Mag | `sensor_present(Mag) = false` で続行 | ヨー推定がドリフトしやすくなるが ACRO/STAB は可能 |
-| Optional | VL53L3CX Front ToF | `sensor_present(FrontToF) = false` | 障害物検知不能、フライトは可能 |
+| Optional | VL53L3CX Front ToF | `sensor_present(FrontToF) = false`、XSHUT を low に戻して続行 | 障害物検知不能、フライトは可能。**バッテリー電源が要る** — USB 給電のみではロジックが I2C に ACK する程度にだけ立ち上がり測距が失敗するため、初期化失敗は USB 接続時の通常の状態である。`tof.front.enable`=0 でも同じ経路を通る |
 | Optional | PMW3901 Flow | `sensor_present(Flow) = false` | 位置推定の補助、ホバーは ToF + Baro で可能 |
 | Optional | BMP280 Baro | `sensor_present(Baro) = false` | ToF と冗長、片方あれば高度推定可能 |
 | Optional | Power monitor | `sensor_present(Power) = false` | 電圧監視なしでも飛行は可能（バッテリ警告は失われる） |

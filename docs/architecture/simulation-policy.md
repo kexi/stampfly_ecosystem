@@ -137,8 +137,67 @@ Code Identity のおかげで、実機同定に使ったのと同一の同定パ
 | 9 | 実機ログ入力リプレイ（`sf sils replay` 相当） | WireControl（テレメトリの制御入力構造体）50 Hz スティック入力を `.scn` シナリオへ変換し、実ログと同一プロットで比較する。実ログ再生（解析）の結果を SILS で再現するための要 | 未着手 |
 | 10 | 関連文書の整合維持 | 本書と development_roadmap の食い違いに気づいたら、本書を先に更新する | 継続 |
 | 11 | ヨー軸の合否判定の4パラメータ化 | `rate_sysid` のヨーフィットを反トルク零点込みの4パラメータモデル（`firmware/vehicle/docs/yaw_axis_model.md`）へ拡張し、実機基準値（`analysis/reports/rate_sysid_reference/README.md` の `reference.json`）も同一パイプラインで再生成して同条件比較にする | 未着手 |
-| 12 | ファームヨートルク権限の再検討 | 新基準ホバー duty（≈0.7245）下での `rate.yaw.max_torque` 差動余裕を再検討する。SILS 再確認試験の pos_flight/pos_yaw/yaw_hold が known-fail（`sf sils regression` の xfail マーカー）として追跡中。実機 NT金沢問題（2026-07-17 治療）と同根の可能性がある | 未着手 |
+| 12 | ファームヨートルク権限の再検討 | 新基準ホバー duty（≈0.7245）下での `rate.yaw.max_torque` 差動余裕を再検討する。SILS 再確認試験の pos_flight/pos_yaw/yaw_hold が known-fail（`sf sils regression` の xfail マーカー）として追跡中。実機 NT金沢問題（2026-07-17 治療）と同根の可能性がある | **調査済み・オーナーの判断待ち（2026-09-19）** — 3 案を実測し、いずれも現時点では採らない。真因は「ミキサーが上側で切り落とした分を再配分しないこと」と特定した。詳細は下記「#12 の調査結果」 |
 | 13 | 姿勢減衰余裕の調査 | calib（注入バイアス×新プラントの離陸動特性で 0.6-0.7 Hz 自励振動）・commloss_land_level（LANDING 水平化判定中のロール収束不足）で顕在化。バックログ#4（モータ不感帯）・#5（空気抵抗ゼロ）との関連を確認する。（2026-08-22 追記: #3 で判明したプラント推力過大[ホバー点でファーム指令の1.252倍、corr込みで機体重量の1.402倍]が本現象の一因だった可能性があり、thrust_efficiency 補正後に再検証する） | 未着手 |
+| 14 | `flow_vel_scale`（`SILS_EMU_FLOW_SCALE` / `sf sils scenario --flow-scale`）が飛行経路に効いていない | 2026-09-19 発見。`Config::flow_vel_scale` を読むのは `Plant::flow()` だけで、それを呼ぶのは `simulator/sils/smoke/plant_smoke.cpp` のみ。閉ループ飛行時にファームへ届くフローは `virtual_board.cpp` の `sils_board_spi_transfer()` → `sils_pmw3901::set_motion_from_velocity()` 経由で合成されており、この乗数を一切参照しない。実測（0.060N の横風・35 秒・実時間エミュレータ）: 指定なしで 1388 周期中 359 周期が「流されている」、`--flow-scale 0.35` で 1389 周期中 361 周期 — 差は実行ごとのばらつきの範囲。`--flow-scale` は hikoki64 §3.3 の注入実験（#6 のフロー品質モデルと同じ系統）のために用意されたノブであり、**閉ループの故障注入として使うと、効いていないのに効いたつもりの実験になる**。修正は「合成側（pmw3901_device）にも同じ乗数を掛ける」で足りるとみられるが、既定 1.0 のバイト一致（`sf sils regression` の基準）を壊さないことの確認が要る | 未着手 |
+
+| 16 | 前方 ToF のデバイスモデルにノイズが無い（既定 OFF の模擬） | 2026-09-19 追加（jev-autopilot 4.9）。`simulator/sils/devices/vl53_front_device.cpp` と `Plant::tofFront()` により、SILS は前方距離を模擬できるようになった（`SILS_EMU_FRONT_TOF=1` のときだけ有効。既定は不在で、回帰の基準は不変）。**忠実度の位置づけ**: 上限レンジ 2.0m（飛行領域の半径 2m の内側で意味を持つ範囲に限定）、レンジ外・対象なしは実機の実測（4.8.6: status=255・値 0）に合わせた。**観測ノイズは付けていない** — 底面 ToF の N2 観測ノイズが既定 OFF である以上、前方だけノイズを持つと 2 センサの忠実度がちぐはぐになるため。ノイズを入れるなら #6（フロー品質モデル）と同じ N3 tier で両方まとめて扱うのが筋である。実測の偏りは真値 1.0m に対し +17mm（底面と共有する histogram のサブ bin 分解能に由来し、ノイズではない） | 未着手（N3 tier で #6 と併せて） |
+
+| 15 | `stab_flight` の `att_rmse` の余裕が狭く、起動時のタイミングのずれで合否が変わる | 2026-09-19 発見。基準値 0.0489（2.80°）に対し閾値は 0.05236（3.0°）で、**余裕は 6.6% しかない**。前方 ToF とは無関係に、起動時に素の `vTaskDelay(500ms)` を 1 つ入れるだけで `att_rmse` は 0.0483 へ動く（前方のコードを 1 行も通さずに測定）。つまりこの指標は起動タイミングに敏感で、**無関係な変更でも境界を跨ぎうる**。同じ感度は `test_realtime_fly.py::test_determinism_unchanged_without_env_vars` の SHA256 基準値にもある。閾値の見直し（または指標を起動タイミングに鈍感にする）を検討する。なお 2026-09-19 の前方 ToF 駆動（jev-autopilot P2b）は、在否確認を安価にし起動を周期に分散する設計に直した結果、**既定（`tof.front.enable=1`）で `att_rmse` も SHA256 も基準どおり**であり、本項目の原因ではない | 未着手 |
+
+### #12 の調査結果（2026-09-19、オーナーの判断待ち）
+
+3 案を別々の作業ツリーで実装・実測し、審査と 3 観点の反証にかけた。**結論は「3 案とも現時点では採用しない」である。** 採否を分ける論点が制御則の設計判断であり、飛行実績と実機ログを持つファームのオーナーが決めるべきものだからである。
+
+#### 真因（実測で特定した）
+
+**ミキサー（`firmware/vehicle/components/sf_actuator/actuator.cpp`）は各モータの duty を独立に切り詰め、上側で切り落とした分を再配分しない。** そのため飽和時には平均揚力が構造的に失われる。数値で閉じている:
+
+- ヨーのレバレッジは $0.25/\kappa = 61$ N/(N·m)（$\kappa = 4.10\times10^{-3}$）。
+- 上限いっぱいのヨートルク $1.226\times10^{-3}$ N·m は、1 モータに $0.0748$ N ＝ ホバー分担（$0.1016$ N）の **73.6%** の上積みを要求する。必要な duty は **1.0522** で上限 1.0 を超える。つまり**現行の上限は構造的に到達不能**である。
+- 超過分はモータ毎に 1.0 で切り落とされ、下側のモータへ戻されない。結果として 4 モータの平均推力が落ち、機体が沈下する。
+- 参照用シナリオの実測（HEAD 8a956654）: `yaw_crossaxis` では「トルクが上限に張り付いている標本の割合」と「duty が上限に張り付いている標本の割合」が **どちらも 0.8156 と完全に一致**する。同じ標本であり、トルク飽和がそのまま duty 飽和に変換されている。
+
+再現手段は `simulator/sils/scenarios/yaw_crossaxis.scn` と `yaw_cw90_low.scn`（**参照用・合否判定なし**、TEST_MATRIX.md 2 節「参照用シナリオ」）。
+
+#### 3 案の実測と、採らない理由
+
+| 案 | 内容 | 実測 | 採らない理由 |
+|---|---|---|---|
+| **A** 上限の余裕則 | `rate.yaw.max_torque` を $1.226\times10^{-3}$ → $8.331\times10^{-4}$（ホバー分担の 50% をヨーに充てる規則） | 落下は解消（`yaw_crossaxis` の `alt_min` 0.006 → 0.294m）。ただし `stab_flight` が PASS → FAIL（`att_rmse` 0.0489 → 0.0594、閾値 0.05236）。狙った既知失敗（pos_flight / pos_yaw）は**直っていない**（`duty_max` 1.0000 のまま）。トルク上限の張り付き率は 0.8156 → **0.9719 に悪化** | **制御リミットの変更**であり、6 章の規律（実フライトログを使った数値シミュレーションでの裏付け）の対象。必要な実機再生ログ 3 本（NT 金沢、`stampfly_udp_20260627T020050` / `T164611` / `T165713`）が**リポジトリに無い**（`logs/*` は `.gitignore` 対象、`git ls-files logs/` は `.gitkeep` のみ）ため裏付けが取れない。加えて保持データ `analysis/scripts/yaw_nt_kanazawa/kappa_fix_sim_results.json` の実測外乱ピークは最悪 1.54 mNm に対し、新上限が出せる真のトルクは **0.74 mNm（0.48 倍）** — 事故の治療と逆行する |
+| **B** D 項フィルタ | ヨーレート D 項の高域利得を下げる | **前提が誤りであることを実測で示し、実装者自身が却下した。** 1 LSB 交番への D 項の寄与は $3.4\times10^{-6}$ N·m（上限の 0.28%）で、飽和の原因ではない。不完全微分の高域利得 $K_p/\eta = 8.0$ は $T_d$ に依存しない。`alpha=1.0` は `detailed_design.md:295` に明記された**意図された設計** | 直すべき対象が存在しない。試した代替（後退差分）は軸ごとに減衰率が変わり、ロールが設計の 16.7% まで鈍って `stab_flight` の `att_rmse` を 0.0885（閾値の 69% 超過）にした |
+| **C** ミキサーの優先度つき縮小 | 配分を推力[N]空間で行い、上下限に収まるよう差動群だけを縮小する（ヨーを先に譲る）。`actuator.cpp` の 1 ファイルのみ | 落下は解消（`yaw_crossaxis` の `alt_min` 0.006 → 0.211m、`yaw_cw90_low` 0.007 → 0.194m、`api_flight` 0.359 → 0.946m）。再確認試験の判定は 34 本すべて不変（28 PASS + 5 KNOWN-FAIL + 1 SKIP） | **反証で阻止級の指摘が 4 件**（下記） |
+
+#### 案 C に対する反証（4 件、いずれも阻止級）
+
+1. **離陸できなくなる組み合わせがある。** 加速度 X 軸バイアス 0.12 と ヨージャイロバイアス 0.02 が**同時に**乗ると離陸できず緊急解除する（`calib` の `Takeoff complete` が PASS → FAIL、`alt_max` 0.4694 → 0.0189m）。単独のバイアス掃引（ヨー 6 条件・加速度 7 条件）では再現せず、**組み合わせ特有の新規欠陥**である。実機の慣性計測装置のバイアスは両軸に同時に乗るため、これは実機ホバリング試験の直接のリスクになる。なお `calib` は元から KNOWN-FAIL なので、**再確認試験の合否数字は一切動かず、この欠陥は検出されない**。
+2. **縮め方がコメントの説明と違う。** 「ヨーをゼロにしても収まらない場合に限りロール/ピッチを縮める」とコメントにあるが、コードは無条件に縮めている。ヨー指令が 0 のときでもロール/ピッチを 0.30〜0.54 倍に削る（20 万点の掃引で 42%）。さらに**総推力が 1.2×ホバーを超えると姿勢トルクが完全に 0 になる領域**がある（30 万点の掃引で 15.14%、該当は総推力 1.21〜1.80×ホバー）。旧ミキサーは同じ条件で姿勢トルクを出していた。`architecture.md` の不変条件 INV-2（パイロットの姿勢権限）に違反する。
+3. **NT 金沢の治療を実効的に無効化する。** 治療の成立条件は「duty の飽和する範囲（1.39〜1.85 mNm）までヨーを出し切れること」だが、新ミキサーはヨーを先に譲るため、出せるヨートルクが構造的に頭打ちになる: 3.7V で 1.00 mNm（旧 1.33）、3.3V で 0.56 mNm（旧 1.11）。実機のホバー電圧帯 3.65〜3.86V で**全 4 事象の必要値に届かない**。案 A が「上限を下げるのは治療と逆行する」として却下されたのと同じ逆行を、`params.cpp` を触らずに引き起こしている。「上限値を下げていないので対象外」という論法は、実際に送り出せるヨートルクが下がっている以上成立しない。
+4. **実ログ裏付けの規律の対象である。** `firmware/vehicle/docs/architecture.md:202` が、ミキサーの 2 段分離（まさに案 C がやっていること）の着手条件として「SILS 再確認試験・既存実習ゲインへの影響をシミュレーションで検証すること — CLAUDE.md『制御系パラメータ変更』原則」を**名指しで要求**している。「`params.cpp` を触らないので対象外」は誤り。
+
+加えて、案 C は**送信機による手動 POS_HOLD の軸またぎ落下を直さない**（同じ緊急解除に至る）うえ、接地速度が 32% 増える（0.76 → 1.00 m/s）。直っているのは API 経由の自律飛行だけである。
+
+#### 相反 — ここがオーナーの判断を要する点
+
+**「揚力を守ること」と「ヨー権限を確保すること（外乱の治療）」は相反する。** 飽和時に出せる合計は有限で、ヨーを譲れば揚力は守れるが外乱に抗するヨートルクが減り、ヨーを押し通せばヨー権限は保てるが揚力が失われて沈下する。どちらを優先するかは制御則の設計判断であり、**飛行実績（実飛行 87 回の系譜）と実機ログを持つファームのオーナーが決めるべきものである。**
+
+#### オーナーへの判断依頼（選択肢）
+
+| 選択肢 | 内容 | 併せて必要になること |
+|---|---|---|
+| **(a)** 揚力優先のデサチュレーション | 案 C を修正して採用する。修正必須は反証 2 の 2 点（ヨーがゼロならロール/ピッチを削らない、総推力超過でも姿勢トルクを残す）と反証 1 の離陸阻害 | ヨー外乱への対処の**再設計**（案 C を直してもヨーを先に譲る限り外乱権限は落ちるため、NT 金沢型の外乱に対する手当てが別途要る）。実機ログによる裏付けと、低高度ホバーからの段階的な実機確認 |
+| **(b)** 現状維持 | ミキサーを変えず、「旋回前に高度を取る」運用で回避する（`api_flight.scn` の `up 70` が現にそうしている） | 自動操縦側でこの制約を明示すること。`docs/plans/jev-autopilot.md` 4.9 節のヨー回転探索は保留のままになる |
+| **(c)** 別案 | 例えば、上側で切り落とした分を下側のモータへ戻す（総推力を保ったまま再配分する）方向。今回の 3 案はいずれもこれを試していない | 同上の実機裏付け |
+
+#### 再現手段
+
+- 参照用シナリオ: `simulator/sils/scenarios/yaw_crossaxis.scn`（`--duration 40000000`、窓 26-34 秒）、`yaw_cw90_low.scn`（`--duration 36000000`、窓 18-28 秒）。**いずれも `.expect` を持たない**ので `sf sils regression` の対象外である。
+- 上記の落下を特徴づける指標（duty の上限張り付き率・トルク上限張り付き率・ヨー角速度の二乗平均平方根誤差）は、今回は使い捨ての試験プログラムで算出した。`tools/` にスクリプトを増やさない方針（PROJECT_PLAN §8）に従い、**恒久化するなら `sf sils scenario` の既存の指標（`_traj_metric`）に `duty_sat_frac` 等として足すのが筋である**（提案のみ。未実装）。
+- 実機再生ログ 3 本が入手できたときは、`analysis/scripts/yaw_nt_kanazawa/torque_budget.py` が使える。ただし同スクリプトは別マシンの絶対パスを直書きしており（`LOG_DIR`）、引数解析も無いため、入力パスを引数で受けるよう直す必要がある。
+
+#### 併せて見つかった問題（本件とは別に処理が要る）
+
+**`actuator.cpp:23` の `@design detailed_design.md §5 — X-quad mixer` が実在しない節を指している。** `detailed_design.md` の §5 は「状態推定インターフェース定義」であり、ミキサーの節ではない。判定ステータスは `[OK]` と書かれているが、参照が解決しないので実際には `[OK]` ではない。**設計文書にミキサーの節を新設するかどうかは文書構成の変更であり、オーナーの判断事項**のため、本更新では記録にとどめる。
 
 ## 9. 関連文書マップ
 
@@ -304,8 +363,64 @@ Policy: a realistic division of labor is to run training with Genesis (or MJX) a
 | 9 | Real-vehicle log input replay (equivalent to `sf sils replay`) | Convert 50 Hz stick input from WireControl (the telemetry control-input struct) into a `.scn` scenario and compare it against the real log on the same plot. The key piece for reproducing, in SILS, the results of real-log replay (analysis) | Not started |
 | 10 | Maintaining consistency of related documents | When a discrepancy is noticed between this document and development_roadmap, update this document first | Ongoing |
 | 11 | Extending the yaw-axis gate to a 4-parameter model | Extend the `rate_sysid` yaw fit to a 4-parameter model that includes the counter-torque zero (`firmware/vehicle/docs/yaw_axis_model.md`), and regenerate the real-vehicle reference value (`reference.json` in `analysis/reports/rate_sysid_reference/README.md`) with the same pipeline so the comparison is made under matching conditions | Not started |
-| 12 | Reconsidering firmware yaw torque authority | Reconsider the `rate.yaw.max_torque` differential margin under the new reference hover duty (≈0.7245). SILS regression's pos_flight/pos_yaw/yaw_hold are being tracked as known-fail (an xfail marker in `sf sils regression`). May share the same root cause as the real-vehicle NT Kanazawa issue (remedied 2026-07-17) | Not started |
+| 12 | Reconsidering firmware yaw torque authority | Reconsider the `rate.yaw.max_torque` differential margin under the new reference hover duty (≈0.7245). SILS regression's pos_flight/pos_yaw/yaw_hold are being tracked as known-fail (an xfail marker in `sf sils regression`). May share the same root cause as the real-vehicle NT Kanazawa issue (remedied 2026-07-17) | **Investigated; awaiting the owner's decision (2026-09-19)** — three candidate fixes were measured and none is adopted for now. The root cause was identified as "the mixer clips each motor's duty independently and never redistributes what it cut off at the upper rail." See "Investigation result for #12" below |
 | 13 | Investigating attitude damping margin | Manifested in calib (0.6〜0.7 Hz self-excited oscillation from the interaction of injected bias with the new plant's takeoff dynamics) and commloss_land_level (insufficient roll convergence during the LANDING leveling gate). Check the relationship with backlog #4 (motor dead zone) and #5 (zero aerodynamic drag). (Added 2026-08-22: the excessive plant thrust found in #3 [1.252× the firmware's commanded thrust at the hover point, 1.402× the vehicle weight once `hover.thrust_corr` is included] may have been a contributing factor in this phenomenon; re-verify after the thrust_efficiency correction) | Not started |
+| 16 | The forward-ToF device model carries no noise (a default-off simulation) | Added 2026-09-19 (jev-autopilot §4.9). `simulator/sils/devices/vl53_front_device.cpp` plus `Plant::tofFront()` let SILS simulate a forward distance, active only with `SILS_EMU_FRONT_TOF=1` (absent by default, so the regression baselines are unchanged). **Fidelity position**: maximum range 2.0 m (limited to what means anything inside the 2 m envelope radius); out of range / no target matches the hardware measurement (§4.8.6: status=255, value 0). **No observation noise is added** — with the downward ToF's N2 noise off by default, giving only the forward part noise would leave the two sensors at mismatched fidelity; the right place for it is the N3 tier together with #6 (flow-quality model). The measured bias is +17 mm against a true 1.0 m, from the sub-bin histogram resolution shared with the downward model, not from noise | Not started (with #6, in the N3 tier) |
+| 14 | `flow_vel_scale` (`SILS_EMU_FLOW_SCALE` / `sf sils scenario --flow-scale`) does not reach the flying path | Found 2026-09-19. `Config::flow_vel_scale` is read only by `Plant::flow()`, and the only caller of that is `simulator/sils/smoke/plant_smoke.cpp`. In closed-loop flight the flow the firmware receives is synthesized through `virtual_board.cpp`'s `sils_board_spi_transfer()` → `sils_pmw3901::set_motion_from_velocity()`, which never consults the multiplier. Measured (0.060 N sideways wind, 35 s, real-time emulator): 359 of 1388 cycles classified as drifting with the knob unset, 361 of 1389 with `--flow-scale 0.35` — within run-to-run jitter. The knob was built for the hikoki64 §3.3 injection study (the same line of work as #6's flow-quality model); **used as closed-loop fault injection it produces an experiment that believes it injected a fault and did not.** The fix is likely just applying the same multiplier on the synthesis side (pmw3901_device), but it must be shown not to break the byte-identical default-1.0 path that `sf sils regression` baselines on | Not started |
+
+### Investigation Result for #12 (2026-09-19, awaiting the owner's decision)
+
+Three candidate fixes were implemented and measured in separate worktrees, then put through review and three lines of adversarial checking. **The conclusion is that none of the three is adopted for now**, because what separates them is a control-law design decision that belongs to the firmware's owner — the person who holds the flight record and the real-vehicle logs.
+
+#### Root cause (identified by measurement)
+
+**The mixer (`firmware/vehicle/components/sf_actuator/actuator.cpp`) clips each motor's duty independently and never redistributes what it cut off at the upper rail.** Mean lift is therefore lost structurally whenever it saturates. The numbers close the chain:
+
+- Yaw leverage is $0.25/\kappa = 61$ N per N·m ($\kappa = 4.10\times10^{-3}$).
+- A yaw torque at the cap, $1.226\times10^{-3}$ N·m, asks one motor for $0.0748$ N on top of hover — **73.6%** of its hover share ($0.1016$ N). The required duty is **1.0522**, above the rail of 1.0, so **the present cap is structurally unreachable**.
+- The excess is clipped per motor at 1.0 and never handed back to the motors below the rail, so the four-motor mean thrust drops and the craft sags.
+- Measured on the reference scenarios (HEAD 8a956654): in `yaw_crossaxis` the fraction of samples pinned at the torque cap and the fraction pinned at the duty rail are **both exactly 0.8156** — the same samples. Torque saturation is converted straight into duty saturation.
+
+Reproduce with `simulator/sils/scenarios/yaw_crossaxis.scn` and `yaw_cw90_low.scn` (**reference only, no pass/fail criteria**; see "Reference scenarios" in TEST_MATRIX.md §2).
+
+#### The three candidates and why none is adopted
+
+| Candidate | Content | Measured | Why not adopted |
+|---|---|---|---|
+| **A** Cap with a headroom rule | `rate.yaw.max_torque` $1.226\times10^{-3}$ → $8.331\times10^{-4}$ (allot 50% of a motor's hover share to yaw) | The fall is gone (`yaw_crossaxis` `alt_min` 0.006 → 0.294 m), but `stab_flight` goes PASS → FAIL (`att_rmse` 0.0489 → 0.0594 against a 0.05236 threshold), the targeted known-fails (pos_flight / pos_yaw) are **not fixed** (`duty_max` still 1.0000), and the torque-cap pinning fraction gets **worse**, 0.8156 → 0.9719 | It changes a control limit, so §6's discipline (back it with numerical simulation on real flight logs) applies. The three replay logs it needs (NT Kanazawa: `stampfly_udp_20260627T020050` / `T164611` / `T165713`) are **not in the repository** (`logs/*` is gitignored; `git ls-files logs/` holds only `.gitkeep`), so the backing cannot be obtained. Worse, against the retained measurement in `analysis/scripts/yaw_nt_kanazawa/kappa_fix_sim_results.json` — a worst-case disturbance peak of 1.54 mNm — the new cap can deliver only **0.74 mNm of true torque (0.48×)**, working against the remedy for that accident |
+| **B** D-term filter | Reduce the high-frequency gain of the yaw-rate D term | **The premise was shown false by measurement and the implementer rejected the candidate.** The D term's contribution to a 1-LSB alternation is $3.4\times10^{-6}$ N·m (0.28% of the cap) and is not what saturates. The incomplete derivative's high-frequency gain $K_p/\eta = 8.0$ is independent of $T_d$, and `alpha=1.0` is the **intended design**, stated at `detailed_design.md:295` | There is nothing to fix. The alternative tried (backward difference) detunes each axis differently — roll falls to 16.7% of design — pushing `stab_flight`'s `att_rmse` to 0.0885, 69% over the threshold |
+| **C** Priority-ordered mixer desaturation | Allocate in thrust [N] space and shrink only the differential groups to fit the rails, yielding yaw first. `actuator.cpp` alone | The fall is gone (`yaw_crossaxis` `alt_min` 0.006 → 0.211 m, `yaw_cw90_low` 0.007 → 0.194 m, `api_flight` 0.359 → 0.946 m) and all 34 regression verdicts are unchanged (28 PASS + 5 KNOWN-FAIL + 1 SKIP) | **Four blocker-level findings** (below) |
+
+#### Adversarial findings against candidate C (four, all blockers)
+
+1. **A bias combination makes it unable to take off.** With an accelerometer X bias of 0.12 and a yaw-gyro bias of 0.02 applied **together**, the vehicle fails to take off and emergency-disarms (`calib`'s `Takeoff complete` PASS → FAIL, `alt_max` 0.4694 → 0.0189 m). Single-axis sweeps (6 yaw conditions, 7 accelerometer conditions) do not reproduce it, so this is a **new defect specific to the combination**. Real inertial-measurement-unit biases always appear on both axes at once, which makes this a direct risk for real-vehicle hover testing. Because `calib` was already KNOWN-FAIL, **the regression numbers do not move at all and this defect goes undetected**.
+2. **The shrinking does not do what its comment says.** The comment states that roll/pitch are shrunk only when zeroing yaw is still not enough, but the code shrinks them unconditionally: with a yaw command of 0 it still cuts roll/pitch to 0.30〜0.54× (42% of a 200,000-point sweep). There is also a region where **attitude torque becomes exactly zero once total thrust exceeds 1.2× hover** (15.14% of a 300,000-point sweep, at 1.21〜1.80× hover), where the old mixer did produce attitude torque. This violates invariant INV-2 (the pilot's attitude authority) in `architecture.md`.
+3. **It effectively nullifies the NT Kanazawa remedy.** That remedy depends on being able to deliver yaw all the way to the duty-saturation range (1.39〜1.85 mNm), but yielding yaw first puts a structural ceiling on deliverable yaw torque: 1.00 mNm at 3.7 V (was 1.33) and 0.56 mNm at 3.3 V (was 1.11). Across the real vehicle's hover voltage band, 3.65〜3.86 V, it **falls short of what all four recorded events required**. This is the same regression that got candidate A rejected ("lowering the cap works against the remedy"), produced without touching `params.cpp`. The argument "the cap value was not lowered, so the rule does not apply" does not hold, because the yaw torque actually deliverable *is* lowered.
+4. **The real-log discipline does apply.** `firmware/vehicle/docs/architecture.md:202` explicitly requires, as a precondition for the two-stage mixer separation that candidate C implements, "verify by simulation against the SILS regression test and the effect on existing lesson gains — the CLAUDE.md 'control parameter change' principle." "It does not touch `params.cpp`, so it is out of scope" is incorrect.
+
+Candidate C also **does not fix the cross-axis fall under manual POS_HOLD from the transmitter** (it reaches the same emergency disarm) and raises the touchdown speed by 32% (0.76 → 1.00 m/s). Only API-driven autonomous flight is fixed.
+
+#### The conflict — this is what needs the owner's decision
+
+**"Preserve lift" and "preserve yaw authority (the disturbance remedy)" are in direct conflict.** What can be delivered at saturation is finite: yield yaw and lift is preserved but the yaw torque available against disturbance shrinks; push yaw through and yaw authority is kept but lift is lost and the craft sags. Which one takes priority is a control-law design decision, and it belongs to the firmware's owner, who holds the flight record (87 real flights in this lineage) and the real-vehicle logs.
+
+#### Decision requested from the owner
+
+| Option | Content | What it also requires |
+|---|---|---|
+| **(a)** Lift-first desaturation | Fix candidate C and adopt it. The mandatory fixes are the two in finding 2 (do not cut roll/pitch when yaw is zero; keep attitude torque when total thrust is exceeded) and the takeoff blockage in finding 1 | A **redesign** of how yaw disturbance is handled (even fixed, yielding yaw first lowers disturbance authority, so NT Kanazawa-type disturbance needs separate provision). Plus real-log backing and staged real-vehicle checks starting from low-altitude hover |
+| **(b)** Keep the present behaviour | Leave the mixer alone and avoid the problem operationally by gaining altitude before turning (which `api_flight.scn`'s `up 70` already does) | Make that constraint explicit on the autopilot side. The yaw-rotation search in `docs/plans/jev-autopilot.md` §4.9 stays on hold |
+| **(c)** Another approach | For example, returning what was clipped at the top to the motors below it (redistributing while holding total thrust). None of the three candidates tried this | The same real-log backing |
+
+#### How to reproduce
+
+- Reference scenarios: `simulator/sils/scenarios/yaw_crossaxis.scn` (`--duration 40000000`, window 26-34 s) and `yaw_cw90_low.scn` (`--duration 36000000`, window 18-28 s). **Neither has an `.expect`**, so both are outside `sf sils regression`.
+- The metrics that characterise the fall (duty-rail pinning fraction, torque-cap pinning fraction, yaw-rate root-mean-square error) were computed this time with a throw-away test program. Per the policy of not adding standalone scripts under `tools/` (PROJECT_PLAN §8), **if they are to be kept, the right place is the existing metric set of `sf sils scenario` (`_traj_metric`), as e.g. `duty_sat_frac`** (a proposal only; not implemented).
+- If the three replay logs become available, `analysis/scripts/yaw_nt_kanazawa/torque_budget.py` can be used — but it hardcodes another machine's absolute path (`LOG_DIR`) and has no argument parsing, so it must first be changed to take the input path as an argument.
+
+#### A separate problem found along the way
+
+**`actuator.cpp:23`'s `@design detailed_design.md §5 — X-quad mixer` points at a section that does not exist.** §5 of `detailed_design.md` is "Estimation Interface Definition," not a mixer section. The tag's verdict status reads `[OK]`, but since the reference does not resolve it is not in fact `[OK]`. **Whether to add a mixer section to the design document is a change to the document's structure and therefore the owner's decision**, so this update only records the discrepancy.
 
 ## 9. Related Document Map
 

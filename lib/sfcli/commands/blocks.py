@@ -29,23 +29,25 @@ a control channel (it can take off / land / cut motors), never a LAN service.
 や SILS GUI と同じ方針。HTTP サーバは 127.0.0.1 のみに bind する: これは制御
 チャネル（離陸・着陸・モータ停止ができる）であり、LAN サービスにしてはならない。
 
-We do NOT reuse tools/stampfly_py/stampfly.py — its client is strictly
-blocking (one socket, sendto then recvfrom) and cannot support the priority
+The UDP client is `sfpilot.link.RealLink` (moved out of this module on
+2026-09-19 so `sf blocks` and `sf pilot` share one implementation). We do
+NOT reuse tools/stampfly_py/stampfly.py — its client is strictly blocking
+(one socket, sendto then recvfrom) and cannot support the priority
 stop/emergency path (send immediately + abort whatever /api/cmd is currently
-waiting). This module implements its own small non-blocking-friendly client
-(receiver thread + queue.Queue) instead.
+waiting); RealLink is a small non-blocking-friendly client instead
+(receiver thread + queue.Queue).
 
+UDP クライアントは `sfpilot.link.RealLink`（`sf blocks` と `sf pilot` で
+実装を共有するため 2026-09-19 に本モジュールから移設）。
 tools/stampfly_py/stampfly.py は使わない — そのクライアントは厳格な
 ブロッキング設計（1ソケットで sendto→recvfrom）で、優先 stop/emergency
-経路（即時送信＋現在待機中の /api/cmd を中断）を支えられない。本モジュールは
-専用の小さなクライアント（受信スレッド＋queue.Queue）を実装する。
+経路（即時送信＋現在待機中の /api/cmd を中断）を支えられない。RealLink は
+その代わりの小さなクライアント（受信スレッド＋queue.Queue）である。
 """
 
 import argparse
 import json
-import queue
 import re
-import socket
 import threading
 import time
 import webbrowser
@@ -55,6 +57,14 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from ..utils import console
+from sfpilot.link import (
+    API_PORT,
+    DEFAULT_DRONE_HOST,
+    POLL_INTERVAL_S,
+    RealLink,
+    STATE_PORT,
+    parse_state_line,
+)
 
 COMMAND_NAME = "blocks"
 COMMAND_HELP = "Blockly block-programming bridge (browser UI <-> drone UDP API)"
@@ -64,17 +74,13 @@ COMMAND_HELP = "Blockly block-programming bridge (browser UI <-> drone UDP API)"
 # firmware/vehicle/components/sf_telemetry/include/tello_state.hpp.
 # プロトコル定数 — ファーム側と一致必須。
 # =============================================================================
-DEFAULT_DRONE_HOST = "192.168.10.1"   # StampFly AP-mode address / AP モード時の機体アドレス
 DEFAULT_HTTP_PORT  = 5007             # this bridge's HTTP port / 本ブリッジの HTTP ポート
-API_PORT   = 8889                     # ApiTask command port / コマンドポート
-STATE_PORT = 8890                     # TelloStateTask state port / 状態ストリームポート
 
 CONNECT_TIMEOUT_S = 5.0    # /api/connect handshake ("command" -> "ok") / 接続ハンドシェイク
 QUERY_TIMEOUT_S   = 3.0    # queries, speed, stop / クエリ・speed・stop
 MOVE_TIMEOUT_S    = 20.0   # takeoff/land/movement/turn / 離着陸・移動・回頭
 EMERGENCY_GAP_S   = 0.1    # gap between the two "emergency" sends / emergency 二連送の間隔
 SSE_PERIOD_S      = 0.2    # /events push period (contract: ~200ms) / SSE 配信周期
-POLL_INTERVAL_S   = 0.05   # busy-wait granularity for reply/abort polling / 待機ポーリング粒度
 
 # Command whitelist: verb -> (has_int_arg, min, max, reply_timeout_s).
 # A single table instead of scattered literals — the ONLY place command
@@ -115,34 +121,6 @@ DEMO_HOVER_HEIGHT_CM         = 80.0   # takeoff target height / 離陸目標高�
 DEMO_DEFAULT_SPEED_CMS       = 30     # speed? fallback / speed? の既定応答
 
 
-# =============================================================================
-# _parse_state_line — Tello state string -> {key: number}, shared by the real
-# and (indirectly, for symmetry) demo readers.
-# Tello 状態文字列 -> {key: 数値}。実機・デモ双方から共通利用。
-# =============================================================================
-def _parse_state_line(text: str) -> dict:
-    """Parse "k:v;k:v;...\\r\\n" into numeric fields only (contract: {key:number}).
-    Non-numeric fields (e.g. "mpry:0,0,0") are dropped, not stringified.
-    "k:v;k:v;..." を数値フィールドのみに整形（契約: {key:数値}）。数値化できない
-    フィールド（例 "mpry:0,0,0"）は文字列化せず捨てる。"""
-    state = {}
-    for field in text.strip().split(";"):
-        if ":" not in field:
-            continue
-        key, _, raw = field.partition(":")
-        key, raw = key.strip(), raw.strip()
-        if not key or not raw:
-            continue
-        try:
-            state[key] = int(raw)
-        except ValueError:
-            try:
-                state[key] = float(raw)
-            except ValueError:
-                continue
-    return state
-
-
 def _validate_command(cmd_line: str):
     """Whitelist check. Returns (normalized_line, timeout_s) or None if rejected.
     ホワイトリスト照合。合格なら (正規化コマンド行, タイムアウト秒)、不合格なら None。"""
@@ -170,155 +148,16 @@ def _validate_command(cmd_line: str):
 
 
 # =============================================================================
-# RealLink — talks to the actual vehicle over UDP :8889 (commands) / :8890
-# (state). Two sockets, two receiver threads; see the module docstring for
-# why this can't be tools/stampfly_py/stampfly.py.
-# RealLink — 実機と UDP :8889（コマンド）/ :8890（状態）で通信。
-# ソケット2つ・受信スレッド2つ。stampfly.py を使わない理由はモジュール
-# docstring 参照。
+# RealLink and _parse_state_line moved to lib/sfpilot/link.py (2026-09-19)
+# so that `sf blocks` and `sf pilot` drive the vehicle through ONE client
+# instead of two copies that could drift apart. Imported above; the names
+# below keep this module's existing spelling.
+# RealLink と _parse_state_line は lib/sfpilot/link.py へ移設した
+# (2026-09-19)。`sf blocks` と `sf pilot` が 2 つの写しに分岐せず、1 つの
+# クライアントで機体を操作するため。import は冒頭。下の別名で本モジュール
+# 内の既存の呼び名を保つ。
 # =============================================================================
-class RealLink:
-    def __init__(self, host: str):
-        self.host = host
-        # Command socket: bound to an ephemeral local port. The firmware
-        # replies to whatever (ip, port) the command datagram arrived FROM
-        # (api_task.cpp: g_client = from), so no explicit local port is
-        # required — matching tools/stampfly_py/stampfly.py's approach.
-        # コマンドソケット: ローカルはエフェメラルポートで bind。ファームは
-        # コマンド datagram の送信元 (ip, port) へ返信する（api_task.cpp の
-        # g_client = from）ため、ローカルポートを明示指定する必要はない
-        # — stampfly.py と同じ考え方。
-        self._cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._cmd_sock.bind(("", 0))
-
-        # State socket: the firmware's TelloStateTask sends unicast directly
-        # to <client-ip>:8890 (its OWN ephemeral send socket, no local bind
-        # needed on ITS side) — so on our side we must bind :8890 to receive
-        # it (confirmed in api_task.cpp TelloStateTask, ~line 1300-1310).
-        #
-        # Deliberately NO SO_REUSEADDR here: UDP:8890 is contended on the PC
-        # side (djitellopy scripts, another `sf blocks` session, etc. all
-        # want it). With SO_REUSEADDR a second binder would silently steal
-        # or split the 10Hz state stream — undefined which process receives
-        # each packet — instead of failing loudly. We want the OSError.
-        # 状態ソケット: ファームの TelloStateTask は自前のエフェメラル送信
-        # ソケットから <client-ip>:8890 へユニキャスト送信する（送信側の bind は
-        # 不要）— よってこちら側は :8890 を bind して受信する必要がある
-        # （api_task.cpp TelloStateTask, 1300〜1310行付近で確認）。
-        #
-        # あえて SO_REUSEADDR は付けない: UDP:8890 は PC 側で競合しやすい
-        # （djitellopy スクリプト・別の `sf blocks` セッション等が同じポートを
-        # 欲しがる）。SO_REUSEADDR を付けると、2つ目の bind が 10Hz 状態
-        # ストリームを黙って奪う／分け合ってしまう（どちらが受信するか不定）
-        # — 静かに壊れるより、OSError で明確に失敗させたい。
-        self._state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        try:
-            self._state_sock.bind(("", STATE_PORT))
-        except OSError:
-            # Don't leak the already-created command socket on this path.
-            # このパスで既に作った command ソケットを漏らさない。
-            self._state_sock.close()
-            self._cmd_sock.close()
-            raise OSError(
-                f"UDP:{STATE_PORT} is already in use — close other djitellopy / "
-                f"sf blocks sessions (UDP:{STATE_PORT} が使用中です — 他の "
-                f"djitellopy / sf blocks を終了してください)"
-            )
-
-        self._reply_q: "queue.Queue[str]" = queue.Queue()
-        self._send_lock = threading.Lock()     # serializes socket writes / 送信の直列化
-        self._abort_evt = threading.Event()
-        self._closed = threading.Event()
-        self._latest_state: Optional[dict] = None
-        self._latest_state_ts = 0.0
-
-        self._rx_thread = threading.Thread(target=self._rx_loop, daemon=True)
-        self._state_thread = threading.Thread(target=self._state_loop, daemon=True)
-        self._rx_thread.start()
-        self._state_thread.start()
-
-    def _rx_loop(self) -> None:
-        """Push every command-socket reply into the queue. / 全応答をキューへ積む。"""
-        while not self._closed.is_set():
-            try:
-                data, _addr = self._cmd_sock.recvfrom(1024)
-            except OSError:
-                return   # socket closed by close() / close() によるソケット破棄
-            self._reply_q.put(data.decode(errors="replace").strip())
-
-    def _state_loop(self) -> None:
-        """Decode every state-socket packet into _latest_state. / 状態パケットをデコード。"""
-        while not self._closed.is_set():
-            try:
-                data, _addr = self._state_sock.recvfrom(2048)
-            except OSError:
-                return
-            self._latest_state = _parse_state_line(data.decode(errors="replace"))
-            self._latest_state_ts = time.monotonic()
-
-    def handshake(self, timeout: float):
-        """Enter SDK mode ("command"). Returns (ok, error|None).
-        SDK モードへ移行（"command"）。(成功可否, エラー|None) を返す。"""
-        status, text = self.send("command", timeout)
-        return (True, None) if status == "ok" else (False, text)
-
-    def send(self, cmd_line: str, timeout: float):
-        """Send one command, wait for its reply. Returns (status, text) where
-        status in {"ok","error","timeout","aborted"}.
-        1コマンド送信→応答待ち。status は {"ok","error","timeout","aborted"} のいずれか。"""
-        # Flush stale replies (e.g. a late reply from a previous timed-out
-        # command) so we never pair this command with someone else's answer.
-        # 古い応答（前回タイムアウトしたコマンドの遅延応答等）を捨て、
-        # 今回のコマンドに他コマンドの応答が紛れ込まないようにする。
-        while True:
-            try:
-                self._reply_q.get_nowait()
-            except queue.Empty:
-                break
-        self._abort_evt.clear()
-        with self._send_lock:
-            try:
-                self._cmd_sock.sendto(cmd_line.encode(), (self.host, API_PORT))
-            except OSError as exc:
-                return "error", f"send failed: {exc}"
-
-        deadline = time.monotonic() + timeout
-        while True:
-            if self._abort_evt.is_set():
-                return "aborted", "aborted"
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return "timeout", "timeout"
-            try:
-                reply = self._reply_q.get(timeout=min(remaining, POLL_INTERVAL_S))
-            except queue.Empty:
-                continue
-            return ("error", reply) if reply.startswith("error") else ("ok", reply)
-
-    def priority(self, cmd_line: str) -> None:
-        """Send immediately, bypassing any busy check (stop/emergency).
-        busy チェックを無視して即時送信（stop/emergency 用）。"""
-        with self._send_lock:
-            try:
-                self._cmd_sock.sendto(cmd_line.encode(), (self.host, API_PORT))
-            except OSError:
-                pass   # best-effort — priority sends must not raise / 失敗しても例外化しない
-
-    def abort(self) -> None:
-        """Make the in-flight send() (if any) return ("aborted", ...).
-        待機中の send() があれば ("aborted", ...) で返させる。"""
-        self._abort_evt.set()
-
-    def snapshot_state(self):
-        return self._latest_state, self._latest_state_ts
-
-    def close(self) -> None:
-        self._closed.set()
-        for sock in (self._cmd_sock, self._state_sock):
-            try:
-                sock.close()
-            except OSError:
-                pass
+_parse_state_line = parse_state_line
 
 
 # =============================================================================

@@ -59,6 +59,20 @@ sim = [
     "numpy-stl>=3.0.0",
     "hid>=1.0.0",
 ]
+pilot = [
+    # `sf pilot`'s judging layer talks to the TypeSafe HTTP API directly
+    # (see lib/sfpilot/judge.py for why not typesafe-sdk); httpx is what
+    # keeps ONE connection alive across judgements, which matters because
+    # a fresh TLS handshake costs about as much as a judgement itself.
+    # Lower bound 0.27: published well over a day ago, per the install
+    # policy of not taking a package the day it appears.
+    # `sf pilot` の判断層は TypeSafe の HTTP API を直接呼ぶ
+    # （typesafe-sdk を使わない理由は lib/sfpilot/judge.py 参照）。httpx は
+    # 判断をまたいで接続を 1 本に保つために使う。TLS を張り直すと判断 1 回分
+    # に近い時間がかかるため重要。下限 0.27 は公開から十分に日数が経った版
+    # （公開当日のパッケージは入れないという方針）。
+    "httpx>=0.27",
+]
 full = [
     "esptool>=4.6",
     "Pillow>=10.0.0",

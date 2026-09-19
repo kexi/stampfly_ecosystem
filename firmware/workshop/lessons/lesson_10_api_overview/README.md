@@ -60,11 +60,15 @@ vehicleファームウェアの任意のコンポーネントに公開してい�
 | ToF (bottom) | VL53L3CX | 30 Hz | Ground distance (0-2 m) |
 | Optical Flow | PMW3901 | 100 Hz | Ground-relative motion (raw counts via ws::) |
 
-Note: the vehicle sensing pipeline does not read the front ToF sensor,
-so `ws::tof_front()` always returns -1.0 and is not used in this lesson.
+Note: `ws::tof_front()` returns a real distance when the forward sensor is
+running, and `ws::kDistanceUnavailable` (-1.0) when there is no reading. That
+sensor is optional and needs battery power — on USB alone it does not start —
+so this lesson keeps to the bottom ToF, which works on USB.
 
-注: vehicleのセンシングでは前方ToFセンサを読まないため、`ws::tof_front()`は
-常に-1.0を返し、本レッスンでは使用しない。
+注: `ws::tof_front()`は前方センサが動いていれば実際の距離を返し、測定値が
+無ければ`ws::kDistanceUnavailable`（-1.0）を返す。前方センサは任意の装備で
+バッテリー電源が要り、USB給電のみでは起動しない。そのため本レッスンでは
+USBで動く底面ToFだけを扱う。
 
 ## Custom Firmware Project / カスタムファームウェアプロジェクト
 

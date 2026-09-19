@@ -79,9 +79,20 @@
          よう 3m→200m に拡大。 -->
     <geom name="ground" type="plane" size="200 200 0.1" material="grid"/>
 
-    <!-- Drone body, FLU (X fwd, Y left, Z up). Hover start at 0.5 m. -->
-    <!-- 機体 FLU（X前, Y左, Z上）。0.5 m でホバー開始。 -->
-    <body name="drone" pos="0 0 0.5">
+    <!-- Drone body, FLU (X fwd, Y left, Z up). Hover start at 0.5 m, facing NORTH.
+         quat is the MuJoCo framequat for StampFly yaw=0 (north) — frames.hpp's
+         qnb_to_mujoco_quat(identity) = [0.7071,0,0,0.7071] (frames_test.cpp case 2).
+         Why not the identity quat: MuJoCo world axes are ENU, so identity puts the
+         body's +X (forward) along world +X = EAST, i.e. NED yaw=+90 deg, while the
+         firmware boots its estimator at yaw=0. That 90 deg offset rotated every
+         ground-truth horizontal comparison (truth px/py vs estimated px/py). -->
+    <!-- 機体 FLU（X前, Y左, Z上）。0.5 m・北向きでホバー開始。quat は StampFly の
+         yaw=0（北）に対応する MuJoCo framequat（frames.hpp qnb_to_mujoco_quat(単位元)
+         = [0.7071,0,0,0.7071]、frames_test.cpp ケース2）。単位元にしない理由: MuJoCo の
+         世界軸は ENU なので、単位元では機体 +X（前方）が世界 +X＝東を向き NED yaw=+90°
+         になる。ファームは推定器を yaw=0 で起動するため、この 90° ずれが真値と推定の
+         水平位置比較をすべて回転させていた。 -->
+    <body name="drone" pos="0 0 0.5" quat="0.70710678 0 0 0.70710678">
       <freejoint name="root"/>
       <inertial pos="0 0 0" mass="0.037" diaginertia="9.16e-6 13.3e-6 20.4e-6"/>
 

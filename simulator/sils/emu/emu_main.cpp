@@ -73,6 +73,33 @@ constexpr float kGroundZ = 0.013f;   // body rest height on the ground (ENU up)
 // 通常/再確認試験のコンソール出力を本機能追加前と完全に同じに保つ）。
 // 実ファーム自身が発行する推定/モード/電源トピックを読む — `sf sils fly` の HUD や
 // 実テレメトリクライアントが見るのと同じ数値。
+// Pack voltage -> remaining percentage, linear between empty and full.
+//
+// The same crude-but-monotonic mapping lib/sfpilot/link.py applies to a
+// recorded flight (BATTERY_FULL_V / BATTERY_EMPTY_V there). It is shared by
+// value, not by code, because this is C++ inside the emulator and that is
+// Python on the PC; the two constants are kept equal deliberately so a SILS
+// run and a replayed log place the same voltage in the same battery band.
+// Crude is enough: every consumer classifies the result into bands.
+//
+// パック電圧 → 残量の百分率。空〜満充電の間を線形に対応させる。
+//
+// lib/sfpilot/link.py が記録済みの飛行に適用するのと同じ、粗いが単調な対応である
+//（向こうの BATTERY_FULL_V / BATTERY_EMPTY_V）。共有はコードではなく値で行う —
+// こちらはエミュレータ内の C++、あちらは PC 側の Python だからである。2 つの定数は
+// 意図的に等しく保つ。SILS の実行と再生したログが、同じ電圧を同じ電池区分に
+// 置くようにするためである。粗さは問題にならない: どの読み手も結果を区分に落とす。
+constexpr float kBatteryFullV  = 4.2f;   // 1S LiPo, charged / 満充電
+constexpr float kBatteryEmptyV = 3.3f;   // 1S LiPo, empty   / 空
+
+float battery_percent(float voltage)
+{
+    const float ratio = (voltage - kBatteryEmptyV) / (kBatteryFullV - kBatteryEmptyV);
+    if (ratio < 0.0f) return 0.0f;
+    if (ratio > 1.0f) return 100.0f;
+    return ratio * 100.0f;
+}
+
 void print_state_line_if_due(int64_t now_us)
 {
     if (!sils_realtime_enabled()) return;
@@ -85,6 +112,15 @@ void print_state_line_if_due(int64_t now_us)
     const sf::StateEstimate est  = sf::estimate_state.latest();
     const sf::SystemMode    mode = sf::system_mode.latest();
     const sf::PowerData     pwr  = sf::sensor_power.latest();
+    // ToF comes from sensor_snapshot, NOT from the sensor_tof queue: that queue
+    // is single-consumer SPSC and reading it here would steal samples from
+    // ImuTask. sensor_snapshot is ImuTask's own Latest mirror, published for
+    // exactly this kind of observer (data_types.hpp).
+    // ToF は sensor_tof キューではなく sensor_snapshot から読む: 同キューは単一
+    // consumer の SPSC で、ここで読むと ImuTask からサンプルを奪ってしまう。
+    // sensor_snapshot は ImuTask 自身が Latest へミラーしたもので、まさにこの種の
+    // 監視側のために発行されている（data_types.hpp）。
+    const sf::SensorSnapshot snap = sf::sensor_snapshot.latest();
 
     constexpr float kRad2Deg = 57.2957795131f;
     const sf::math::Quat q(est.attitude[0], est.attitude[1], est.attitude[2], est.attitude[3]);
@@ -99,11 +135,46 @@ void print_state_line_if_due(int64_t now_us)
     // "STATE " prefix (never used by any other emu log line) lets a reader
     // (e.g. `sf sils fly`'s HUD) pick this out of the mixed firmware log stream
     // with a trivial startswith() check.
+    //
+    // Keys are APPENDED, never reordered or renamed: every reader parses this
+    // line as unordered `k=v` tokens (`_fly_parse_state` in sfcli/commands/
+    // sils.py, `_parse_state` in simulator/tests/test_realtime_fly.py,
+    // SilsLink in lib/sfpilot/link.py), so adding to the tail cannot break one.
+    // The tail block below is what `sf pilot` needs and the original line
+    // lacked: horizontal position and velocity (drift and envelope checks),
+    // the downward ToF with its validity, and the battery as a percentage.
+    //
     // 「STATE 」接頭辞（他のemuログ行では使わない）により、読み手（`sf sils fly`の
     // HUD等）が混在するファームログの中から単純な startswith() で拾える。
-    std::printf("STATE t=%.3f alt=%.3f roll=%.2f pitch=%.2f yaw=%.2f mode=%s:%s%s vbatt=%.2f\n",
+    //
+    // 項目は「末尾へ追記」する。並べ替えも改名もしない: どの読み手も本行を順序に
+    // 依らない `k=v` の並びとして解釈するため（sfcli/commands/sils.py の
+    // `_fly_parse_state`、simulator/tests/test_realtime_fly.py の `_parse_state`、
+    // lib/sfpilot/link.py の SilsLink）、末尾への追加で壊れることはない。以下の
+    // 追記部は `sf pilot` が必要とし、従来の行に無かったもの: 水平位置と速度
+    //（流れと飛行領域の判定）、下向き ToF とその有効性、百分率の電池残量。
+    // The forward ToF is appended last (jev-autopilot P4b). It comes from the
+    // same sensor_snapshot mirror as the downward one, so both readings on a
+    // line are the same age and no reader has to reconcile two clocks. When the
+    // front part is absent -- the default, and the state of every regression run
+    // -- tof_front_valid is 0 and the value is -1.0, the same "do not trust me"
+    // form the downward reading already uses.
+    // 前方 ToF は末尾に追記する（P4b）。下向きと同じ sensor_snapshot のミラー由来
+    // なので、1 行の 2 つの読み値は同じ古さであり、読み手が 2 つの時計を突き合わせる
+    // 必要はない。前方が不在のとき ―― 既定であり、全ての回帰実行の状態である ――
+    // tof_front_valid は 0、値は -1.0 で、下向きが既に使っている「信用するな」と
+    // 同じ形になる。
+    std::printf("STATE t=%.3f alt=%.3f roll=%.2f pitch=%.2f yaw=%.2f mode=%s:%s%s vbatt=%.2f"
+                " x=%.3f y=%.3f vx=%.3f vy=%.3f vz=%.3f tof=%.3f tof_valid=%d batt=%.1f"
+                " tof_front=%.3f tof_front_valid=%d\n",
                 (double)now_us * 1e-6, alt, e.x * kRad2Deg, e.y * kRad2Deg, e.z * kRad2Deg,
-                state_name, mode_name, mode.armed ? "*" : "", pwr.voltage);
+                state_name, mode_name, mode.armed ? "*" : "", pwr.voltage,
+                est.position[0], est.position[1],
+                est.velocity[0], est.velocity[1], est.velocity[2],
+                snap.tof_valid ? snap.tof_distance : -1.0f, snap.tof_valid ? 1 : 0,
+                battery_percent(pwr.voltage),
+                snap.tof_front_valid ? snap.tof_front_distance : -1.0f,
+                snap.tof_front_valid ? 1 : 0);
 }
 
 // Scheduler advance hook: step the physics by the elapsed virtual time, pushing
@@ -143,6 +214,23 @@ void on_advance(int64_t now_us)
         std::printf("[emu] 'quit' received via RC-over-stdin — shutting down\n");
         std::fflush(stdout);
         std::fflush(stderr);
+        // Close the flight-log streams before _Exit, exactly as the normal
+        // end-of-run path does (see the call before main()'s own _Exit).
+        // _Exit skips stdio flushing, so without this the buffered rows of
+        // every stream are lost -- and the LOWEST-rate stream (status.csv at
+        // 1Hz) loses even its header, leaving a zero-byte file that
+        // pd.read_csv rejects with "No columns to parse from file". That is
+        // what stopped `sf pilot`'s SILS flights from producing a readable
+        // bundle: they end by sending `quit`, where `sf sils scenario` runs
+        // its duration out and leaves through the normal path.
+        // _Exit の前にフライトログを閉じる（通常終了の経路が main() 内の _Exit の
+        // 前で行っているのと同じ）。_Exit は stdio の書き出しを行わないため、これが
+        // 無いと各ストリームの未書き出し行が失われる。とりわけ最も低速な
+        // status.csv（1Hz）は見出し行さえ失い、0 バイトのファイルが残って
+        // pd.read_csv が "No columns to parse from file" で拒否する。`sf pilot` の
+        // SILS 飛行が読める一式を作れなかった原因がこれである（`quit` で終わる。
+        // `sf sils scenario` は時間を走り切って通常経路から抜ける）。
+        sils_emu_flightlog_close();
         // Same rationale as the normal end-of-run _Exit(0) below: the firmware's
         // static singletons are never destructed on real hardware, so skip
         // static destruction here too (see the long comment at the bottom of

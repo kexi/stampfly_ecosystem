@@ -243,6 +243,18 @@ Component config → StampFly ToF Sensor Configuration
 - **データ取得**: `VL53LX_GetMeasurementDataReady()`, `VL53LX_GetMultiRangingData()`, `VL53LX_ClearInterruptAndStartMeasurement()`
 - **カルマンフィルタ**: `VL53LX_FilterInit()`, `VL53LX_FilterUpdate()`, `VL53LX_FilterReset()`
 
+### C++ ラッパー（`VL53L3CXWrapper`）の在否確認
+
+`static bool isPresentAt(i2c_master_bus_handle_t bus, uint8_t addr)`
+
+`IDENTIFICATION__MODEL_ID`（0x010F）を**レジスタ 1 本だけ**読み、VL53L3CX の model id（`MODEL_ID`=0xEA）が返ったときだけ `true` を返す。不一致のときは読めた値を警告ログに出す。
+
+**なぜ要るか**: `init()` は部品が「無い」ときに高くつく — ドライバが起動完了を`VL53LX_BOOT_COMPLETION_POLLING_TIMEOUT_MS`（500ms）までポーリングしてから諦める。一定周期で回る呼び出し側（例: 底面 ToF が機体唯一の鉛直観測である `TofTask`）は、先にこれを呼んで否定なら `init()` を一切呼ばず、数ミリ秒で済ませられる。
+
+**なぜ素の ACK ではなく model id か**: ACK は「何かが応答した」ことしか示さない。id を読めば、既定で ACK を返すバスと本物の VL53L3CX を区別できる。
+
+**待たない・XSHUT に触れない**: 呼び出し側が事前に XSHUT を解除し `BOOT_TIME_MS`（4ms、データシートの t_boot=1.2ms max に本基板の電源立ち上がり分の余裕）以上経過させておくこと。こうしておくと、周期を持つ呼び出し側が「ある周期で XSHUT を上げ、次の周期で確認する」という分割ができ、起動待ちが周期のスリープに吸収されて**周期の位相が動かない**。
+
 ## 参考ドキュメント
 
 - **[API Reference](docs/API.md)** - API仕様書（関数リファレンス）

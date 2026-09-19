@@ -64,4 +64,24 @@ bool sils_scenario_active(void);
 // ドライバタスク: 各事象を仮想時刻で作動。load が 1 のときだけ起動。完了で自タスク削除。
 void sils_scenario_driver_task(void* arg);
 
+// Register the target's API-command entry point (vehicle registers
+// sf_api_inject_line from emu_vehicle_glue.cpp). Targets without an ApiTask
+// never call this, and the `api` channel then records the line as unsupported.
+// ターゲットの API コマンド入口を登録する（vehicle は emu_vehicle_glue.cpp から
+// sf_api_inject_line を登録する）。ApiTask を持たないターゲットは呼ばず、`api`
+// チャネルはその行を未対応として記録する。
+void sils_scenario_register_api_inject(void (*fn)(const char*));
+
+// Feed one API command line through whatever was registered above. Returns
+// false when nothing is registered (the caller reports it; this must not be a
+// hard error, because the same emulator sources link for targets with no
+// ApiTask). This is the seam rc_stdin.cpp's `api <line>` verb goes through, so
+// that live stdin and a *.scn `api` event reach the firmware by one path.
+// 上で登録されたものへ API コマンド行を 1 行流す。未登録なら false を返す
+// （報告は呼び出し側が行う。ApiTask を持たないターゲットでも同じソースが
+// リンクされるため、ここを致命的エラーにしてはならない）。rc_stdin.cpp の
+// `api <行>` はこの継ぎ目を通る。ライブ stdin と *.scn の `api` 事象が 1 つの
+// 経路でファームへ届くようにするためである。
+bool sils_scenario_api_inject(const char* line);
+
 }  // extern "C"

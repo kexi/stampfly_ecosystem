@@ -36,6 +36,7 @@ sf <command> [subcommand] [options]
 | `sf monitor` | シリアルモニタを開く | [sf-monitor.md](sf-monitor.md) |
 | `sf telemetry` | 50Hz テレメトリのライブ表示（既定=ターミナル、`--web` でブラウザ） | `sf telemetry --help` |
 | `sf blocks` | Blockly ブロックプログラミング連携（ブラウザ UI ↔ 機体 UDP API） | `sf blocks --help` |
+| `sf pilot` | Jev による自動操縦の判断層（`bench`=往復時間の実測、`replay`=飛行ログの再生判断、`run --sils`=SILS を実際に飛ばして監視、`run --real`=**実機**を飛ばして監視（飛行前点検→離陸→ホバリング→監視→着陸。`--preflight-only` は点検だけで離陸しない。確認事項 5 項目への `y` が必須で `--yes` でも省略できない。実機を飛ばせるのは `run` だけで `say`／`mission`／`explore` は `--real` を拒否する。§4.12）、`say --sils`=自然言語の指示を手順に変えて飛ぶ（`run`・`say` は `--scene` で場面を選ぶ。`wall_ahead`／`dead_end` は前方 ToF の模擬を使い、接近速度から算出した停止距離で自動的に止まる（4.9.10））、`mission <経路> --sils`=経路を飛び区間の境目ごとに次の一手を Jev に問う、`explore --sils`=その場で回って 8 方位の距離を測り進む方向を選ぶ（**既定で無効**。機体がヨー回転で落下するため。解除手順は `docs/plans/jev-autopilot.md` §4.11.2））。`run`・`say`・`mission` に `--web` を付けると、飛行中の機体と判断の流れをブラウザで見られる（127.0.0.1 のみ）。SILS 飛行は毎回フライトログ一式を残し、終了時に `sf sils video -m pilot/<日時>` を表示する | `sf pilot --help` |
 | `sf log` | ログ取得・解析 | [sf-log.md](sf-log.md) |
 | `sf sim` | フライトシミュレータ実行 | [sf-sim.md](sf-sim.md) |
 | `sf sils`（`sf sil`） | SILS 試験環境（閉ループホバー・レビュー動画・合否判定） | `sf sils --help` |
@@ -176,6 +177,7 @@ command with no dedicated page, run `sf <command> --help` for details.
 | `sf monitor` | Open serial monitor | [sf-monitor.md](sf-monitor.md) |
 | `sf telemetry` | Live 50Hz telemetry — terminal dashboard, or browser with `--web` | `sf telemetry --help` |
 | `sf blocks` | Blockly block-programming bridge (browser UI <-> drone UDP API) | `sf blocks --help` |
+| `sf pilot` | Jev-assisted autopilot judging layer (`bench` measures round-trip time, `replay` judges a flight log, `run --sils` flies SILS under its judgement, `run --real` flies the **real aircraft** (preflight, take off, hover, watch, land; `--preflight-only` runs the checks without taking off; the five-item confirmation cannot be skipped, not even with `--yes`; hardware is `run`-only, so `say` / `mission` / `explore` refuse `--real` — §4.12), `say --sils` turns a natural-language instruction into steps and flies them (both take `--scene`; `wall_ahead` and `dead_end` use the simulated forward ToF and stop at a distance derived from the closing speed (§4.9.10)), `mission <route> --sils` flies a route and asks Jev what to do at each leg boundary, `explore --sils` turns on the spot to measure eight bearings and choose a way (**disabled by default**, because the aircraft falls when it yaws; see `docs/plans/jev-autopilot.md` §4.11.2 to lift it)). Add `--web` to `run`/`say`/`mission` to watch the aircraft and the decisions in a browser (127.0.0.1 only). Every SILS flight records a flight-log bundle and prints `sf sils video -m pilot/<datetime>` when it ends | `sf pilot --help` |
 | `sf log` | Log capture and analysis | [sf-log.md](sf-log.md) |
 | `sf sim` | Run flight simulator | [sf-sim.md](sf-sim.md) |
 | `sf sils` (`sf sil`) | Software-in-the-Loop bench (closed-loop hover, review video, gate) | `sf sils --help` |

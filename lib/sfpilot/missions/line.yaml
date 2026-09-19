@@ -1,0 +1,63 @@
+# Out along one axis and back, with a climb in the middle.
+# 1 軸を往復し、途中で高度を変える。
+#
+# This is the route that actually flies in SILS today, and it is the one to
+# use when checking that a mission works end to end. It exists because
+# `square.yaml`, the route P4 is really for, cannot be flown: a move along
+# the east/west axis following a move along the north/south axis disarms
+# the craft through the impact detector, with none of `sf pilot` involved
+# (docs/plans/jev-autopilot.md §4.4). Every leg here stays on the
+# north/south axis or is vertical, which is the combination measured to be
+# unaffected.
+#
+# これが、現状の SILS で実際に飛べる経路である。ミッションが端から端まで動くかを
+# 確かめるときはこちらを使う。この経路がある理由は、P4 が本来対象とする
+# `square.yaml` が飛べないからである。南北軸の移動に続く東西軸の移動は、衝撃検出に
+# より機体を解除する（`sf pilot` は一切関与しない。docs/plans/jev-autopilot.md
+# §4.4）。ここの区間はすべて南北軸か垂直であり、これは影響を受けないと実測で
+# 確かめた組み合わせである。
+#
+# The route still exercises everything a mission is made of: several legs,
+# an arrival to classify after each one, a `return_home` computed from
+# wherever the flight actually got to, and a landing. What it does not
+# exercise is the heading bookkeeping, which needs a turn.
+#
+# それでも、ミッションを構成するものは一通り働く: 複数の区間、各区間の後の到達の
+# 区分、実際に到達した位置から計算する `return_home`、そして着陸。働かないのは
+# 機首方位の積算で、それには旋回が要る。
+#
+# Flown with: sf pilot mission line --sils --fake --yes
+# 実行例:     sf pilot mission line --sils --fake --yes
+
+name: line
+purpose: fly out along one axis, climb, and come back to the takeoff point
+
+legs:
+  - verb: takeoff
+    label: 離陸
+
+  # North, because the SILS vehicle starts facing north (fixed in 1d99538c)
+  # and `truth.csv`'s pos_x is then the distance travelled, directly.
+  # 北へ。SILS の機体は北を向いて始まり（1d99538c で修正）、`truth.csv` の
+  # pos_x がそのまま移動距離になる。
+  - verb: forward
+    amount: 60
+    label: 1 区間目（北へ 0.6m）
+
+  - verb: forward
+    amount: 60
+    label: 2 区間目（さらに北へ 0.6m）
+
+  # A vertical leg: measured to be unaffected by the fault above, and it
+  # makes the route more than a straight line.
+  # 垂直の区間。上記の不具合の影響を受けないことを実測で確かめてある。経路が
+  # 単なる直線で終わらなくもなる。
+  - verb: up
+    amount: 30
+    label: 3 区間目（0.3m 上昇）
+
+  - verb: return_home
+    label: 離陸点へ戻る
+
+  - verb: land
+    label: 着陸
