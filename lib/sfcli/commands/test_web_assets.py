@@ -173,3 +173,33 @@ def test_the_pilot_page_is_a_separate_page():
     html = pilot_web.page_path().read_text(encoding="utf-8")
     assert "/events" in html
     assert "判断" in html            # the decisions column / 判断の欄
+
+
+def test_the_pilot_page_escapes_every_value_it_puts_into_markup():
+    """
+    The pilot page never interpolates an event value into markup unescaped.
+
+    Part of the event stream is text a person typed (the instruction given to
+    `sf pilot say`, leg names from a mission file), and the decision rows are
+    assembled as HTML strings. Each untrusted field must go through `esc()`;
+    a raw `${verdict.reason}` style interpolation is what this test refuses.
+
+    操縦ページは、出来事の値をエスケープせずにマークアップへ差し込まない。
+
+    出来事の流れの一部は人が打った文字列（`sf pilot say` の指示文、ミッション
+    ファイルの区間名）であり、判断の行は HTML 文字列として組まれる。信頼できない
+    各項目は `esc()` を通すこと。`${verdict.reason}` のような生の差し込みを、
+    この試験が拒否する。
+    """
+    html = (web_assets.ASSET_DIR / "pilot_web.html").read_text(encoding="utf-8")
+
+    has_escape_helper = "const esc = " in html
+    assert has_escape_helper
+
+    untrusted_fields = ("verdict.action", "verdict.reason", "verdict.source",
+                        "ev.command", "answers.next_move.choice", "choice", "name", "v")
+    for field in untrusted_fields:
+        raw_interpolation = "${" + field + "}"
+        raw_with_fallback = "${" + field + " ||"
+        assert raw_interpolation not in html, field
+        assert raw_with_fallback not in html, field

@@ -288,13 +288,28 @@ function flatten(state, prefix = "") {
   return out;
 }
 
+// Every value below reaches this page from the event stream, and part of it is
+// text a person typed (the spoken instruction of `sf pilot say`, leg names from
+// a mission file). It is interpolated into markup, so it is escaped first.
+// Why not build DOM nodes with textContent everywhere: the rows are assembled
+// as strings in one place, and one escape helper keeps that readable; the rule
+// is simply "no interpolation without esc()".
+// 以下の値はすべて出来事の流れから届き、その一部は人が打った文字列である
+// （`sf pilot say` の指示文、ミッションファイルの区間名）。マークアップへ差し込む
+// ため、先にエスケープする。textContent で DOM を組まない理由: 行は 1 か所で
+// 文字列として組んでおり、エスケープ関数 1 つのほうが読みやすい。規則は
+// 「esc() を通さずに差し込まない」だけである。
+const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
+
 function situationHtml(state) {
   const flat = flatten(state);
   const parts = [];
   for (const [k, v] of Object.entries(flat)) {
     const name = k.split(".").pop();
     const changed = previousSituation[k] !== undefined && previousSituation[k] !== v;
-    parts.push(changed ? `<b>${name}: ${v}</b>` : `${name}: ${v}`);
+    const pair = `${esc(name)}: ${esc(v)}`;
+    parts.push(changed ? `<b>${pair}</b>` : pair);
   }
   previousSituation = flat;
   return parts.join(" · ");
@@ -310,9 +325,12 @@ function probsHtml(answers) {
     .sort((a, b) => b[1] - a[1])
     .map(([choice, p]) => {
       const pick = choice === safety.choice ? " pick" : "";
-      return `<div class="prob${pick}"><span>${choice}</span>`
-           + `<span class="track"><span class="fill" style="width:${(p * 100).toFixed(0)}%"></span></span>`
-           + `<span class="pc">${(p * 100).toFixed(0)}%</span></div>`;
+      // Number() so a non-numeric probability cannot carry markup into style.
+      // 数値でない確率が style へマークアップを持ち込めないよう Number() を通す。
+      const percent = (Math.min(Math.max(Number(p) || 0, 0), 1) * 100).toFixed(0);
+      return `<div class="prob${pick}"><span>${esc(choice)}</span>`
+           + `<span class="track"><span class="fill" style="width:${percent}%"></span></span>`
+           + `<span class="pc">${percent}%</span></div>`;
     });
   return `<div class="probs">${rows.join("")}</div>`;
 }
@@ -329,22 +347,22 @@ function addDecision(ev) {
 
   const late = answers.error === "deadline exceeded";
   const latency = ev.latency_ms === null || ev.latency_ms === undefined
-    ? "--" : `${ev.latency_ms.toFixed(0)} ms`;
+    ? "--" : `${Number(ev.latency_ms).toFixed(0)} ms`;
   const abnormal = answers.abnormal && answers.abnormal.noul !== null
     && answers.abnormal.noul !== undefined
-    ? ` · abnormal ${(answers.abnormal.noul * 100).toFixed(0)}%` : "";
+    ? ` · abnormal ${(Number(answers.abnormal.noul) * 100).toFixed(0)}%` : "";
   const nextMove = answers.next_move
-    ? ` · next_move <b>${answers.next_move.choice}</b>` : "";
+    ? ` · next_move <b>${esc(answers.next_move.choice)}</b>` : "";
 
   node.innerHTML =
-    `<div class="head"><span class="verdict">${verdict.action || "--"}</span>`
-    + `<span class="t">t=${(ev.t_mono ?? 0).toFixed(1)}s · `
+    `<div class="head"><span class="verdict">${esc(verdict.action || "--")}</span>`
+    + `<span class="t">t=${Number(ev.t_mono ?? 0).toFixed(1)}s · `
     + `<span class="${late ? "late" : ""}">${late ? "期限超過 " : ""}${latency}</span></span></div>`
-    + `<div class="reason">${verdict.reason || ""}`
-    + (verdict.source ? ` <span class="muted">[${verdict.source}]</span>` : "") + `</div>`
+    + `<div class="reason">${esc(verdict.reason)}`
+    + (verdict.source ? ` <span class="muted">[${esc(verdict.source)}]</span>` : "") + `</div>`
     + probsHtml(answers)
     + (abnormal || nextMove ? `<div class="reason">${abnormal}${nextMove}</div>` : "")
-    + (ev.command ? `<div class="cmd">送信 / sent <code>${ev.command}</code></div>` : "")
+    + (ev.command ? `<div class="cmd">送信 / sent <code>${esc(ev.command)}</code></div>` : "")
     + `<div class="sit">${situationHtml(ev.state)}</div>`;
 
   list.prepend(node);                                   // newest on top / 新しいものが上
