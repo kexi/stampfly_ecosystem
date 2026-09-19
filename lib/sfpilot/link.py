@@ -204,8 +204,23 @@ def parse_state_line(text: str) -> dict:
 # 支えられない。
 # =============================================================================
 class RealLink:
-    def __init__(self, host: str, telem_port: int = TELEM_PORT):
+    def __init__(self, host: str, telem_port: int = TELEM_PORT,
+                 state_port: int = STATE_PORT):
         """Talk to the vehicle at `host`, listening for telemetry on `telem_port`.
+
+        `state_port` exists for the same reason as `telem_port` and must be
+        given whenever it is: a Sample is built from BOTH streams, so a test
+        that separates only the telemetry port still receives the vehicle's
+        10 Hz state string on :8890 and folds it into the Sample it was about
+        to assert was empty (measured 2026-09-20: `battery_pct` from the
+        aircraft appearing in a test that had sent nothing but rubbish).
+
+        `state_port` が在る理由は `telem_port` と同じであり、片方を与えるなら
+        両方を与えなければならない。Sample は**両方**の流れから組まれるので、
+        テレメトリのポートだけを分けた試験にも 10Hz の状態文字列が :8890 へ
+        届き、「空のはず」と確かめようとしていた Sample に併合される
+        （2026-09-20 実測: 屑しか送っていない試験に、機体の `battery_pct` が
+        現れた）。
 
         `telem_port` exists for the tests. A real flight always leaves it at
         :5005, which is where the firmware broadcasts. A test cannot: nothing
@@ -262,7 +277,7 @@ class RealLink:
         # — 静かに壊れるより、OSError で明確に失敗させたい。
         self._state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self._state_sock.bind(("", STATE_PORT))
+            self._state_sock.bind(("", state_port))
         except OSError:
             # Don't leak the already-created command socket on this path.
             # このパスで既に作った command ソケットを漏らさない。
@@ -275,6 +290,7 @@ class RealLink:
             )
 
         self.telem_port = telem_port
+        self.state_port = state_port
 
         # Telemetry socket (UDP:5005, 50Hz). Bound separately from :8890 and
         # allowed to fail: `sf blocks` never needed it, and firmware older

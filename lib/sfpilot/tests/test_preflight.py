@@ -574,3 +574,34 @@ def test_the_report_serialises_for_the_trace(clock, sleep):
 
     assert json.loads(json.dumps(row, ensure_ascii=False))["ok"] is True
     assert len(row["checks"]) == 5
+
+
+def test_a_craft_on_the_floor_is_not_failed_for_its_downward_tof(clock, sleep):
+    """A grounded craft passes (a) although its downward ToF reads invalid.
+
+    The downward sensor is below its minimum range when the craft stands on
+    the floor -- measured on hardware 2026-09-20: 0.000 m and invalid on the
+    floor, 0.871 m and valid held up. A craft about to take off is on the
+    floor by definition, so requiring the reading here would fail the
+    aircraft for being placed correctly, and fail it for a condition the
+    vehicle itself takes off from. The packet version is still checked, via
+    the battery, which a v1 packet does not carry either.
+
+    床に置かれた機体が、下向き ToF が無効であることを理由に (a) で落とされないこと。
+
+    床に立っている機体では、下向きセンサーは測距の下限を下回る —— 実機で実測
+    （2026-09-20）: 床置きで 0.000m・無効、持ち上げて 0.871m・有効。離陸しようと
+    している機体は定義からして床に居るのだから、ここで読み値を要求すれば、正しく
+    置かれていることを理由に機体を落とし、しかも機体自身がそこから離陸する当の
+    状態を理由に落とすことになる。パケットの版は電池電圧で確かめ続ける（v1 の
+    パケットはそちらも持たない）。
+    """
+    grounded = _healthy()
+    grounded.pop("tof_m", None)          # invalid downward ToF / 下向き ToF が無効
+
+    report = _report(FakeLink(samples=[dict(grounded) for _ in range(100)]),
+                     clock=clock, sleep=sleep)
+
+    telemetry = next(c for c in report.checks if c.name == CHECK_TELEMETRY)
+    assert telemetry.passed, telemetry.detail
+    assert report.ok, [c.detail for c in report.checks if not c.passed]

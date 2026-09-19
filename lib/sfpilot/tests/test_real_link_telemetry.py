@@ -130,8 +130,15 @@ def link():
     不具合ではないためである。
     """
     port = _free_udp_port()
+    # BOTH ports, because a Sample is built from both streams: leaving the
+    # state port at :8890 lets the vehicle's own 10 Hz string be folded into
+    # a Sample this test is about to assert is empty (measured 2026-09-20).
+    # 両方のポートを与える。Sample は両方の流れから組まれるので、状態ポートを
+    # :8890 のままにすると、機体自身の 10Hz 文字列が、この試験が「空のはず」と
+    # 確かめようとしている Sample に併合される（2026-09-20 実測）。
+    state_port = _free_udp_port()
     try:
-        real_link = RealLink("127.0.0.1", telem_port=port)
+        real_link = RealLink("127.0.0.1", telem_port=port, state_port=state_port)
     except OSError as exc:
         pytest.skip(f"cannot bind the telemetry ports: {exc}")
     if real_link._telem_sock is None:

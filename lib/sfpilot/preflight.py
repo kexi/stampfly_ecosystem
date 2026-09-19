@@ -5,8 +5,7 @@ sfpilot.preflight - 実機の飛行を始めてよいかを決める点検。
 Four checks, all of which must pass before anything takes off, plus one
 line that is REPORTED and never judged:
 
-  (a) telemetry arrives, as the 140-byte v2 packet, with the battery and
-      the downward ToF valid in it
+  (a) telemetry arrives, at a usable rate, as the 140-byte v2 packet
   (b) the pack voltage, shown and not judged (see below)
   (c) `command` is answered, and the round trip's p95 is inside budget
   (d) Jev answers, and its round trip's p95 is inside the Judge's deadline
@@ -15,7 +14,7 @@ line that is REPORTED and never judged:
 4 つの点検。すべて通らなければ何も離陸しない。加えて、**判定せず表示するだけ**の
 1 行がある:
 
-  (a) テレメトリが届く。140 バイトの v2 パケットで、電池と下向き ToF が有効
+  (a) テレメトリが使える頻度で届く。140 バイトの v2 パケットであること
   (b) パック電圧。表示のみで、飛行可否は判定しない（下記）
   (c) `command` に応答があり、往復時間の p95 が予算内
   (d) Jev が応答し、その往復時間の p95 が Judge の期限内
@@ -269,13 +268,25 @@ def _check_telemetry(link, cfg, clock, sleep):
     # 判定は最新サンプル自身のキーに対して行う。併合が違いを覆い隠す前に、と
     # 言いたいところだが、併合は無いキーを埋めるだけなので覆い隠さない。覆い隠す
     # のは**周期**のほうであり、版を別に確かめるのはまさにそのためである。
-    newest = samples[-1]
-    has_v2_fields = "battery_v" in newest and "tof_m" in newest
-    if not has_v2_fields:
+    # Asked of the battery alone, and of the newest sample in which it
+    # appears rather than of the newest sample. Why not the downward ToF as
+    # well: it is invalid on a craft standing on the floor -- below the
+    # sensor's minimum range -- which is where a craft about to take off is
+    # by definition (measured 2026-09-20: 0.000 m invalid on the floor,
+    # 0.87 m valid held up). Requiring it here failed the aircraft for being
+    # correctly placed, and failed it for something the vehicle itself is
+    # content to take off with.
+    # 電池電圧だけで判定し、しかも「最新のサンプル」ではなく「その項目が現れた
+    # 最新のサンプル」に対して問う。下向き ToF を条件にしない理由: 床に置かれた
+    # 機体では、測距の下限を下回って無効になる。そして離陸しようとしている機体は
+    # 定義からしてそこに居る（2026-09-20 実測: 床置きで 0.000m 無効、持ち上げて
+    # 0.87m 有効）。ここで要求すると、正しく置かれていることを理由に機体を落とし、
+    # しかも機体自身はその状態で離陸を許す当のものを理由に落とすことになる。
+    carries_battery = any("battery_v" in s for s in samples)
+    if not carries_battery:
         return _failed(CHECK_TELEMETRY, measured, detail=(
-            "テレメトリに電池電圧か下向き ToF が無い（104B の v1、または有効ビットが "
-            "落ちている）。実機の run は 140B の v2 を前提とする "
-            "/ the 140-byte v2 packet is required"
+            "テレメトリに電池電圧が無い（104B の v1）。実機の run は 140B の v2 を"
+            "前提とする / the 140-byte v2 packet is required"
         )), samples
 
     is_rate_enough = rate >= cfg.telemetry_rate_min
