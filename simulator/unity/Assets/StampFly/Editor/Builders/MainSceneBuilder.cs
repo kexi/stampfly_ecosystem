@@ -8,6 +8,7 @@
 
 using System.IO;
 using StampFly.App;
+using StampFly.Remote;
 using StampFly.World;
 using UnityEditor;
 using UnityEditor.SceneManagement;
@@ -23,17 +24,35 @@ namespace StampFly.Editor.Builders
     /// <c>Assets/StampFly/Scenes/Main.unity</c> を書き、ビルド設定の最初の場面に
     /// する。
     ///
-    /// The scene holds exactly one object, carrying
-    /// <see cref="SimulatorBootstrap"/>, which builds everything else at run
-    /// time. Generating it from here rather than editing it by hand means the
+    /// The scene holds two objects: <see cref="SimulatorBootstrap"/>, which
+    /// builds everything else at run time, and <see cref="RemoteBridge"/> on an
+    /// object named <see cref="BridgeObjectName"/>, which is the address
+    /// <c>RemoteBridge.jslib</c>'s <c>SendMessage</c> delivers commands to.
+    /// Generating the scene from here rather than editing it by hand means the
     /// reference to the world catalog carries the right GUID without anyone
     /// typing one, and a scene lost to a merge can be made again with one
     /// command.
     ///
-    /// 場面が持つのは、<see cref="SimulatorBootstrap"/> を載せた物体 1 つだけで、
-    /// 残りは実行時にそれが組み立てる。手で編集せずここから生成するので、空間の
-    /// 一覧への参照は誰も GUID を打たずに正しいものになり、統合で失った場面も
-    /// コマンド 1 つで作り直せる。
+    /// 場面が持つ物体は 2 つ。実行時に残りを組み立てる
+    /// <see cref="SimulatorBootstrap"/> と、<see cref="BridgeObjectName"/> という
+    /// 名前の物体に載せた <see cref="RemoteBridge"/> である。後者の名前は
+    /// <c>RemoteBridge.jslib</c> の <c>SendMessage</c> が命令を届ける宛先である。
+    /// 手で編集せずここから生成するので、空間の一覧への参照は誰も GUID を打たずに
+    /// 正しいものになり、統合で失った場面もコマンド 1 つで作り直せる。
+    ///
+    /// <c>StampFly.Remote</c> は <c>defineConstraints</c> を持ち、配布用ビルドには
+    /// 入らない。それでも場面に置けるのは、<b>この組み立てがエディタでしか走らない</b>
+    /// （<c>includePlatforms: ["Editor"]</c>）ためで、配布用ビルドではこの物体の
+    /// 部品が欠けた状態、すなわち橋の無い場面として読み込まれる。<c>RemoteBridge</c>
+    /// を探す側（<see cref="SimRemoteCommands"/>）は <c>RemoteBridge.Instance</c> の
+    /// null を必ず確かめるので、欠けても壊れない。
+    ///
+    /// The relay assembly carries <c>defineConstraints</c> and is absent from a
+    /// distributed build. Putting the bridge in the scene from here is still
+    /// safe because this builder runs in the editor only, and a build without
+    /// the assembly loads the scene with that component missing -- a scene with
+    /// no bridge. Everything that looks for one checks
+    /// <c>RemoteBridge.Instance</c> for null, so nothing breaks.
     ///
     /// ```bash
     /// # From the editor's menu / エディタのメニューから:
@@ -61,6 +80,21 @@ namespace StampFly.Editor.Builders
         public const string CatalogPath = "Assets/StampFly/Worlds/WorldCatalog.asset";
 
         /// <summary>
+        /// What the object carrying <see cref="RemoteBridge"/> is called. This
+        /// exact spelling is what <c>RemoteBridge.jslib</c> hands to
+        /// <c>SendMessage</c>, so renaming the object here silently stops every
+        /// command reaching the page. <see cref="RemoteBridge.Start"/> passes
+        /// <c>gameObject.name</c> to JavaScript rather than assuming it, which
+        /// is what keeps the two ends in step.
+        /// <see cref="RemoteBridge"/> を載せる物体の名前。この綴りそのものを
+        /// <c>RemoteBridge.jslib</c> が <c>SendMessage</c> に渡すので、ここで名前を
+        /// 変えると命令がページへ届かなくなる（黙って）。
+        /// <see cref="RemoteBridge.Start"/> は決め打ちせず
+        /// <c>gameObject.name</c> を JavaScript へ渡すので、両端はこれで揃う。
+        /// </summary>
+        public const string BridgeObjectName = "StampFlyBridge";
+
+        /// <summary>
         /// Builds the scene, saves it, and puts it first in Build Settings.
         /// 場面を作って保存し、ビルド設定の先頭に置く。
         /// </summary>
@@ -69,6 +103,8 @@ namespace StampFly.Editor.Builders
         {
             Scene scene = EditorSceneManager.NewScene(
                 NewSceneSetup.EmptyScene, NewSceneMode.Single);
+
+            AddBridge();
 
             var root = new GameObject("StampFly");
             var bootstrap = root.AddComponent<SimulatorBootstrap>();
@@ -90,6 +126,23 @@ namespace StampFly.Editor.Builders
             MakeFirstInBuildSettings();
             Debug.Log($"[MainSceneBuilder] wrote {ScenePath} and made it the first " +
                       "scene in Build Settings");
+        }
+
+        /// <summary>
+        /// Add the object the relay addresses. It goes in FIRST, so that the
+        /// scene's serialized order puts it ahead of the bootstrap; that order
+        /// is belt-and-braces only, because <see cref="RemoteBridge"/> already
+        /// carries <c>[DefaultExecutionOrder(-10000)]</c> and its log and
+        /// registry exist before any other <c>Awake</c> runs.
+        /// 中継が宛先にする物体を足す。**先に**置き、場面の直列化の順で組み立てより
+        /// 前に来るようにする。この順は念のためのもので、
+        /// <see cref="RemoteBridge"/> は既に <c>[DefaultExecutionOrder(-10000)]</c>
+        /// を持ち、ログと登録簿は他のどの <c>Awake</c> よりも先に出来ている。
+        /// </summary>
+        private static void AddBridge()
+        {
+            var bridge = new GameObject(BridgeObjectName);
+            bridge.AddComponent<RemoteBridge>();
         }
 
         /// <summary>

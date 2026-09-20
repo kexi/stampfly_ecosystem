@@ -10,7 +10,9 @@
         "StampFly.Input",
         "StampFly.Vehicle",
         "StampFly.Ui",
-        "StampFly.App"
+        "StampFly.App",
+        "StampFly.Core",
+        "StampFly.Remote"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

@@ -688,6 +688,53 @@ PYTHONPATH=lib python3 -m sfcli unity serve --dir simulator/unity/Build/WebGL --
 `BEHIND` の字が出るのは、1 フレームの上限（12 刻み）に当たったときである。読み込みの
 直後に一度出るのは正常で、飛行中に出続けるなら追いつけていない。
 
+**実時間比は 1.0 を超えない。** 超えていたら不具合である。刻みは飛ばさず、遅れたら仮想時間を
+遅らせるのがこの企画の決まりで、追いつくために実時間より速く走ることはしない（倍率を上げた
+ときを除く）。2026-09-21 にここで 1.88 を実測した（背面のタブで溜まった借りを、以後のどの
+フレームも 16 ms で 12 刻み＝30 ms 進めて返し続けていた）。`SimClock` が借り自体に
+「1 フレームで返せる量」の上限を置くよう直し、`SimClockTest` の
+`AtNormalSpeedTheSimulationNeverOutrunsRealTime` が保っている。
+
+### 自動の飛行確認（`sf unity check fly`）
+
+ページを開いた状態で、ARM → 離陸 → ALT_HOLD → 着地 → DISARM を端末から自動で飛ばし、
+合否を判定する。命令は `sf unity cmd` と同じ `POST /api/cmd` を通る。使い方と判定の一覧は
+[`docs/commands/sf-unity.md`](../../docs/commands/sf-unity.md) §6.5 にある。
+
+```bash
+nix develop -c just unity-native-build      # ファームのモジュール（無ければビルドが失敗する）
+PYTHONPATH=lib python3 -m sfcli unity build
+PYTHONPATH=lib python3 -m sfcli unity serve --dir simulator/unity/Build/WebGL --port 8791 --no-browser
+# Chrome で http://127.0.0.1:8791/?raf=worker を開いてから、別の端末で
+PYTHONPATH=lib python3 -m sfcli unity check fly --world empty_room --hold-seconds 10
+```
+
+時点を仮想時刻で刻む（`sim.wait`）ので、速い機械でも遅い機械でも同じ飛行になる。最初に
+`sim.power_cycle` を入れるのは、しばらく開いていたページの仮想時計が既に進んでおり、
+「4 秒を待つ」が全てその場で返ってしまうためである。
+
+### 飛行をログで追う
+
+1 回の飛行は `logs/unity/<run_id>.jsonl` に、サーバ・CLI・ページ・ファームの行が 1 つの
+流れとして入る。事象の一覧は `docs/commands/sf-unity.md` §7。
+
+```bash
+LOG=logs/unity/$(cat logs/unity/latest).jsonl
+
+# 飛行の筋書き（状態遷移と仮想時刻）
+jq -r 'select(.event=="sim.flight_state")
+       | "\(.sim_us/1000000)s \(.data.previous_state) -> \(.data.state) \(.data.mode)"' $LOG
+
+# 追いつけていたか（1 秒ごと。刻みごとの行は出さない）
+jq -r 'select(.event=="sim.stats") | "\(.data.real_time_ratio) \(.data.us_per_tick)us \(.data.fps)fps"' $LOG
+
+# 1 つの命令を端から端まで（CLI → サーバ → ページ → ファーム → サーバ → CLI）
+PYTHONPATH=lib python3 -m sfcli unity logs --cmd <cmd_id>
+
+# サーバが拒否した行（0 であること）
+jq -c 'select(.event=="log.rejected")' $LOG
+```
+
 ### ブラウザでの確認の記録（2026-09-20）
 
 `?raf=worker` の自動操作のタブで、無改変のファームが**ブラウザの中で起動して刻み続ける**

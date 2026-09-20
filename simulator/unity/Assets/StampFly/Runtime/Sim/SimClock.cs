@@ -203,9 +203,47 @@ namespace StampFly.Sim
             double usableSeconds = hasStalled ? StallSeconds : frameSeconds;
 
             owedSeconds += usableSeconds * Speed;
+
+            // Cap the debt itself, not just the ticks one frame runs.
+            //
+            // Clamping only the ticks lets the debt grow without bound while
+            // the page is slow, and once it has, EVERY later frame runs the
+            // ceiling -- twelve ticks (30 ms of simulation) in a 16 ms frame is
+            // 1.875x real time, which is what a log of a long-backgrounded tab
+            // shows. The flight then runs FASTER than real time until the debt
+            // is worked off, which is the opposite of the plan's "fall behind
+            // rather than skip a tick" and makes the readout's real-time ratio
+            // meaningless. A stall is only recognised when ONE frame exceeds
+            // half a second, so a tab throttled to a steady 0.4 s never trips
+            // it and accumulates debt for as long as it is left open.
+            //
+            // The cap is what one frame can pay off, so a page that has fallen
+            // behind catches up at the ceiling for exactly one frame and then
+            // tracks real time again.
+            //
+            // 刻みの数だけでなく、借り自体に上限を置く。
+            //
+            // 刻みの数だけを抑えると、ページが遅い間に借りは際限なく膨らむ。そして
+            // 膨らんだ後は、**以後のどのフレームも**上限まで走る。16 ms のフレームで
+            // 12 刻み（シミュレーション 30 ms）は実時間の 1.875 倍で、長く背面に
+            // あったタブのログが示すのがこの値である。借りを返し終えるまで飛行は
+            // 実時間より**速く**進む。これは計画の「刻みを飛ばさず、代わりに遅れる」
+            // の逆であり、表示板の実時間比を無意味にする。停止とみなすのは 1 つの
+            // フレームが 0.5 秒を越えたときだけなので、0.4 秒で安定して絞られた
+            // タブはそれに当たらず、開かれている限り借りを溜め続ける。
+            //
+            // 上限は 1 フレームで返せる量にしてある。遅れたページはちょうど 1
+            // フレームだけ上限で追いつき、その後は再び実時間に追随する。
+            double maximumOwedSeconds = MaxTicksPerFrame * TickSeconds;
+            bool owesMoreThanOneFrameCanPay = owedSeconds > maximumOwedSeconds;
+            if (owesMoreThanOneFrameCanPay)
+            {
+                owedSeconds = maximumOwedSeconds;
+            }
+
             int wanted = (int)(owedSeconds / TickSeconds);
-            IsBehind = wanted > MaxTicksPerFrame;
-            if (IsBehind)
+            IsBehind = owesMoreThanOneFrameCanPay;
+            if (wanted > MaxTicksPerFrame)
             {
                 wanted = MaxTicksPerFrame;
             }

@@ -78,6 +78,29 @@ namespace StampFly.Editor.Cli
             {
                 SimCommandResult result =
                     bridge.Commands.Execute(command, SimCommandArgs.Parse(args));
+
+                // `unity command` answers from this one call and cannot hold a
+                // request open across frames, so a handler that wanted to
+                // answer later is reported as such rather than as a silent
+                // success. The browser route (`sf unity cmd`) carries the
+                // cmd_id and does wait.
+                // `unity command` はこの 1 回の呼び出しで答え、要求をフレームを
+                // またいで保持できない。よって後で答えたい処理は、黙った成功では
+                // なくそのように報告する。ブラウザの経路（`sf unity cmd`）は
+                // cmd_id を運ぶので待てる。
+                if (result.IsDeferred)
+                {
+                    return new
+                    {
+                        ok = false,
+                        cmd_id = commandId,
+                        data = (string)null,
+                        error = $"{command} answers from a later frame, which " +
+                                "`unity command` cannot wait for; use " +
+                                "`sf unity cmd` against a served page",
+                    };
+                }
+
                 return new
                 {
                     ok = result.Ok,

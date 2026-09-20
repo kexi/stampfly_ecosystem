@@ -79,6 +79,7 @@ namespace StampFly.Remote
         private RemoteMode mode = RemoteMode.Unknown;
         private bool settled;
         private EditorFileLogSink editorFile;
+        private string deferredCommandId;
         private readonly List<PendingCommand> urlCommands = new List<PendingCommand>();
 
         /// <summary>
@@ -308,11 +309,72 @@ namespace StampFly.Remote
                           $"received {request.Command}",
                           LogData.Of("command", request.Command));
 
+                // Offered BEFORE the handler runs, because a handler that means
+                // to answer later reads it from inside its own call -- that is
+                // the only moment it can know which command it is handling.
+                // Offered only on a route that can hold the request open; the
+                // URL's own commands answer nobody, so they get none and a
+                // handler refuses rather than waiting forever.
+                // 処理が走る**前**に渡す。後で答えるつもりの処理は、自分の呼び出し
+                // の中でこれを読むためで、自分がどの命令を処理しているかを知れる
+                // のはその瞬間だけである。渡すのは要求を保持できる経路に対して
+                // だけ。URL 自身の命令は誰にも答えないので何も渡らず、処理は永遠に
+                // 待つのではなく断る。
+                deferredCommandId = answerJavaScript ? request.CommandId : null;
                 SimCommandResult result = Commands.Execute(request.Command, request.Args);
+                deferredCommandId = null;
+
+                // A handler that asked to answer later kept the cmd_id: the
+                // answer goes out from AnswerLater, in whichever frame the
+                // handler finishes in.
+                // 後で答えると言った処理は cmd_id を預かっている。答えは、処理が
+                // 終わるフレームで AnswerLater から出る。
+                if (result.IsDeferred)
+                {
+                    return;
+                }
+
                 if (answerJavaScript)
                 {
                     RemoteNative.Answer(request.CommandId, result.Ok, result.Data, result.Error);
                 }
+            }
+        }
+
+        /// <summary>
+        /// The id of the command the running handler may answer later, or null.
+        /// A handler reads it from inside its own call and holds it; nothing
+        /// else may.
+        /// 走っている処理が後で答えてよい命令の識別子。無ければ null。処理は
+        /// 自分の呼び出しの中でこれを読んで保持する。他の誰も読んではならない。
+        /// </summary>
+        public string DeferredCommandId => deferredCommandId;
+
+        /// <summary>
+        /// Answer a command whose handler returned
+        /// <see cref="SimCommandResult.Deferred"/>. The line the answer produces
+        /// carries that command's <c>cmd_id</c>, so a deferred command reads in
+        /// the log exactly like an immediate one.
+        /// <see cref="SimCommandResult.Deferred"/> を返した処理の命令に答える。
+        /// 答えが出す行はその命令の <c>cmd_id</c> を持つので、後で答えた命令も
+        /// ログの上では即座に答えた命令と同じに読める。
+        /// </summary>
+        public void AnswerLater(string commandId, SimCommandResult result)
+        {
+            bool hasNothingToAnswer = string.IsNullOrEmpty(commandId);
+            if (hasNothingToAnswer)
+            {
+                return;
+            }
+
+            using (Log.BeginCommand(commandId))
+            {
+                Log.Write(result.Ok ? LogLevel.Debug : LogLevel.Warn,
+                          LogSources.Command, SimCommandRegistry.FinishedEvent,
+                          result.Ok ? "the waiting command finished"
+                                    : $"the waiting command failed: {result.Error}",
+                          LogData.Of("deferred", true));
+                RemoteNative.Answer(commandId, result.Ok, result.Data, result.Error);
             }
         }
 

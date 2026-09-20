@@ -119,11 +119,93 @@ namespace StampFly.Editor.Builders
                 return;
             }
 
+            WriteManifest(outputPath, isRelease, report);
+
             bool copied = CopyFirmwareModule(outputPath);
             if (!copied)
             {
                 EditorApplication.Exit(1);
             }
+        }
+
+        /// <summary>
+        /// The file this build writes beside the player, saying what went into
+        /// it. It names the managed assemblies the build actually included and
+        /// whether the relay symbol was defined.
+        /// このビルドがプレイヤーの隣に書くファイルの名前。何が入ったかを述べる。
+        /// ビルドが実際に含めたマネージドのアセンブリと、中継の定義記号が付いて
+        /// いたかを載せる。
+        /// </summary>
+        public const string ManifestFileName = "stampfly-build-manifest.json";
+
+        /// <summary>
+        /// Record what this build contains, so `sf unity build --release` can
+        /// check the plan's "the relay endpoint is included only in
+        /// development builds" (§4) against the build rather than against the
+        /// intention.
+        ///
+        /// A WebGL player's own code ends up inside a Brotli-compressed
+        /// `.unityweb`, which the PC side cannot open without a Brotli decoder
+        /// it does not have. The editor, however, knows exactly which
+        /// assemblies IL2CPP was handed; writing that list here turns a check
+        /// that would have to guess into one that reads an answer.
+        ///
+        /// このビルドが何を含むかを記録する。`sf unity build --release` が計画 §4
+        /// の「中継の受け口は開発用ビルドだけに入れる」を、意図に対してではなく
+        /// ビルドに対して確かめられるようにするためである。
+        ///
+        /// WebGL のプレイヤー自身のコードは Brotli で圧縮された `.unityweb` の中に
+        /// 入り、PC 側は持っていない Brotli の復号器なしには開けない。一方エディタ
+        /// は、IL2CPP に何のアセンブリを渡したかを正確に知っている。その一覧を
+        /// ここに書くことで、推測するほかなかった検査が、答えを読む検査になる。
+        /// </summary>
+        private static void WriteManifest(string outputPath, bool isRelease,
+                                          BuildReport report)
+        {
+            // Asked of the compilation pipeline rather than read off the build's
+            // files: WebGL compiles every managed assembly into the wasm module
+            // with IL2CPP, so `report.GetFiles()` lists no `.dll` at all. This
+            // API answers which player assemblies were compiled FOR this target
+            // with these define symbols, which is exactly the question --
+            // `StampFly.Remote`'s `defineConstraints` decide whether it is in
+            // this list.
+            // ビルドのファイルから読むのではなく、翻訳の仕組みに尋ねる。WebGL は
+            // マネージドのアセンブリを全て IL2CPP で wasm モジュールへ翻訳するので、
+            // `report.GetFiles()` に `.dll` は 1 つも並ばない。この API は、この
+            // ターゲットに対しこの定義記号で、どのプレイヤーのアセンブリが翻訳
+            // されたかを答える。問いはまさにそれで、`StampFly.Remote` が並ぶかを
+            // 決めるのはその `defineConstraints` である。
+            var assemblies = new System.Collections.Generic.List<string>();
+            foreach (UnityEditor.Compilation.Assembly assembly in
+                     UnityEditor.Compilation.CompilationPipeline.GetAssemblies(
+                         UnityEditor.Compilation.AssembliesType.PlayerWithoutTestAssemblies))
+            {
+                assemblies.Add(assembly.name);
+            }
+
+            assemblies.Sort(StringComparer.Ordinal);
+
+            Debug.Log($"[WebGLBuilder] build produced {report.GetFiles().Length} files");
+
+            string symbols = PlayerSettings.GetScriptingDefineSymbols(
+                UnityEditor.Build.NamedBuildTarget.WebGL);
+
+            var text = new System.Text.StringBuilder();
+            text.Append("{\"release\":").Append(isRelease ? "true" : "false")
+                .Append(",\"define_symbols\":\"").Append(symbols.Replace("\"", "\\\""))
+                .Append("\",\"assemblies\":[");
+            for (int index = 0; index < assemblies.Count; index++)
+            {
+                if (index > 0) { text.Append(','); }
+                text.Append('"').Append(assemblies[index]).Append('"');
+            }
+
+            text.Append("]}");
+
+            string manifestPath = Path.Combine(outputPath, ManifestFileName);
+            File.WriteAllText(manifestPath, text.ToString());
+            Debug.Log($"[WebGLBuilder] wrote {manifestPath} with " +
+                      $"{assemblies.Count} assemblies");
         }
 
         /// <summary>

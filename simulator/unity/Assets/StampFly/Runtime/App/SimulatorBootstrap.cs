@@ -89,6 +89,17 @@ namespace StampFly.App
                 loader.Catalog = worldCatalog;
             }
 
+            // `world.list` and `world.load` belong to the world's own
+            // registration, which lives beside the loader. Guarded by the same
+            // symbols as the relay, so a distributed build -- where
+            // `StampFly.Remote` is absent entirely -- still compiles.
+            // `world.list` と `world.load` は空間側の登録のもので、読み込み側の
+            // 隣に置かれる。中継と同じ記号で囲んであり、`StampFly.Remote` が
+            // 丸ごと無い配布用ビルドでも翻訳が通る。
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || STAMPFLY_REMOTE
+            holder.AddComponent<Remote.WorldCommands>();
+#endif
+
             loader.LoadByName(worldName);
             return loader;
         }

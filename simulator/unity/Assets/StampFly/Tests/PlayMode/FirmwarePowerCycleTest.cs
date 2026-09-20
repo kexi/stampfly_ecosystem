@@ -149,6 +149,110 @@ namespace StampFly.Tests.PlayMode
         }
 
         /// <summary>
+        /// Booting and then shutting down with no tick in between returns, and
+        /// returns quickly.
+        ///
+        /// This is the case that used to deadlock (`sfu_shutdown` could not
+        /// unwind a task that had never been started), and it is not a corner
+        /// case here: <c>SimLoop.BootFirmware</c> does not tick on the frame it
+        /// boots on, so stopping play right after pressing it hits exactly this
+        /// window. Fixed in `f9040ea9`; this holds the fix in place.
+        ///
+        /// 起動し、刻みを 1 回も挟まずに終了しても戻ること。しかも速やかに戻ること。
+        ///
+        /// これはかつてデッドロックした場合である（`sfu_shutdown` が、一度も開始
+        /// されていないタスクを巻き戻せなかった）。しかもここでは隅の場合ではない。
+        /// <c>SimLoop.BootFirmware</c> は起動したフレームでは刻まないので、押した
+        /// 直後に再生を止めると、ちょうどこの窓に当たる。`f9040ea9` で直っており、
+        /// この検査がそれを保つ。
+        /// </summary>
+        [Test]
+        [Timeout(30000)]
+        public void ShuttingDownWithoutEverTickingReturns()
+        {
+            var firmware = new EditorFirmware();
+            firmware.BeginLoad();
+            Assert.That(firmware.Status, Is.EqualTo(FirmwareStatus.Loaded),
+                        firmware.LastError);
+
+            var config = new SfuConfig
+            {
+                BatteryModel = 1,
+                BootCalibration = 1,
+                HostOwnsBody = 1,
+                StartHeightMeters = Sim.VehicleBody.RestingCentreHeight,
+            };
+            Assert.That(firmware.Boot(config), Is.EqualTo(SfuAbi.Ok));
+
+            // Not one Step call between the boot and this.
+            // 起動とこの間に Step の呼び出しは 1 回も無い。
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            firmware.Dispose();
+            clock.Stop();
+
+            Assert.That(clock.Elapsed.TotalSeconds, Is.LessThan(10.0),
+                        "sfu_shutdown took longer than a hung call would be " +
+                        "distinguishable from");
+            Assert.That(firmware.Status, Is.EqualTo(FirmwareStatus.ShutDown));
+        }
+
+        /// <summary>
+        /// Ten power cycles do not leave ten firmwares' worth of threads behind.
+        ///
+        /// Each boot starts fourteen task threads. Without the
+        /// <c>sfu_shutdown</c> in <see cref="EditorFirmware.Dispose"/> they stay
+        /// parked until the editor's process ends, so ten play sessions would
+        /// carry a hundred and forty; an editor left open all day would collect
+        /// them until it could no longer start one. The bound is generous
+        /// because the editor has threads of its own and starts more on its own
+        /// schedule — what is being caught is growth proportional to the number
+        /// of power cycles, not an exact count.
+        ///
+        /// 電源の入れ直し 10 回が、ファーム 10 個ぶんのスレッドを残さないこと。
+        ///
+        /// 起動のたびにタスクのスレッドが 14 本立つ。
+        /// <see cref="EditorFirmware.Dispose"/> の <c>sfu_shutdown</c> が無ければ、
+        /// それらはエディタのプロセスが終わるまで停まったまま残り、再生 10 回で
+        /// 140 本になる。1 日開いたままのエディタは、新しく 1 本も立てられなくなる
+        /// まで溜め込むことになる。上限を緩く取ってあるのは、エディタ自身がスレッドを
+        /// 持ち、自分の都合で増やしもするからである。捕まえたいのは、電源の入れ直しの
+        /// 回数に比例する増え方であって、正確な本数ではない。
+        /// </summary>
+        [Test]
+        [Timeout(120000)]
+        public void RepeatedPowerCyclesDoNotPileUpThreads()
+        {
+            const int Cycles = 10;
+            const int ThreadsPerBoot = 14;
+
+            int before = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
+
+            for (int cycle = 0; cycle < Cycles; cycle++)
+            {
+                var scene = new FirmwareFlightScene();
+                try
+                {
+                    Assert.That(scene.Build(), Is.True,
+                                $"cycle {cycle} failed: {scene.Firmware?.LastError}");
+                    Assert.That(scene.RunOneTick(), Is.EqualTo(SfuAbi.Ok));
+                }
+                finally
+                {
+                    scene.Dispose();
+                }
+            }
+
+            int after = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
+            int grew = after - before;
+
+            // One boot's worth of slack, not ten.
+            // 許す余地は 1 回の起動ぶんであって、10 回ぶんではない。
+            Assert.That(grew, Is.LessThan(Cycles * ThreadsPerBoot / 2),
+                        $"threads went from {before} to {after} over {Cycles} " +
+                        "power cycles: the firmware's tasks are not being stopped");
+        }
+
+        /// <summary>
         /// The dylib reports the struct sizes this build declares, which is the
         /// check the loop runs before its first call.
         /// dylib が、このビルドの宣言と同じ構造体の大きさを報告する。ループが最初の

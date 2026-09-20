@@ -4,7 +4,8 @@
     "references": [
         "StampFly.Sim",
         "StampFly.World",
-        "StampFly.App"
+        "StampFly.App",
+        "StampFly.Remote"
     ],
     "includePlatforms": [
         "Editor"

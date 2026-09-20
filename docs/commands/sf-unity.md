@@ -43,6 +43,7 @@ Unity 版シミュレータ（WebGL、Chrome のみ対応）の PC 側の入口 
 | `test` | EditMode ／ PlayMode 試験（Unity CLI） |
 | `open` | Unity エディタでプロジェクトを開く |
 | `setup` | `com.unity.pipeline` をプロジェクトに追加する |
+| `check fly` | 開いているページで ARM → 離陸 → ALT_HOLD → 着地を自動で飛ばし、合否を出す |
 | `world validate` ／ `world list` | 空間ファイルの検査と一覧 |
 
 ## 3. sf unity serve
@@ -112,6 +113,48 @@ sf unity cmd vehicle.state --timeout 3
 
 `--arg` の値を文字列のままにするのは、型をページ側の命令が知っているためである。ここで推測すると
 `2026` という名前の空間が数値になってしまう。数値・真偽値を渡したいときは `--json` を使う。
+
+### 刻みの輪が登録する命令
+
+`help` が出す一覧と同じもの。空間の組（`world.list` ／ `world.load`）は別の担当が登録する。
+
+| 命令 | 引数 | 返るもの |
+|------|------|---------|
+| `sim.pause` | `paused`（既定 true） | `{"paused": bool}` |
+| `sim.step` | `ticks`（既定 1、1〜4000） | `{"ticks": N}` |
+| `sim.speed` | `speed`（0.1〜4） | `{"speed": N}` |
+| `sim.reset` | — | `{}`（機体を出発点へ。ファームはそのまま） |
+| `sim.power_cycle` | — | `{"power_cycles": N}`（時計を 0 に戻し INIT から） |
+| `sim.state` | — | 時計・飛行状態・センサの要約 |
+| `sim.wait` | `sim_us` または `seconds`、`timeout_s`（既定 60、上限 60） | `{"reached": bool, "requested_sim_us": N, "sim_us": N, "ticks": N}` |
+| `vehicle.state` | — | 下表 |
+| `rc.set` | `throttle`／`roll`／`pitch`／`yaw`（12 bit の生 ADC、中央 2048）、`arm`、`alt_hold` | `{}` |
+| `rc.arm` | `armed`（既定 true） | `{"armed_requested": bool, "flags": N, "sim_us": N}` |
+| `rc.release` | — | `{}`（スティックをキーボードへ戻す） |
+
+`sim.wait` は指定した**仮想時刻**に達するまで待ってから答える。待っている間もページは刻み続ける
+（主スレッドを塞がない）。時刻に達しないまま `timeout_s` が尽きると、時計がどこまで進んだかを
+添えた失敗になる。端末からの台本が、実時間を当て推量で眠らずに手順を並べられるようにするための
+命令である。
+
+`rc.arm` は実機の送信機の ARM ボタンを 1 回押す動作にあたる。ファームはフラグの**立ち上がり**で
+ARM するので、`rc.set` でビットを立て続ける代わりにこれを使うと、スロットルは直前の `rc.set` が
+置いた場所に留まる。`armed=false` は逆向きに押すことで DISARM になる。
+
+#### `vehicle.state` が返すもの
+
+| 鍵 | 内容 |
+|----|------|
+| `sim_us` ／ `ticks` ／ `paused` | 仮想時刻・刻みの数・一時停止しているか |
+| `flight_state` ／ `flight_mode` ／ `armed` | 飛行状態・モードの名前と ARM |
+| `battery_v` | 電池の端子電圧 [V] |
+| `truth` | 真値。`position`・`altitude_m`・`euler_deg`・`tilt_deg`（水平からの角）・`velocity`・`angular_velocity` |
+| `estimate` | ファームの推定。`position`・`rotation` |
+| `range_down_m` ／ `range_down_valid` ／ `flow_quality` | 下向き ToF とフローの品質 |
+| `real_time_ratio` ／ `us_per_tick` ／ `fps` ／ `behind` | 実時間比・1 刻みの所要時間・描画の速さ・遅れているか |
+| `power_cycles` | 電源を入れ直した回数 |
+
+真値は `Rigidbody` から、推定はファームから取る。片方を二度読んで食い違いを隠さないためである。
 
 ### 失敗のしかた
 
@@ -198,6 +241,62 @@ WebGL には内蔵のコマンドライン用ビルドが無いため `--execute
 | 出力の保存 | `logs/unity/build-<run_id>.jsonl` ／ `logs/unity/test-<run_id>.jsonl`（`--format ndjson`） |
 | Unity CLI が無いとき | 想定の置き場（`~/.unity/bin/unity`）と版を示して 1 で終わる |
 
+## 6.5. sf unity check fly
+
+動いている `sf unity serve` が配信し、Chrome で既に開いているページに対して、段階 3 の合格基準を
+自動で飛ばす。**ページは先に開いておく**（自動操作のタブでは `?raf=worker` を付ける）。
+
+```bash
+sf unity check fly                                   # empty_room で 10 秒保持
+sf unity check fly --world gate_course --hold-seconds 20
+```
+
+### 手順
+
+`world.load` → `sim.power_cycle` → `sim.reset` → スティック中央 → `rc.arm` → スロットルを上げて離陸
+→ ALT_HOLD で保持 → スロットルを下げて着地 → DISARM を、`sf unity cmd` と同じ経路
+（`POST /api/cmd`）で順に送る。時点は実時間ではなく**仮想時刻**で刻む（`sim.wait`）ので、
+速い機械でも遅い機械でも同じ飛行になる。スティックの値と時点は PlayMode 試験
+`FirmwareFlightTest` と `simulator/unity/native/bridge/sfu_rc_script.hpp` に合わせてある。
+
+`sim.power_cycle` を最初に入れるのは、しばらく開いていたページの仮想時計が既に進んでいるためで
+ある。入れないと「4 秒を待つ」命令が全てその場で返り、しかも機体はとうに起動を終えている。
+
+### オプション
+
+| オプション | 説明 | 既定 |
+|-----------|------|------|
+| `--world NAME` | 飛ばす空間 | `empty_room` |
+| `--hold-seconds N` | ALT_HOLD で保持する長さ（シミュレーションの秒） | 10 |
+
+### 判定
+
+| 検査 | 合格の条件 |
+|------|-----------|
+| `held_the_altitude_band` | 保持中の高度が 0.15〜3.0 m に収まる |
+| `stayed_flying` | 保持中ずっと FLYING |
+| `stayed_near_level` | 傾きが 25 度未満 |
+| `reached_altitude_hold` | モードが ALT_HOLD に達する |
+| `came_back_down` | 最後の高度が 0.08 m 未満 |
+| `ended_idle_and_disarmed` | IDLE_GROUND かつ DISARM |
+| `kept_up_with_real_time` | 実時間比が 0.05 以上 |
+| `a_tick_cost_less_than_its_length` | 1 刻みの所要時間が 2500 マイクロ秒未満 |
+
+実時間比の下限が緩いのは、自動操作のタブが背面扱いで `?raf=worker` の 16 ms のタイマーで動く
+ためである。**前面のタブでの 60fps と実時間比 1.0 は人が確かめる**
+（`simulator/unity/README.md` §9）。
+
+### 出力
+
+判定と数値を JSON で標準出力に出し、人が読む要約を続けて出す。不合格なら終了コード 1。
+報告には各検査の測定値、高度の時系列、状態遷移とその仮想時刻、発行した全ての `cmd_id` が入る。
+
+```bash
+sf unity check fly > flight.json
+jq -r '.checks[] | select(.pass|not) | "\(.name): \(.measured) (wanted \(.wanted))"' flight.json
+jq -r '.transitions[] | "\(.sim_us/1000000)s \(.to)"' flight.json
+```
+
 ## 7. ログの形
 
 PC 側で動く新しいコードのログの決まり（`AGENTS.md`「Logs」）の実装である。形式は JSON Lines
@@ -246,11 +345,46 @@ PC 側で動く新しいコードのログの決まり（`AGENTS.md`「Logs」�
 | `log.rejected` | `server` | ページの行が検査に通らなかった |
 | `build.start` ／ `build.finished` | `build` | Unity CLI のビルドの開始 ／ 終了 |
 | `test.start` ／ `test.finished` | `test` | Unity CLI の試験の開始 ／ 終了 |
+| `fw.boot` | `sim` | ファームが起きた（電源投入ごとに 1 行） |
+| `fw.log` | `fw` | ファームの `ESP_LOGx` 1 件（`tag`・`sim_us` つき） |
+| `sim.flight_state` | `sim` | 飛行状態・モード・ARM が変わった（`sim_us` つき） |
+| `sim.stats` | `sim` | 実時間 1 秒ごとの実時間比・1 刻みの所要時間・描画の速さ |
+| `sim.step_overrun` | `sim` | フレームが 1 フレームの刻みの上限に当たった |
+| `world.loaded` ／ `world.cleared` ／ `world.rejected` | `world` | 空間の読み込み・片付け・拒否 |
 
 ### 量
 
 制御の刻みごとの行は出さない。高レートの信号はフライトログ一式（`.sflog.zip`）に書き、
-その記録に `run_id` を入れて突き合わせられるようにする。
+その記録に `run_id` を入れて突き合わせられるようにする。飛行の速さは `sim.stats` として
+**実時間 1 秒ごとに 1 行**だけ出し、状態の変化は `sim.flight_state` として**変わったときだけ**
+出す。どちらも刻みごとの行にはしない。
+
+### jq での絞り込み
+
+```bash
+LOG=logs/unity/$(cat logs/unity/latest).jsonl
+
+# 飛行の筋書き: 状態遷移だけを仮想時刻つきで
+jq -r 'select(.event=="sim.flight_state")
+       | "\(.sim_us/1000000)s  \(.data.previous_state) -> \(.data.state)  \(.data.mode) armed=\(.data.armed)"' $LOG
+
+# 追いつけていたか: 1 秒ごとの速さ
+jq -r 'select(.event=="sim.stats")
+       | "\(.sim_us/1000000)s rt=\(.data.real_time_ratio) \(.data.us_per_tick)us/tick \(.data.fps)fps"' $LOG
+
+# 1 つの命令の流れ（CLI・サーバ・ページ・ファームが時刻順に並ぶ）
+jq -c --arg id "c20260920T135444Z-28469a" 'select(.cmd_id == $id)' $LOG
+
+# ファームが警告以上で言ったこと
+jq -r 'select(.src=="fw" and (.level=="warn" or .level=="error"))
+       | "\(.sim_us) [\(.tag)] \(.msg)"' $LOG
+
+# サーバが拒否した行（0 であること）
+jq -c 'select(.event=="log.rejected")' $LOG
+
+# 電源の入れ直しの境目
+jq -r 'select(.event=="fw.boot") | "\(.ts) power_cycles=\(.data.power_cycles)"' $LOG
+```
 
 ## 8. ページ側が守る約束
 
@@ -337,6 +471,7 @@ point.
 | `test` | EditMode / PlayMode tests (Unity CLI) |
 | `open` | Open the project in the Unity editor |
 | `setup` | Install `com.unity.pipeline` into the project |
+| `check fly` | Fly ARM, take off, ALT_HOLD and land against the open page, and judge it |
 | `world validate` / `world list` | Validate and list space files |
 
 ## 3. sf unity serve
@@ -409,6 +544,50 @@ sf unity cmd vehicle.state --timeout 3
 
 `--arg` values stay strings because the page's command handlers know their own types; guessing
 here would turn a world named `2026` into a number. Use `--json` for numbers and booleans.
+
+### The Commands the Loop Registers
+
+The same list `help` prints. The world group (`world.list`, `world.load`) is registered by its
+own owner.
+
+| Command | Arguments | Returns |
+|---------|-----------|---------|
+| `sim.pause` | `paused` (default true) | `{"paused": bool}` |
+| `sim.step` | `ticks` (default 1, 1..4000) | `{"ticks": N}` |
+| `sim.speed` | `speed` (0.1..4) | `{"speed": N}` |
+| `sim.reset` | — | `{}` (the vehicle back at its spawn; the firmware keeps running) |
+| `sim.power_cycle` | — | `{"power_cycles": N}` (clock back to zero, a new firmware from INIT) |
+| `sim.state` | — | A summary of the clock, the flight state and the sensors |
+| `sim.wait` | `sim_us` or `seconds`, `timeout_s` (default 60, cap 60) | `{"reached": bool, "requested_sim_us": N, "sim_us": N, "ticks": N}` |
+| `vehicle.state` | — | See below |
+| `rc.set` | `throttle`/`roll`/`pitch`/`yaw` (raw 12-bit ADC, centre 2048), `arm`, `alt_hold` | `{}` |
+| `rc.arm` | `armed` (default true) | `{"armed_requested": bool, "flags": N, "sim_us": N}` |
+| `rc.release` | — | `{}` (the sticks go back to the keyboard) |
+
+`sim.wait` answers once the given **virtual** time arrives. The page keeps ticking while it waits
+(the main thread is not blocked). If `timeout_s` runs out first, it fails and says how far the
+clock got. It exists so a script at a terminal can order its steps without sleeping for a guessed
+wall-clock duration.
+
+`rc.arm` is one press of the real transmitter's ARM button. The firmware arms on the flag's
+**rising** edge, so using this instead of holding the bit with `rc.set` leaves the throttle
+wherever the last `rc.set` put it. `armed=false` presses it the other way, which disarms.
+
+#### What `vehicle.state` Returns
+
+| Key | Contents |
+|-----|----------|
+| `sim_us` / `ticks` / `paused` | Virtual time, tick count, whether it is paused |
+| `flight_state` / `flight_mode` / `armed` | The state's and mode's names, and ARM |
+| `battery_v` | Terminal voltage [V] |
+| `truth` | Ground truth: `position`, `altitude_m`, `euler_deg`, `tilt_deg` (angle from level), `velocity`, `angular_velocity` |
+| `estimate` | The firmware's own: `position`, `rotation` |
+| `range_down_m` / `range_down_valid` / `flow_quality` | Downward ToF and flow quality |
+| `real_time_ratio` / `us_per_tick` / `fps` / `behind` | Real-time ratio, cost per tick, frame rate, whether it is behind |
+| `power_cycles` | How many times the power has been cycled |
+
+The truth comes from the `Rigidbody` and the estimate from the firmware, so a disagreement between
+the two shows up rather than being hidden by reading one of them twice.
 
 ### How It Fails
 
@@ -497,6 +676,65 @@ belongs to the build method, not the CLI.
 | Saved output | `logs/unity/build-<run_id>.jsonl` / `logs/unity/test-<run_id>.jsonl` (`--format ndjson`) |
 | Unity CLI missing | Names the expected location (`~/.unity/bin/unity`) and version, exits 1 |
 
+## 6.5. sf unity check fly
+
+Flies the stage 3 pass criterion against a page a running `sf unity serve` is serving and that is
+already open in Chrome. **Open the page first** (with `?raf=worker` in an automated tab).
+
+```bash
+sf unity check fly                                   # empty_room, ten seconds of hold
+sf unity check fly --world gate_course --hold-seconds 20
+```
+
+### The Script
+
+`world.load` -> `sim.power_cycle` -> `sim.reset` -> sticks centred -> `rc.arm` -> throttle up to
+take off -> hold in ALT_HOLD -> throttle down to land -> DISARM, all through the same route
+`sf unity cmd` uses (`POST /api/cmd`). The moments are paced by **virtual** time rather than the
+wall clock (`sim.wait`), so the same flight happens on a fast machine and a slow one. The stick
+values and the moments match the PlayMode test `FirmwareFlightTest` and
+`simulator/unity/native/bridge/sfu_rc_script.hpp`.
+
+`sim.power_cycle` comes first because a page that has been open a while already has a virtual
+clock well past zero; without it every "wait for 4 s" would return at once, on a vehicle that
+finished booting long ago.
+
+### Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--world NAME` | The world to fly in | `empty_room` |
+| `--hold-seconds N` | How long to hold altitude, in simulated seconds | 10 |
+
+### The Verdict
+
+| Check | Passes when |
+|-------|-------------|
+| `held_the_altitude_band` | The altitude while holding stays within 0.15..3.0 m |
+| `stayed_flying` | FLYING throughout the hold |
+| `stayed_near_level` | The tilt stays under 25 degrees |
+| `reached_altitude_hold` | The mode reaches ALT_HOLD |
+| `came_back_down` | The final altitude is under 0.08 m |
+| `ended_idle_and_disarmed` | IDLE_GROUND and disarmed |
+| `kept_up_with_real_time` | The real-time ratio is at least 0.05 |
+| `a_tick_cost_less_than_its_length` | One tick costs less than 2500 microseconds |
+
+The real-time bound is loose because an automated tab is treated as backgrounded and runs off
+`?raf=worker`'s 16 ms timer. **60 fps and a real-time ratio of 1.0 are checked by a person in a
+foreground tab** (`simulator/unity/README.md` section 9).
+
+### Output
+
+The verdict and its numbers go to stdout as JSON, followed by a readable summary. A failing flight
+exits 1. The report carries each check's measurement, the altitude samples, the state transitions
+with their virtual times, and every `cmd_id` the flight issued.
+
+```bash
+sf unity check fly > flight.json
+jq -r '.checks[] | select(.pass|not) | "\(.name): \(.measured) (wanted \(.wanted))"' flight.json
+jq -r '.transitions[] | "\(.sim_us/1000000)s \(.to)"' flight.json
+```
+
 ## 7. The Log Format
 
 This is the implementation of the logging rules for new PC-side code (`AGENTS.md`, "Logs").
@@ -546,11 +784,46 @@ Per-event values go under `data`.
 | `log.rejected` | `server` | A page line failed validation |
 | `build.start` / `build.finished` | `build` | A Unity CLI build started / ended |
 | `test.start` / `test.finished` | `test` | A Unity CLI test run started / ended |
+| `fw.boot` | `sim` | The firmware came up (one line per power cycle) |
+| `fw.log` | `fw` | One firmware `ESP_LOGx` record (with `tag` and `sim_us`) |
+| `sim.flight_state` | `sim` | The flight state, mode or ARM changed (with `sim_us`) |
+| `sim.stats` | `sim` | Once a real second: real-time ratio, cost per tick, frame rate |
+| `sim.step_overrun` | `sim` | A frame hit the per-frame tick ceiling |
+| `world.loaded` / `world.cleared` / `world.rejected` | `world` | A world was loaded, cleared or refused |
 
 ### Volume
 
 No line is written per control step. High-rate signals go into the flight-log bundle
-(`.sflog.zip`), which carries the `run_id` so the two can be matched up.
+(`.sflog.zip`), which carries the `run_id` so the two can be matched up. The pacing figures go out
+as `sim.stats`, **one line per real second**, and a state change as `sim.flight_state`, **only
+when it changes**. Neither becomes a per-tick line.
+
+### Narrowing With jq
+
+```bash
+LOG=logs/unity/$(cat logs/unity/latest).jsonl
+
+# The flight's story: the state transitions, with their virtual times
+jq -r 'select(.event=="sim.flight_state")
+       | "\(.sim_us/1000000)s  \(.data.previous_state) -> \(.data.state)  \(.data.mode) armed=\(.data.armed)"' $LOG
+
+# Did it keep up? The once-a-second pacing
+jq -r 'select(.event=="sim.stats")
+       | "\(.sim_us/1000000)s rt=\(.data.real_time_ratio) \(.data.us_per_tick)us/tick \(.data.fps)fps"' $LOG
+
+# One command's whole flow (CLI, server, page and firmware in time order)
+jq -c --arg id "c20260920T135444Z-28469a" 'select(.cmd_id == $id)' $LOG
+
+# What the firmware said at warning level or above
+jq -r 'select(.src=="fw" and (.level=="warn" or .level=="error"))
+       | "\(.sim_us) [\(.tag)] \(.msg)"' $LOG
+
+# Lines the server refused (should be none)
+jq -c 'select(.event=="log.rejected")' $LOG
+
+# Where one boot ends and the next begins
+jq -r 'select(.event=="fw.boot") | "\(.ts) power_cycles=\(.data.power_cycles)"' $LOG
+```
 
 ## 8. What the Page Must Honour
 

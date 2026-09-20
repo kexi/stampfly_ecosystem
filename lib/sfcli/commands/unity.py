@@ -1024,6 +1024,68 @@ def run_cmd(args: argparse.Namespace) -> int:
     return 0
 
 
+def make_sender():
+    """A callable that sends one command the same way `sf unity cmd` does, for
+    a script that issues many of them.
+
+    `sf unity check fly` posts through `POST /api/cmd` on the running server
+    rather than over a private channel, so the automated check exercises the
+    route a person exercises. The server is located once, when this is built,
+    and every command afterwards reuses that; a `cmd_id` is still issued per
+    command, which is what keeps `sf unity logs --cmd <id>` working for each
+    step of the flight.
+
+    `sf unity cmd` と同じやり方で命令を 1 つ送る呼び出し可能なものを返す。命令を
+    何度も出す台本のため。
+
+    `sf unity check fly` は自前の経路ではなく、動いているサーバの
+    `POST /api/cmd` を通す。自動の確認が、人が使うのと同じ道を使うためである。
+    サーバを探すのはこれを作るときの 1 回だけで、以後の命令はその結果を使い回す。
+    `cmd_id` は命令ごとに発行するので、飛行のどの手順も
+    `sf unity logs --cmd <id>` で引ける。
+
+    Raises RuntimeError when no server is running, because a sender with
+    nowhere to send is not something a caller can use.
+    サーバが動いていなければ RuntimeError にする。送り先の無い送り手は、呼び出し
+    側に使えるものではないためである。
+    """
+    info, error = _find_server()
+    if info is None:
+        raise RuntimeError(f"no running simulator server: {error}")
+
+    run_id = info["run_id"]
+    port = int(info["port"])
+
+    def send(command: str, args: Dict[str, Any], timeout: float):
+        cmd_id = jsonl_log.new_cmd_id()
+        _post_cli_line(port, run_id, cmd_id, "cmd.issued",
+                       f"issued {command}",
+                       data={"command": command, "args": args})
+
+        status, response = _post_json(
+            port, "/api/cmd",
+            {"cmd_id": cmd_id, "command": command, "args": args,
+             "timeout": timeout},
+            timeout_s=timeout + 5.0,
+        )
+
+        if response is None:
+            _post_cli_line(port, run_id, cmd_id, "cmd.result",
+                           "the server could not be reached", level="error")
+            return False, f"cannot reach the server on port {port}", cmd_id
+
+        ok = status == 200 and bool(response.get("ok"))
+        _post_cli_line(
+            port, run_id, cmd_id, "cmd.result",
+            "command succeeded" if ok else "command failed",
+            level="info" if ok else "error",
+            data={"status": status, "error": response.get("error")},
+        )
+        return ok, response.get("data") if ok else response.get("error"), cmd_id
+
+    return send
+
+
 def _collect_command_args(args: argparse.Namespace) -> Tuple[Dict[str, Any], Optional[str]]:
     """Merge `--json '{...}'` and the `--arg key=value` pairs into one object.
     A `--arg` value is kept as a string: the page's command handlers know
@@ -1270,17 +1332,17 @@ def build_webgl_command(executable: str, project_dir: Path, output_dir: Path,
     command.extend(["--format", "ndjson"])
     if release:
         # The distributed build must not carry the command relay endpoint
-        # (plan section 4). The flag is spelled with a single dash and placed
-        # last so it reaches the editor's own command line, which is where
-        # `WebGLBuilder` reads it from (the same mechanism as its
-        # `-buildOutput`) -- `unity build` has no `--release` of its own and
-        # would reject it as an unknown option.
-        # 配布用ビルドには命令の中継の受け口を入れない（計画 §4）。この引数は
-        # ダッシュ 1 つの綴りで末尾に置き、エディタ自身のコマンド行へ届くように
-        # する。`WebGLBuilder` はそこから読む（`-buildOutput` と同じ仕組み）。
-        # `unity build` 自身に `--release` は無く、渡すと未知の引数として
-        # 拒否される。
-        command.append(BUILD_RELEASE_FLAG)
+        # (plan section 4). `unity build` has no `--release` of its own and
+        # rejects an unknown option outright, so the flag travels inside
+        # `--args`, which is the CLI's documented way of putting something on
+        # the editor's own command line. `WebGLBuilder` reads it from there,
+        # the same place it reads `-buildOutput`.
+        # 配布用ビルドには命令の中継の受け口を入れない（計画 §4）。`unity build`
+        # 自身に `--release` は無く、未知の引数はその場で拒否されるので、この引数は
+        # `--args` の中を通す。エディタ自身のコマンド行へ何かを置く、CLI が定める
+        # 方法がそれである。`WebGLBuilder` はそこから読む。`-buildOutput` を読むのと
+        # 同じ場所である。
+        command.extend(["--args", BUILD_RELEASE_FLAG])
     return command
 
 
@@ -1376,13 +1438,137 @@ def run_build(args: argparse.Namespace) -> int:
         exit_code = _run_unity(command, ndjson_path, logger,
                                "build.start", "build.finished", src="build")
 
-    if exit_code == 0:
-        console.success(f"WebGL build written to {output_dir}")
-        console.print(f"  Serve it:  sf unity serve --dir {output_dir}")
-    else:
+    if exit_code != 0:
         console.error(f"Build failed (exit code {exit_code})")
         console.print(f"  Unity CLI output: {ndjson_path}")
-    return exit_code
+        return exit_code
+
+    if args.release:
+        problems = inspect_release_build(output_dir)
+        if problems:
+            console.error("The release build carries the command relay:")
+            for problem in problems:
+                console.print(f"  - {problem}")
+            console.print("  A distributed build must not (plan section 4).")
+            console.print("  Check that StampFly.Remote's defineConstraints and")
+            console.print("  WebGLBuilder's -stampflyRelease handling still agree.")
+            return 1
+        console.success("The release build carries no command relay")
+
+    console.success(f"WebGL build written to {output_dir}")
+    console.print(f"  Serve it:  sf unity serve --dir {output_dir}")
+    return 0
+
+
+# What `WebGLBuilder` writes beside the player, saying which assemblies the
+# build actually included. Rename it here and in `WebGLBuilder` together.
+# `WebGLBuilder` がプレイヤーの隣に書くファイル。ビルドが実際に含めたアセンブリを
+# 述べる。名前を変えるときは `WebGLBuilder` と揃える。
+BUILD_MANIFEST = "stampfly-build-manifest.json"
+
+# The assembly a distributed build must not carry, and the define symbol that
+# would put it there. Plan section 4: the relay endpoint goes into development
+# builds only.
+# 配布用ビルドが持ってはならないアセンブリと、それを入れてしまう定義記号。
+# 計画 §4「中継の受け口は開発用ビルドだけに入れる」。
+RELAY_ASSEMBLY = "StampFly.Remote"
+RELAY_SYMBOL = "STAMPFLY_REMOTE"
+
+# Names from the relay's browser end. A .jslib is merged into the player's
+# framework JavaScript, which the build compresses; only the files that stay
+# plain (the loader and the page) are searched for these, so this is a second
+# look rather than the main one.
+# 中継のブラウザ側の名前。.jslib はプレイヤーのフレームワークの JavaScript へ
+# 統合され、ビルドがそれを圧縮する。ここで探すのは非圧縮のまま残るファイル
+# （ローダとページ）だけなので、これは主たる検査ではなく二の矢である。
+RELAY_JSLIB_NAMES = ("SfuRemoteStart", "SfuRemoteAnswer", "/api/cmd/next")
+
+
+def inspect_release_build(output_dir: Path) -> List[str]:
+    """What a distributed build must not contain, and does. Empty means clean.
+
+    Plan section 4 puts the command relay in development builds only, and
+    `StampFly.Remote`'s `defineConstraints` are what enforce it. This looks at
+    what was produced rather than trusting the constraint, because the two ways
+    it could quietly stop holding -- somebody adding `STAMPFLY_REMOTE` to the
+    release define symbols, or a reference from an unconstrained assembly
+    dragging the code back in -- both leave the constraint looking correct.
+
+    The evidence is the build manifest `WebGLBuilder` writes, which names the
+    managed assemblies IL2CPP was handed. It is read rather than the player
+    itself because a WebGL player's code lands inside a Brotli-compressed
+    `.unityweb` that the standard library cannot open; a missing manifest is
+    therefore a problem in its own right, not a pass by default.
+
+    配布用ビルドが含んではならず、実際には含んでいるもの。空なら綺麗である。
+
+    計画 §4 は命令の中継を開発用ビルドだけに入れると定め、それを強制するのが
+    `StampFly.Remote` の `defineConstraints` である。ここでは制約を信じず、出来た
+    ものを見る。制約が静かに効かなくなる 2 つの道 ― 誰かが配布用の定義記号に
+    `STAMPFLY_REMOTE` を足す、制約の無いアセンブリからの参照がコードを引き戻す ―
+    は、どちらも制約自体は正しく見えたままだからである。
+
+    根拠は `WebGLBuilder` が書くビルドの目録で、IL2CPP に渡されたマネージドの
+    アセンブリを名指しする。プレイヤー自身ではなくこちらを読むのは、WebGL の
+    プレイヤーのコードが、標準ライブラリでは開けない Brotli 圧縮の `.unityweb` の
+    中に入るためである。よって目録が無いこと自体が問題であり、既定で合格には
+    しない。
+    """
+    problems: List[str] = []
+
+    manifest_path = output_dir / BUILD_MANIFEST
+    if not manifest_path.is_file():
+        return [f"{BUILD_MANIFEST} is missing from {output_dir}: the build did "
+                "not say what it contains, so this check cannot pass it"]
+
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        return [f"{BUILD_MANIFEST} could not be read: {error}"]
+
+    if manifest.get("release") is not True:
+        problems.append(f"{BUILD_MANIFEST} says release={manifest.get('release')!r}: "
+                        "this is not a distributed build")
+
+    assemblies = manifest.get("assemblies") or []
+    if RELAY_ASSEMBLY in assemblies:
+        problems.append(f"the build included the assembly {RELAY_ASSEMBLY}")
+
+    symbols = str(manifest.get("define_symbols", ""))
+    if RELAY_SYMBOL in symbols.split(";"):
+        problems.append(f"the build defined {RELAY_SYMBOL}, which compiles the "
+                        "relay in")
+
+    problems.extend(_relay_names_in_plain_files(output_dir))
+    return problems
+
+
+def _relay_names_in_plain_files(output_dir: Path) -> List[str]:
+    """The relay's browser-side names found in whatever the build left
+    uncompressed -- the loader script and the page. The framework JavaScript a
+    `.jslib` is merged into is compressed, so this catches only the easy cases;
+    the manifest above is what the verdict actually rests on.
+    ビルドが非圧縮のまま残したもの ― ローダの script とページ ― の中に見つかった、
+    中継のブラウザ側の名前。`.jslib` が統合されるフレームワークの JavaScript は
+    圧縮されるので、ここで捕まるのは易しい場合だけである。判定が実際に拠るのは
+    上の目録である。"""
+    found: List[str] = []
+    for path in sorted(output_dir.rglob("*")):
+        is_plain_text = path.is_file() and path.suffix in (".js", ".html", ".json") \
+            and "StreamingAssets" not in path.parts and path.name != BUILD_MANIFEST
+        if not is_plain_text:
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        for name in RELAY_JSLIB_NAMES:
+            if name in text:
+                found.append(f"{path.relative_to(output_dir)} contains {name!r} "
+                             "from the relay's .jslib")
+    return found
 
 
 def run_test(args: argparse.Namespace) -> int:
@@ -1449,6 +1635,103 @@ def run_setup(args: argparse.Namespace) -> int:
     return subprocess.run(
         [executable, "pipeline", "install", "--project-path", str(project_dir)]
     ).returncode
+
+
+# ---------------------------------------------------------------------------
+# sf unity check
+# ---------------------------------------------------------------------------
+
+def _load_fly_check():
+    """Import `tools/unity_check/fly_check.py` and return it, or None after
+    saying it is missing.
+
+    Loaded by path inside the function for the same reason the world validator
+    is (see `_load_world_validator`): `serve`, `cmd` and `logs` must keep
+    working even if this backend is absent, and a module-level import would
+    take the whole `unity` command down with it.
+
+    `tools/unity_check/fly_check.py` を読み込んで返す。無ければその旨を出して
+    None を返す。
+
+    空間の検査と同じ理由で、モジュールの先頭ではなく関数の中でパスから読み込む
+    （`_load_world_validator` を見よ）。このバックエンドが無くても `serve`・
+    `cmd`・`logs` は動き続けなければならず、先頭で import すると `unity`
+    コマンド全体を道連れにしてしまう。
+    """
+    # Found from this file's own location rather than from `paths.root()`:
+    # the backend ships with this CLI, in the same checkout, and must be found
+    # even when the caller has pointed `logs/` somewhere else.
+    # `paths.root()` ではなくこのファイル自身の場所から探す。バックエンドはこの
+    # CLI と同じチェックアウトで配られるものであり、呼び出し側が `logs/` を他所へ
+    # 向けていても見つからなければならない。
+    check_path = Path(__file__).resolve().parents[3] / \
+        "tools" / "unity_check" / "fly_check.py"
+    if not check_path.is_file():
+        console.error(f"Flight check module not found: {check_path}")
+        console.print("  It provides run(send, world, hold_seconds) -> dict.")
+        return None
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("sfcli_unity_fly_check",
+                                                  check_path)
+    if spec is None or spec.loader is None:
+        console.error(f"Flight check module could not be loaded: {check_path}")
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except Exception as error:
+        console.error(f"Flight check module failed to load: {error}")
+        return None
+    return module
+
+
+def run_check_fly(args: argparse.Namespace) -> int:
+    """`sf unity check fly` -- fly the stage 3 criterion against the open page.
+
+    ARM, take off, hold in ALT_HOLD, land, DISARM, all through `POST /api/cmd`,
+    and judge from `vehicle.state`. Prints the report as JSON on stdout and a
+    readable summary on stderr, so a script can pipe the JSON while a person
+    still sees what happened; exits non-zero when the flight failed.
+
+    `sf unity check fly` -- 開いているページに対して段階 3 の基準を飛ばす。
+
+    ARM・離陸・ALT_HOLD での保持・着地・DISARM を全て `POST /api/cmd` で行い、
+    `vehicle.state` から判定する。報告を標準出力に JSON で、人が読む要約を標準
+    エラーに出すので、台本は JSON をそのまま流しつつ人も何が起きたかを見られる。
+    飛行が不合格なら非 0 で終わる。
+    """
+    module = _load_fly_check()
+    if module is None:
+        return 1
+
+    try:
+        send = make_sender()
+    except RuntimeError as error:
+        console.error(f"No running simulator server: {error}")
+        console.print("  Start one and open the page in Chrome first:")
+        console.print("    sf unity serve")
+        return 1
+
+    console.info(f"Flying the stage 3 check in '{args.world}' "
+                 f"({args.hold_seconds}s of hold)")
+    report = module.run(send, args.world, args.hold_seconds)
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+
+    for line in module.summarise(report):
+        console.print(line)
+
+    arm_id = module.cmd_id_of(report, "rc.arm")
+    if arm_id:
+        console.print(f"  Follow one command end to end:  "
+                      f"sf unity logs --cmd {arm_id}")
+
+    if not report.get("pass"):
+        console.error("The flight check failed")
+        return 1
+    console.success("The flight check passed")
+    return 0
 
 
 # ---------------------------------------------------------------------------
@@ -1698,6 +1981,30 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     setup_parser.set_defaults(func=run_setup)
 
+    # --- check ---
+    check_parser = unity_subparsers.add_parser(
+        "check", help="Run an automated check against the open page",
+    )
+    check_subparsers = check_parser.add_subparsers(
+        dest="check_command", title="subcommands", metavar="<subcommand>",
+    )
+    fly_parser = check_subparsers.add_parser(
+        "fly",
+        help="ARM, take off, hold in ALT_HOLD and land, then judge the flight",
+        description="Fly the stage 3 pass criterion against the page a running "
+                    "`sf unity serve` is serving, and print the verdict as JSON.",
+    )
+    fly_parser.add_argument(
+        "--world", default="empty_room",
+        help="World to fly in (default: empty_room)",
+    )
+    fly_parser.add_argument(
+        "--hold-seconds", type=float, default=10.0, dest="hold_seconds",
+        help="How long to hold altitude, in simulated seconds (default: 10)",
+    )
+    fly_parser.set_defaults(func=run_check_fly)
+    check_parser.set_defaults(func=run_check_help)
+
     # --- world ---
     world_parser = unity_subparsers.add_parser(
         "world", help="Validate and list `*.world.json` space files",
@@ -1732,16 +2039,30 @@ def run_help(args: argparse.Namespace) -> int:
     console.print("  test    Run the Unity tests (Unity CLI)")
     console.print("  open    Open the project in the Unity editor")
     console.print("  setup   Install com.unity.pipeline into the project")
+    console.print("  check   Run an automated check against the open page")
     console.print("  world   Validate and list `*.world.json` space files")
     console.print()
     console.print("Examples:")
     console.print("  sf unity serve                       # serve and open Chrome")
     console.print("  sf unity cmd sim.pause               # pause the simulation")
     console.print("  sf unity cmd world.load --arg name=gate_course")
+    console.print("  sf unity check fly                   # fly ARM -> hold -> land")
     console.print("  sf unity logs --cmd c20260920T044500Z-1a2b3c")
     console.print("  sf unity logs --src fw --level warn --follow")
     console.print()
     console.print("Run 'sf unity <subcommand> --help' for details.")
+    return 0
+
+
+def run_check_help(args: argparse.Namespace) -> int:
+    """Show help when `sf unity check` is given no subcommand"""
+    console.print("Usage: sf unity check <subcommand>")
+    console.print()
+    console.print("Subcommands:")
+    console.print("  fly   ARM, take off, hold in ALT_HOLD and land, then judge")
+    console.print()
+    console.print("The page must already be open in Chrome against a running")
+    console.print("`sf unity serve`.")
     return 0
 
 

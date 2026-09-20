@@ -794,20 +794,33 @@ def test_webgl_build_command_carries_the_static_method():
 
 
 def test_release_build_reaches_the_editors_command_line():
-    """`--release` becomes a single-dash flag placed last, so it reaches the
-    editor's own command line where `WebGLBuilder` reads it (the mechanism it
-    already uses for `-buildOutput`). `unity build` has no `--release` of its
-    own and would reject that spelling.
-    `--release` はダッシュ 1 つの引数として末尾に置かれ、`WebGLBuilder` が
-    読むエディタ自身のコマンド行へ届く（`-buildOutput` と同じ仕組み）。
-    `unity build` 自身に `--release` は無く、その綴りでは拒否される。"""
+    """`--release` travels inside `--args`, which is how `unity build` puts
+    something on the editor's own command line, where `WebGLBuilder` reads it
+    (the same place it reads `-buildOutput`). Passing the bare flag instead
+    fails: the CLI rejects an unknown option rather than forwarding it.
+    `--release` は `--args` の中を通る。`unity build` がエディタ自身のコマンド行
+    へ何かを置く方法がそれで、`WebGLBuilder` はそこから読む（`-buildOutput` と
+    同じ場所）。素の引数をそのまま渡すと失敗する。CLI は未知の引数を転送せずに
+    拒否するためである。"""
     command = unity.build_webgl_command(
         "/u/unity", Path("/proj"), Path("/out"), release=True,
     )
-    assert command[-1] == unity.BUILD_RELEASE_FLAG
+    assert command[-2:] == ["--args", unity.BUILD_RELEASE_FLAG]
     assert unity.BUILD_RELEASE_FLAG.startswith("-")
     assert not unity.BUILD_RELEASE_FLAG.startswith("--")
     assert "--release" not in command
+
+
+def test_a_development_build_passes_no_release_argument():
+    """Without `--release` nothing extra is forwarded, so a development build
+    keeps whatever the editor's define symbols already say.
+    `--release` が無ければ余分な引数は渡らない。開発用ビルドは、エディタの定義
+    記号が既に述べているものをそのまま使う。"""
+    command = unity.build_webgl_command(
+        "/u/unity", Path("/proj"), Path("/out"), release=False,
+    )
+    assert "--args" not in command
+    assert unity.BUILD_RELEASE_FLAG not in command
 
 
 def test_test_command_maps_the_mode_to_unitys_spelling():

@@ -25,15 +25,29 @@ namespace StampFly.Core
     /// </summary>
     public readonly struct SimCommandResult
     {
-        private SimCommandResult(bool ok, string data, string error)
+        private SimCommandResult(bool ok, string data, string error, bool isDeferred)
         {
             Ok = ok;
             Data = data;
             Error = error;
+            IsDeferred = isDeferred;
         }
 
         /// <summary>Whether the command ran. / 命令が通ったか。</summary>
         public bool Ok { get; }
+
+        /// <summary>
+        /// The handler has not answered yet and will answer from a later frame.
+        /// Only a command that must watch the simulation run -- <c>sim.wait</c>,
+        /// which waits for a virtual time to arrive -- returns this, because a
+        /// handler runs on the main thread and blocking there would stop the
+        /// very loop it is waiting for.
+        /// 処理はまだ答えておらず、後のフレームから答える。これを返すのは、
+        /// シミュレーションが進むのを見なければならない命令 ― 仮想時刻の到来を
+        /// 待つ <c>sim.wait</c> ― だけである。処理は主スレッドで走るので、そこで
+        /// 待つと、待っている当の輪を止めてしまうためである。
+        /// </summary>
+        public bool IsDeferred { get; }
 
         /// <summary>
         /// The answer as a JSON value (an object unless the command says
@@ -54,13 +68,28 @@ namespace StampFly.Core
         /// </summary>
         public static SimCommandResult Success(string json = "{}")
         {
-            return new SimCommandResult(true, string.IsNullOrEmpty(json) ? "{}" : json, null);
+            return new SimCommandResult(
+                true, string.IsNullOrEmpty(json) ? "{}" : json, null, false);
         }
 
         /// <summary>A failure carrying a reason. / 理由を持つ失敗。</summary>
         public static SimCommandResult Failure(string reason)
         {
-            return new SimCommandResult(false, null, reason ?? "command failed");
+            return new SimCommandResult(
+                false, null, reason ?? "command failed", false);
+        }
+
+        /// <summary>
+        /// The handler will answer from a later frame. Whoever routed the
+        /// command must not answer now and must keep the <c>cmd_id</c> alive
+        /// until the handler does; see <see cref="IsDeferred"/>.
+        /// 処理が後のフレームから答える。命令を運んだ側はいま答えてはならず、
+        /// 処理が答えるまで <c>cmd_id</c> を保たなければならない。
+        /// <see cref="IsDeferred"/> を見よ。
+        /// </summary>
+        public static SimCommandResult Deferred()
+        {
+            return new SimCommandResult(true, null, null, true);
         }
     }
 
@@ -258,6 +287,16 @@ namespace StampFly.Core
         /// </summary>
         private void LogOutcome(string command, in SimCommandResult result)
         {
+            if (result.IsDeferred)
+            {
+                // Nothing has finished yet: the handler answers from a later
+                // frame and writes its own line then.
+                // まだ何も終わっていない。処理は後のフレームから答え、そのとき
+                // 自分の行を書く。
+                Log(LogLevel.Debug, StartedEvent, $"{command} is waiting", command);
+                return;
+            }
+
             if (result.Ok)
             {
                 Log(LogLevel.Debug, FinishedEvent, $"{command} succeeded", command);

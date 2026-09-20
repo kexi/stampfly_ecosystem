@@ -262,10 +262,6 @@ namespace StampFly.Native
             boot = Resolve<BootDelegate>("sfu_boot");
             step = Resolve<StepDelegate>("sfu_step");
 
-            // Resolved so a dylib missing it is rejected here, but never called
-            // from the editor — see the note on Dispose.
-            // 引いておくのは、これを持たない dylib をここで拒むためである。ただし
-            // エディタから呼ぶことはない。Dispose の注記を参照。
             shutdown = Resolve<ShutdownDelegate>("sfu_shutdown");
             paramCount = Resolve<ParamCountDelegate>("sfu_param_count");
             paramInfo = Resolve<ParamInfoDelegate>("sfu_param_info");
@@ -527,45 +523,62 @@ namespace StampFly.Native
         }
 
         /// <summary>
-        /// Let the module go: close the image and delete the copy. Closing is
-        /// what makes the next power-on a genuine one, because it opens a
-        /// different file and gets fresh statics.
-        /// モジュールを手放す。像を閉じ、複写を消す。次の電源投入が本物になるのは
-        /// 閉じるからである。次は別のファイルを開き、静的変数は初期値になる。
+        /// Let the module go: stop its tasks, close the image and delete the
+        /// copy. Closing is what makes the next power-on a genuine one, because
+        /// it opens a different file and gets fresh statics.
+        /// モジュールを手放す。タスクを止め、像を閉じ、複写を消す。次の電源投入が
+        /// 本物になるのは閉じるからである。次は別のファイルを開き、静的変数は
+        /// 初期値になる。
         ///
-        /// ## Why sfu_shutdown is NOT called here / ここで sfu_shutdown を呼ばない理由
+        /// ## Why sfu_shutdown IS called / sfu_shutdown を呼ぶ理由
         ///
-        /// The ABI makes it optional — "discarding the module is enough" — and
-        /// inside the editor it DEADLOCKS. The development dylib carries the
-        /// thread-based scheduler, whose `Scheduler::stop_all` waits for all
-        /// fourteen task threads to join while they sit blocked on a condition
-        /// variable in `ulTaskNotifyTake`; the same call returns in a second in
-        /// a plain process, so what the editor adds is what hangs it. Measured
-        /// 2026-09-20 with `sample`: every thread parked in `_pthread_cond_wait`
-        /// under `sfu_shutdown -> Scheduler::stop_all`.
+        /// The ABI makes it optional — "discarding the module is enough" — but
+        /// calling it is what returns the task stacks (14 MiB) and unparks the
+        /// fourteen task threads, instead of leaving both until the editor's
+        /// process ends. Ten play sessions without it is 140 MiB and 140
+        /// threads.
         ///
-        /// ABI はこれを省略可としており（「モジュールを捨てるだけでも足りる」）、
-        /// エディタの中では**デッドロックする**。開発用 dylib はスレッド版の
-        /// スケジューラを持ち、その `Scheduler::stop_all` は 14 本のタスクの
-        /// スレッドの合流を待つが、それらは `ulTaskNotifyTake` の中で条件変数に
-        /// 掛かったままである。素のプロセスでは同じ呼び出しが 1 秒で返るので、
-        /// 止めているのはエディタが加えるものである。2026-09-20 に `sample` で
-        /// 実測した。全スレッドが `sfu_shutdown -> Scheduler::stop_all` の下の
-        /// `_pthread_cond_wait` に停まっていた。
+        /// ABI はこれを省略可としているが（「モジュールを捨てるだけでも足りる」）、
+        /// 呼ぶことでタスクのスタック（14 MiB）が返り、14 本のタスクのスレッドが
+        /// 解かれる。呼ばなければどちらもエディタのプロセスが終わるまで残る。
+        /// 再生 10 回で 140 MiB と 140 本のスレッドになる。
         ///
-        /// Not calling it leaks the task stacks (14 MiB) and leaves the threads
-        /// parked until the editor's process ends. That is the price of a play
-        /// session that finishes; the WebGL side has neither problem, because a
-        /// discarded wasm module takes its whole memory with it.
+        /// It used to hang here, and for a while this class skipped it for that
+        /// reason. The cause was not the editor: `sfu_boot` followed by
+        /// `sfu_shutdown` with no `sfu_step` in between deadlocked, because a
+        /// task that had never been started could not be unwound. Since
+        /// `f9040ea9` (`simulator/sils/rtos/scheduler_step.cpp`) it returns.
+        /// The window mattered here in particular, because
+        /// <c>SimLoop.BootFirmware</c> does not tick on the frame it boots on,
+        /// so stopping play right then hit exactly that case.
         ///
-        /// 呼ばないと、タスクのスタック（14 MiB）が残り、スレッドはエディタの
-        /// プロセスが終わるまで停まったままになる。再生が終われることの代償で
-        /// ある。WebGL 側にはどちらの問題も無い。捨てた wasm モジュールは自分の
-        /// メモリごと消えるからである。
+        /// かつてはここで固まり、しばらくの間この実装はそれを理由に呼ばずにいた。
+        /// 原因はエディタではなかった。`sfu_boot` の後、`sfu_step` を 1 回も挟まずに
+        /// `sfu_shutdown` を呼ぶとデッドロックした。一度も開始されていないタスクを
+        /// 巻き戻せなかったためである。`f9040ea9`
+        /// （`simulator/sils/rtos/scheduler_step.cpp`）以降は戻る。この窓がとりわけ
+        /// ここで問題になったのは、<c>SimLoop.BootFirmware</c> が起動したフレームでは
+        /// 刻まないため、ちょうどその時に再生を止めると必ずこの場合に当たったからで
+        /// ある。
+        ///
+        /// The WebGL side never needed it: a discarded wasm module takes its
+        /// whole memory with it, and the fiber scheduler has no threads.
+        /// WebGL 側には元から要らない。捨てた wasm モジュールは自分のメモリごと
+        /// 消え、fiber 版スケジューラにスレッドは無い。
         /// </summary>
         public void Dispose()
         {
+            bool wasRunning = status == FirmwareStatus.Running;
             status = FirmwareStatus.ShutDown;
+
+            // Only a module that booted has tasks to stop. Calling it on one
+            // that never booted would ask the scheduler to unwind nothing.
+            // 止めるタスクを持つのは、起動したモジュールだけである。起動していない
+            // ものに呼ぶのは、巻き戻すものが無いスケジューラへの依頼になる。
+            if (wasRunning && shutdown != null)
+            {
+                shutdown();
+            }
 
             bool isOpen = libraryHandle != IntPtr.Zero;
             if (isOpen)

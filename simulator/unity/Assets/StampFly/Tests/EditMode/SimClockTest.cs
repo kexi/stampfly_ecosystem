@@ -256,5 +256,100 @@ namespace StampFly.Tests.EditMode
             Assert.That(clock.FramesPerSecond, Is.EqualTo(60.0).Within(1.0));
             Assert.That(clock.MicrosecondsPerTick, Is.EqualTo(30.0).Within(1.0));
         }
+
+        /// <summary>
+        /// At speed 1.0 the simulation never runs FASTER than real time, whatever
+        /// happened before. The plan says a loop that cannot keep up falls
+        /// behind; it does not say it may then sprint to catch up, because a
+        /// flight that fast-forwards is not the flight the pilot flew and a
+        /// real-time ratio above 1.0 makes the readout unreadable.
+        ///
+        /// 倍速 1.0 では、それ以前に何があろうと、シミュレーションが実時間より
+        /// **速く**進むことはない。計画は「追いつけない輪は遅れる」と定めており、
+        /// その後で追いつくために駆けてよいとは定めていない。早送りされた飛行は
+        /// 操縦者が飛ばした飛行ではなく、1.0 を超える実時間比は表示板を読めなく
+        /// するからである。
+        ///
+        /// This is the check for a measured 1.875: a page left open in a
+        /// throttled tab accumulated a debt no single stall ever dropped, and
+        /// then ran the twelve-tick ceiling (30 ms of simulation) in every
+        /// 16 ms frame for as long as the debt lasted.
+        /// 実測の 1.875 に対する検査である。絞られたタブに開いたままのページが、
+        /// どの停止でも捨てられない借りを溜め、その借りが続く限り、16 ms のどの
+        /// フレームでも 12 刻みの上限（シミュレーション 30 ms）を走った。
+        /// </summary>
+        [Test]
+        public void AtNormalSpeedTheSimulationNeverOutrunsRealTime()
+        {
+            var clock = new SimClock();
+
+            // Fall behind the way a throttled tab does: frames long enough to
+            // build a debt, but each below the half-second a stall needs.
+            // 絞られたタブと同じ形で遅れる。借りが溜まるだけ長く、しかし 1 つ 1 つ
+            // は停止とみなす半秒より短いフレームである。
+            const double ThrottledFrame = 0.4;
+            for (int frame = 0; frame < 25; frame++)
+            {
+                int ticks = clock.TicksForFrame(ThrottledFrame);
+                clock.RecordFrame(ThrottledFrame, ticks, ticks * 30e-6);
+            }
+
+            // Then run a second of healthy 60 fps frames and read the ratio.
+            // 続いて健全な 60fps のフレームを 1 秒ぶん回し、比を読む。
+            for (int frame = 0; frame < 60; frame++)
+            {
+                int ticks = clock.TicksForFrame(FrameAt60Fps);
+                clock.RecordFrame(FrameAt60Fps, ticks, ticks * 30e-6);
+            }
+
+            Assert.That(clock.RealTimeRatio, Is.LessThanOrEqualTo(1.02),
+                        "the simulation outran real time while catching up");
+        }
+
+        /// <summary>
+        /// The debt one slow frame leaves is at most what the next frame can
+        /// pay off. Without that cap it grows for as long as the page is slow,
+        /// which is what let the ratio above exceed 1.
+        /// 遅いフレーム 1 つが残す借りは、多くとも次のフレームが返せる量である。
+        /// この上限が無いと、ページが遅い間ずっと借りは膨らむ。上の比が 1 を
+        /// 超えたのはそれによる。
+        /// </summary>
+        [Test]
+        public void TheBacklogNeverGrowsBeyondOneFramesWorth()
+        {
+            var clock = new SimClock();
+
+            // Twenty throttled frames owe 8 s of simulation between them; the
+            // clock must not have promised to run all of it.
+            // 絞られたフレーム 20 個は合わせて 8 秒ぶんの借りになる。時計がその
+            // 全てを走ると約束してはならない。
+            for (int frame = 0; frame < 20; frame++)
+            {
+                clock.TicksForFrame(0.4);
+            }
+
+            double before = clock.VirtualSeconds;
+            int caughtUp = 0;
+            for (int frame = 0; frame < 10; frame++)
+            {
+                caughtUp += clock.TicksForFrame(FrameAt60Fps);
+            }
+
+            // Ten 60 fps frames are 167 ms of real time. A clock that had kept
+            // the whole backlog would run 12 ticks each time (120 ticks, 300 ms
+            // of simulation); one that capped it runs about what the frames ask
+            // for, plus one frame's worth of catching up.
+            // 60fps のフレーム 10 個は実時間 167 ms である。借りを丸ごと抱えた
+            // 時計は毎回 12 刻み（120 刻み、シミュレーション 300 ms）を走る。
+            // 上限を置いた時計は、フレームが求める分に 1 フレーム分の追いつきを
+            // 足した程度を走る。
+            Assert.That(caughtUp, Is.LessThan(12 * 10));
+            Assert.That(clock.VirtualSeconds - before,
+                        Is.LessThan(10 * FrameAt60Fps + MaxTicksWorthOfSeconds + 1e-9));
+        }
+
+        /// <summary>One frame's ceiling, in seconds. / 1 フレームの上限を秒で表したもの。</summary>
+        private static double MaxTicksWorthOfSeconds =>
+            SimClock.MaxTicksPerFrame * SimClock.TickSeconds;
     }
 }

@@ -9,7 +9,8 @@
         "StampFly.Input",
         "StampFly.Sim",
         "StampFly.Core",
-        "StampFly.Remote"
+        "StampFly.Remote",
+        "StampFly.App"
     ],
     "includePlatforms": [
         "Editor"
