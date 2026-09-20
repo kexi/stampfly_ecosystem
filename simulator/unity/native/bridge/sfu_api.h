@@ -28,7 +28,27 @@
  *   sfu_boot(&config)        — once per module; a second call is an error
  *   sfu_param_set_* ...      — optional, any time after boot
  *   loop: sfu_step(&in, &out)
- *   sfu_shutdown()           — optional; the module is discarded either way
+ *   sfu_shutdown()           — after it, every other entry point is an error
+ *
+ * ## Reading sfu_step's result under WebAssembly / wasm での sfu_step の結果
+ *
+ * **Under wasm the RETURN VALUE of `sfu_step` is meaningless — read
+ * `out->status` (or `sfu_last_status()`) instead.** The fiber scheduler switches
+ * stacks inside the call, and Asyncify implements that by unwinding and
+ * rewinding the whole wasm stack. The value JavaScript receives is the one the
+ * rewind stub produced (0), not the one the C code returned. `out->status` is
+ * written to memory as the LAST thing `sfu_step` does, so it survives.
+ * A native caller may use either; a caller that must work in both places uses
+ * `status`. The same applies to any entry point that can reach the scheduler.
+ *
+ * **wasm では `sfu_step` の戻り値は意味を持たない。`out->status`（または
+ * `sfu_last_status()`）を読むこと。** fiber 版スケジューラは呼び出しの途中で
+ * スタックを切り替え、Asyncify はそれを wasm スタック全体の巻き戻しと巻き直しで
+ * 実現する。JavaScript が受け取るのは巻き直しの際に生じた値（0）であって、C の
+ * コードが返した値ではない。`out->status` は `sfu_step` が**最後に**記憶域へ書く
+ * ものなので残る。ネイティブの呼び出し側はどちらを読んでもよいが、両方で動く
+ * 必要のある呼び出し側は `status` を読む。スケジューラへ届き得る他の入口にも
+ * 同じことが当てはまる。
  *
  * ## Why every struct starts with struct_size / 先頭に struct_size を置く理由
  *
@@ -62,7 +82,7 @@ extern "C" {
  * ABI の版。既存の欄が動くか意味が変わるたびに上げる。構造体を末尾に伸ばして
  * struct_size を上げるだけなら上げない。
  */
-#define SFU_ABI_VERSION 1
+#define SFU_ABI_VERSION 2
 
 /** Number of motors. Fixed by the airframe. モータの数。機体で決まる。 */
 #define SFU_MOTOR_COUNT 4
@@ -70,6 +90,18 @@ extern "C" {
 /** Longest parameter name the bridge reports, including the terminator.
  *  橋渡しが報告するパラメータ名の最大長（終端を含む）。 */
 #define SFU_PARAM_NAME_MAX 64
+
+/** Longest single step [µs] = 100 ms. A host that has fallen this far behind
+ *  should slow the simulation down, not hand the firmware a huge catch-up tick.
+ *  1 刻みの上限 [µs] = 100 ms。これほど遅れたホストは、ファームへ巨大な追いつき
+ *  刻みを渡すのではなく、シミュレーションを遅らせるべきである。 */
+#define SFU_DT_US_MAX 100000u
+
+/** The plant's physics sub-step [µs]. A dt_us that is a multiple of this
+ *  divides evenly into sub-steps and leaves no remainder to carry over.
+ *  プラントの物理の副刻み [µs]。これの倍数の dt_us は副刻みに割り切れ、繰り越す
+ *  端数が出ない。 */
+#define SFU_PLANT_SUBSTEP_US 250u
 
 /* Return codes. 0 is success; every failure is negative so a caller can test
  * `< 0` without knowing the list.
@@ -84,6 +116,15 @@ extern "C" {
 #define SFU_ERR_UNKNOWN_PARAM    -6   /**< no parameter of that name */
 #define SFU_ERR_PARAM_REJECTED   -7   /**< the value was out of the allowed range */
 #define SFU_ERR_BAD_INDEX        -8   /**< index outside the valid range */
+#define SFU_ERR_BAD_ARGUMENT     -9   /**< an argument was outside its allowed range */
+#define SFU_ERR_SHUT_DOWN       -10   /**< called after sfu_shutdown; the module is finished */
+
+/* SFU_ERR_SCHEDULER_STALL is LATCHED: a task that did not yield leaves the
+ * firmware's stacks in an unknown state, so the module refuses to run further
+ * and every later sfu_step returns the same code without touching the scheduler.
+ * SFU_ERR_SCHEDULER_STALL は**保持される**。トークンを返さなかったタスクは
+ * ファームのスタックを不明な状態に残すので、モジュールはそれ以上動かず、以後の
+ * sfu_step はスケジューラに触れずに同じ値を返す。 */
 
 /* Parameter value types, matching sf::params::ParamType one for one.
  * パラメータの型。sf::params::ParamType と 1 対 1 で対応する。 */
@@ -184,7 +225,24 @@ typedef struct SfuStepIn {
     uint8_t  reserved_padding[3];/**< keeps the next field 4-byte aligned in both languages */
 
     /* --- How far to advance / どれだけ進めるか --- */
-    float dt_s;                  /**< virtual seconds to advance the firmware by */
+    /* Whole MICROSECONDS, not seconds: the virtual clock is an integer count of
+     * microseconds, so a float crossing the boundary would have to be rounded
+     * here and the caller could never predict exactly where. With an integer,
+     * N ticks of dt_us land the clock on exactly N·dt_us, every time, in every
+     * language. Must be in (0, SFU_DT_US_MAX]; anything else is
+     * SFU_ERR_BAD_ARGUMENT. A value that is not a multiple of
+     * SFU_PLANT_SUBSTEP_US is accepted and advances the clock by exactly that
+     * many microseconds — the plant carries its sub-step remainder over, so the
+     * remainder appears in the NEXT tick's wrench_dt_s rather than being lost.
+     *
+     * 秒ではなく整数の**マイクロ秒**である。仮想時計はマイクロ秒の整数の数え上げ
+     * なので、境界を渡る浮動小数はここで丸めるほかなく、呼び出し側はその結果を
+     * 正確に予測できない。整数であれば、dt_us の N 刻みは必ず、どの言語からでも
+     * ちょうど N·dt_us に時計を置く。範囲は (0, SFU_DT_US_MAX]。外れれば
+     * SFU_ERR_BAD_ARGUMENT を返す。SFU_PLANT_SUBSTEP_US の倍数でない値も受理し、
+     * 時計はちょうどその値だけ進む — プラントは副刻みの端数を繰り越すので、端数は
+     * 失われるのではなく**次の**刻みの wrench_dt_s に現れる。 */
+    uint32_t dt_us;
 } SfuStepIn;
 
 /**
@@ -234,6 +292,26 @@ typedef struct SfuStepOut {
      * 返す ― ホストはすでにその値を持っている。 */
     float truth_position[3];     /**< true position [m], Unity world */
     float truth_rotation[4];     /**< true attitude, Unity x,y,z,w */
+
+    /* --- The result of this call / この呼び出しの結果 --- */
+    /* SFU_OK or a negative code — the same value sfu_step returns natively.
+     * Written as the LAST thing sfu_step does, on every path including the
+     * early rejections, so it is the one place a wasm caller can read the
+     * result from (see the note at the head of this file). Zero it before the
+     * call to tell "the bridge wrote it" from "nothing happened".
+     * SFU_OK か負の値 — sfu_step がネイティブで返すのと同じ値である。早期の拒否も
+     * 含めた全ての経路で、sfu_step が**最後に**書く。wasm の呼び出し側が結果を
+     * 読めるのはここだけである（本ファイル冒頭の注記を参照）。呼び出し前に 0 を
+     * 入れておくと「橋渡しが書いた」と「何も起きなかった」を見分けられる。 */
+    int32_t status;
+    /* The struct contains an int64_t (now_us), so its alignment is 8 and its
+     * size is rounded up to a multiple of 8. Naming the pad rather than letting
+     * the compiler insert it keeps the C# declaration a field-for-field copy of
+     * this one, with no invisible bytes to get wrong.
+     * この構造体は int64_t（now_us）を含むので配置境界は 8 で、大きさは 8 の倍数へ
+     * 切り上がる。詰め物をコンパイラに入れさせず名前を付けておくと、C# 側の宣言を
+     * この宣言の欄ごとの写しにできる。見えない byte を取り違える余地が無くなる。 */
+    int32_t reserved_tail;
 } SfuStepOut;
 
 /** One parameter's identity, as `sfu_param_info` reports it.
@@ -285,19 +363,44 @@ int32_t sfu_struct_size(int32_t which);
  */
 int32_t sfu_boot(const SfuConfig* config);
 
-/** Unwind the firmware's tasks. Optional — discarding the module is enough.
- *  ファームのタスクを巻き戻す。省略可 — モジュールを捨てるだけでも足りる。 */
+/**
+ * Unwind the firmware's tasks and free their stacks. Optional — discarding the
+ * module is enough — but after it the module is FINISHED: `sfu_step`, every
+ * `sfu_set_*` and a second `sfu_shutdown` all return SFU_ERR_SHUT_DOWN without
+ * touching anything, because the fiber stacks they would run on have been freed.
+ * ファームのタスクを巻き戻し、スタックを解放する。省略可 — モジュールを捨てる
+ * だけでも足りる — が、この後モジュールは**終了**している。`sfu_step`・全ての
+ * `sfu_set_*`・2 回目の `sfu_shutdown` は、何にも触れずに SFU_ERR_SHUT_DOWN を
+ * 返す。それらが乗るはずの fiber のスタックが解放済みだからである。
+ */
 int32_t sfu_shutdown(void);
+
+/**
+ * The value the most recent `sfu_step` (or `sfu_shutdown`) produced. The way to
+ * read a result under wasm without a SfuStepOut at hand; see the note at the
+ * head of this file. SFU_OK before the first call.
+ * 直近の `sfu_step`（または `sfu_shutdown`）が出した値。SfuStepOut を持たずに
+ * wasm で結果を読む手立てである。本ファイル冒頭の注記を参照。最初の呼び出しの
+ * 前は SFU_OK。
+ */
+int32_t sfu_last_status(void);
 
 /* =========================================================================
  * The main path / 主経路
  * ========================================================================= */
 
 /**
- * One tick: inject the host's state, advance the firmware by `in->dt_s` of
+ * One tick: inject the host's state, advance the firmware by `in->dt_us` of
  * virtual time, and report what the rotors produced plus the firmware's state.
- * 1 刻み: ホストの状態を注入し、ファームを `in->dt_s` ぶんの仮想時間だけ進め、
+ * 1 刻み: ホストの状態を注入し、ファームを `in->dt_us` ぶんの仮想時間だけ進め、
  * ロータが出したものとファームの状態を返す。
+ *
+ * **Read `out->status`, not the return value, unless you know you are native.**
+ * The two hold the same code; only `status` survives Asyncify (see the note at
+ * the head of this file).
+ * **ネイティブだと分かっている場合を除き、戻り値ではなく `out->status` を読む。**
+ * どちらも同じ値を持つが、Asyncify を越えて残るのは `status` だけである
+ * （本ファイル冒頭の注記を参照）。
  */
 int32_t sfu_step(const SfuStepIn* in, SfuStepOut* out);
 
@@ -357,9 +460,85 @@ int32_t sfu_set_imu_bias(float accel_x, float accel_y, float accel_z,
  */
 int32_t sfu_log_read(char* buffer, int32_t capacity);
 
-/** Number of log lines dropped because the ring buffer was full since boot.
- *  リングバッファが満杯で捨てられたログ行の数（起動からの累計）。 */
+/** Number of log records dropped because the ring buffer was full since boot.
+ *  リングバッファが満杯で捨てられたログ記録の数（起動からの累計）。 */
 int32_t sfu_log_dropped(void);
+
+/* Log levels, as SfuLogRecord::level carries them. The same order and the same
+ * numbers as esp_log_level_t, so the two never need translating.
+ * ログの段。SfuLogRecord::level が持つ値である。esp_log_level_t と順序も数値も
+ * 同じにしてあるので、両者を読み替える必要はない。 */
+#define SFU_LOG_NONE    0
+#define SFU_LOG_ERROR   1
+#define SFU_LOG_WARN    2
+#define SFU_LOG_INFO    3
+#define SFU_LOG_DEBUG   4
+#define SFU_LOG_VERBOSE 5
+
+/** Longest log tag kept, including the terminator. 保持するタグの最大長（終端を含む）。 */
+#define SFU_LOG_TAG_MAX 32
+
+/** Longest log message kept, including the terminator. Longer messages are
+ *  truncated, never dropped. 保持する本文の最大長（終端を含む）。これを超える
+ *  本文は捨てずに切り詰める。 */
+#define SFU_LOG_MSG_MAX 224
+
+/**
+ * One firmware log record, BEFORE it is made into a line of text.
+ * 文字列 1 本にする前の、ファームのログ 1 記録。
+ *
+ * The firmware is never edited: its `ESP_LOGx(tag, fmt, ...)` reaches this
+ * through the `esp_log.h` placed earlier on the include path. What is kept is
+ * the four things the macro actually had — when, how severe, from where, and
+ * what — with the format applied but no level or tag prefix pasted on. The host
+ * can therefore write a structured record without parsing a string back into
+ * its parts, which is what `AGENTS.md`'s logging rules ask for.
+ *
+ * ファームは一切編集しない。`ESP_LOGx(tag, fmt, ...)` は include パスの前に置いた
+ * `esp_log.h` を通ってここへ届く。保持するのはマクロが実際に持っていた 4 つ ―
+ * いつ・どの重さ・どこから・何を ― であり、書式は適用するがレベルやタグの接頭辞は
+ * 貼り付けない。よってホストは、文字列を解析して部分へ戻すことなく構造化された
+ * 記録を書ける。`AGENTS.md` のログの決まりが求めるのはこれである。
+ */
+typedef struct SfuLogRecord {
+    uint32_t struct_size;             /**< = sizeof(SfuLogRecord) in the CALLER's build */
+    int32_t  level;                   /**< SFU_LOG_ERROR / _WARN / _INFO / _DEBUG / _VERBOSE */
+    int64_t  sim_us;                  /**< the virtual clock when the firmware logged it [µs] */
+    char     tag[SFU_LOG_TAG_MAX];    /**< null-terminated ESP_LOGx tag */
+    char     message[SFU_LOG_MSG_MAX];/**< null-terminated body, the format already applied */
+} SfuLogRecord;
+
+/* Which struct sfu_struct_size asks about — SfuLogRecord's id.
+ * sfu_struct_size が尋ねる構造体 — SfuLogRecord の id。 */
+#define SFU_STRUCT_LOG_RECORD 4
+
+/**
+ * Take the oldest log record out of the ring. Returns 1 when one was written to
+ * `*out`, 0 when the ring is empty, and a negative code on a bad argument.
+ * Call it in a loop until it returns 0.
+ * リングから最も古い記録を 1 つ取り出す。`*out` に書けば 1、リングが空なら 0、
+ * 引数が不正なら負の値を返す。0 が返るまで繰り返し呼ぶ。
+ *
+ * Reading the log NEVER affects the simulation: it moves no clock, runs no task
+ * and touches no plant state, so a host that reads and a host that does not
+ * produce the same flight.
+ * ログの取り出しがシミュレーションに影響することはない。時計を動かさず、タスクを
+ * 走らせず、プラントの状態にも触れない。読むホストと読まないホストは同じ飛行を
+ * 生む。
+ */
+int32_t sfu_log_read_record(SfuLogRecord* out);
+
+/**
+ * The lowest level kept from here on. Records at a level ABOVE this are
+ * discarded at the moment the firmware logs them, so ESP_LOGD / ESP_LOGV cost
+ * nothing while they are off. The default is SFU_LOG_INFO — debug and verbose
+ * discarded, matching what the SILS host build does. Returns the previous level.
+ * これ以降に残す最も低い段。これより**上**の段の記録は、ファームが書いたその場で
+ * 捨てるので、ESP_LOGD／ESP_LOGV は切っている間は何も費やさない。既定は
+ * SFU_LOG_INFO で、debug と verbose を捨てる ― SILS のホスト版と同じである。
+ * 直前の段を返す。
+ */
+int32_t sfu_set_log_level(int32_t level);
 
 #ifdef __cplusplus
 }  /* extern "C" */

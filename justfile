@@ -57,7 +57,35 @@ unity-native-test seconds="30": unity-native-build
     diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-native/external_smoke.run2.txt
     @echo "[unity-native-test] native: frames_unity_test OK; both smoke checks hover and repeat identically"
     node simulator/unity/native/build-wasm/frames_unity_test.js
-    node simulator/unity/native/build-wasm/sfu_bridge_smoke.js {{ seconds }} > /dev/null
-    node simulator/unity/native/build-wasm/sfu_external_smoke.js {{ seconds }} > /dev/null
+    # The same two flights under wasm, kept so they can be compared with the
+    # native ones BYTE FOR BYTE. Both toolchains compile with -ffp-contract=off,
+    # so the only thing left that could differ is a real mistake.
+    # 同じ 2 つの飛行を wasm でも行い、ネイティブのものと**バイト単位**で比べられる
+    # ように保存する。両方のツールチェーンが -ffp-contract=off でコンパイルするので、
+    # 残る違いは本物の誤りだけである。
+    node simulator/unity/native/build-wasm/sfu_bridge_smoke.js {{ seconds }} 2>/dev/null > simulator/unity/native/build-wasm/bridge_smoke.txt
+    diff simulator/unity/native/build-native/bridge_smoke.run1.txt simulator/unity/native/build-wasm/bridge_smoke.txt
+    node simulator/unity/native/build-wasm/sfu_external_smoke.js {{ seconds }} 2>/dev/null > simulator/unity/native/build-wasm/external_smoke.txt
+    diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-wasm/external_smoke.txt
+    @echo "[unity-native-test] native and wasm produce byte-identical output"
     node simulator/unity/native/bridge/sfu_module_check.mjs \
-        simulator/unity/native/build-wasm/sfu_firmware.js {{ seconds }}
+        simulator/unity/native/build-wasm/sfu_firmware.js {{ seconds }} \
+        --log-jsonl simulator/unity/native/build-wasm/logs/module_check.jsonl
+    # The firmware's log as JSON Lines, and that `jq` can read every line of it.
+    # ファームのログを JSON Lines で書き、その全行を `jq` が読めることを確かめる。
+    ./simulator/unity/native/build-native/sfu_bridge_smoke {{ seconds }} \
+        --log-jsonl simulator/unity/native/build-native/logs/bridge_smoke.jsonl > /dev/null
+    jq -e -s 'length > 0' simulator/unity/native/build-native/logs/bridge_smoke.jsonl > /dev/null
+    @echo "[unity-native-test] JSON Lines log written and readable by jq"
+    # The MuJoCo-side parity test, only when a built SILS has one: this project
+    # does not fetch MuJoCo, so the target exists only after simulator/sils has
+    # been configured and built.
+    # MuJoCo 側の対照試験は、ビルド済みの SILS に在るときだけ実行する。本プロジェクト
+    # は MuJoCo を取得しないので、このターゲットは simulator/sils を構成してビルドした
+    # 後にしか存在しない。
+    @parity=$(ls simulator/sils/build*/actuator_parity_test 2>/dev/null | head -1); \
+    if [ -n "$parity" ]; then \
+        "$parity" simulator/sils/models/stampfly.xml; \
+    else \
+        echo "[unity-native-test] actuator_parity_test skipped (no built SILS in simulator/sils/build*/)"; \
+    fi

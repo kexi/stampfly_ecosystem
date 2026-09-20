@@ -37,29 +37,59 @@ Unity が呼べる C ABI（接頭辞 `sfu_`）を被せたものである。Unit
 
 | 実行形態 | ビルド | 1 秒あたりの実処理時間 | 最大高度 | 最終高度 | 判定 |
 |---|---|---|---|---|---|
-| `sfu_bridge_smoke` | ネイティブ（スレッド版） | 0.0091 s | 0.684 m | 0.485 m | hover OK |
-| `sfu_bridge_smoke` | wasm（fiber 版）／Node.js | 0.0028 s | 0.684 m | 0.492 m | hover OK |
-| `sfu_external_smoke` | ネイティブ（スレッド版） | 0.0085〜0.0106 s | 0.681 m | 0.489 m | hover OK |
-| `sfu_external_smoke` | wasm（fiber 版）／Node.js | 0.0029〜0.0030 s | 0.681 m | 0.476 m | hover OK |
-| `sfu_module_check.mjs` | wasm モジュール／Node.js | 0.0027〜0.0028 s | 0.681 m | 0.487 m | hover OK |
+| `sfu_bridge_smoke` | ネイティブ（スレッド版） | 0.0090 s | 0.684 m | 0.492 m | hover OK |
+| `sfu_bridge_smoke` | wasm（fiber 版）／Node.js | 0.0030 s | 0.684 m | 0.492 m | hover OK |
+| `sfu_external_smoke` | ネイティブ（スレッド版） | 0.0094 s | 0.680 m | 0.480 m | hover OK |
+| `sfu_external_smoke` | wasm（fiber 版）／Node.js | 0.0031 s | 0.680 m | 0.480 m | hover OK |
+| `sfu_module_check.mjs` | wasm モジュール／Node.js | 0.0033 s | 0.680 m | 0.484 m | hover OK |
 
 いずれも合格の目安 0.30 s を大きく下回る。スレッド版がおよそ 3 倍遅いのは、段階 1 で
-fiber 版を選んだ理由（計画 §9）と整合する。最終高度の 0.476〜0.492 m の幅は、コンパイラごとの
-浮動小数点の丸めと、ホストの積分器の違い（C++ の float と JavaScript の double）から来る。
+fiber 版を選んだ理由（計画 §9）と整合する。
 
-どちらの最小動作確認も、**同じ実行を 2 回して標準出力が完全に一致する**（`just unity-native-test`
-が `diff` で確かめる）。速度の数値だけは標準エラー出力へ出す。実時間の測定値は繰り返さないため、
-標準出力に混ぜると一致の判定が壊れるからである。
+### ネイティブと wasm が**バイト単位で一致する**こと
+
+`sfu_bridge_smoke` と `sfu_external_smoke` は、ネイティブと wasm で**標準出力が完全に一致する**。
+`just unity-native-test` が毎回 `diff` で確かめる。以前この節には「最終高度の幅はコンパイラごとの
+浮動小数点の丸めから来る」と書いてあったが、これは事実ではなかった。実際には
+`sfu_module_check.mjs` だけがホストの積分器の違い（C++ の `float` と JavaScript の double）で
+数 mm ずれ、C++ の 2 つは一致する。
+
+一致を保つために、`CMakeLists.txt` が**全ターゲット**に `-ffp-contract=off` を付けている。
+既定ではコンパイラが `a*b + c` を積和融合へ縮約してよく、縮約すると丸めが 2 回でなく 1 回になる。
+Clang と Emscripten がその選択を別々に行えば下位ビットが分かれうる。なお実測では、
+この構成のもとで**このフラグは両者の出力を 1 ビットも変えなかった**（Emscripten は元から縮約
+しておらず、Xcode の clang もこのコードでは縮約していなかった）。それでも付けてあるのは、
+将来のコンパイラの版や最適化の設定で縮約が始まっても一致が壊れないようにするためである。
+
+段階 1(a) の技術検証（`spike/`）には付けていない。付けた版でも
+トレースのハッシュは `48852b7d2bddad63` のまま変わらないことを確かめたが、`spike/` は
+技術検証当時の記録であり、記録を後から作り直す理由が無いのでそのままにしてある。
+
+3 つの最小動作確認はいずれも、**同じ実行を 2 回して標準出力が完全に一致する**。速度の数値だけは
+標準エラー出力へ出す。実時間の測定値は繰り返さないため、標準出力に混ぜると一致の判定が壊れる
+からである。
+
+### 飛行が起動時のヒープの配置に依存する（既知の未解決の不具合）
+
+**`sfu_boot` の前にヒープへ触れると、飛行の結果が変わる。** 起動の前に 48 バイトを 1 回確保する
+だけで、ホバリングの成立が「Impact detected: 8.0G」による緊急 DISARM に反転する。ヒープを
+16 バイトずらすだけで反転し、確保した領域の中身は無関係である。本件は別の担当が調査中である。
+
+そのため、ここにある 3 つのホスト（2 つの C++ の最小動作確認と `sfu_module_check.mjs`）は
+いずれも、**`sfu_boot` が返るまでヒープに触れない**。コマンド行の解析は `argv` を指す
+`const char*` だけを持ち（`sfu_smoke_options.hpp`）、`run_id` の文字列とログのファイルは起動の
+後に作る。`sfu_module_check.mjs` の `_malloc` はすべて起動の前に、量も順序も決め打ちで行う。
+この規律を崩すと確認が成功と失敗に分かれるので、原因が取り除かれるまで守ること。
 
 ### 成果物の大きさ
 
 | 成果物 | 大きさ | 用途 |
 |---|---|---|
-| `sfu_firmware.wasm` | 442,003 バイト | Unity WebGL が `.jslib` 越しに読み込む |
-| `sfu_firmware.js` | 72,043 バイト | 同上（`createSfuFirmware` を出す読み込み側） |
-| `libsfu_firmware.dylib` | 518,536 バイト | Unity エディタ（macOS arm64）の開発用プラグイン |
+| `sfu_firmware.wasm` | 444,482 バイト | Unity WebGL が `.jslib` 越しに読み込む |
+| `sfu_firmware.js` | 72,352 バイト | 同上（`createSfuFirmware` を出す読み込み側） |
+| `libsfu_firmware.dylib` | 518,744 バイト | Unity エディタ（macOS arm64）の開発用プラグイン |
 
-dylib が公開する記号は `sfu_*` の 14 個だけである（`nm -gU` で確認）。ファーム・プラント・
+dylib が公開する記号は `sfu_*` の 17 個だけである（`nm -gU` で確認）。ファーム・プラント・
 スケジューラの記号は `-fvisibility=hidden` の裏に隠れたままで、Unity のエディタのプロセスの
 中から名前で届くものは無い。
 
@@ -79,31 +109,56 @@ ALL PASS であること、`emu_vehicle` が 1 秒ぶん走って `state=1 sub_m
 
 ### C ABI（`bridge/sfu_api.h`）
 
-Unity が呼ぶ入口は 14 個である。渡すものはすべて **Unity 自身の規約**（左手系・Y 上・
-クォータニオンは x,y,z,w の順・単位は m と秒と rad/s）で、NED／FRD への変換は C++ 側の
-`simulator/sils/frames/frames_unity.hpp` だけで行う。
+Unity が呼ぶ入口は 17 個である（ABI の版は **2**）。渡すものはすべて **Unity 自身の規約**
+（左手系・Y 上・クォータニオンは x,y,z,w の順・単位は m と秒と rad/s）で、NED／FRD への変換は
+C++ 側の `simulator/sils/frames/frames_unity.hpp` だけで行う。
 
 | 入口 | 役目 |
 |---|---|
 | `sfu_abi_version()` | ABI の版。他の何より先に突き合わせる |
 | `sfu_struct_size(which)` | 本モジュールが構造体をどの大きさにコンパイルしたか。C# 側が自分の `sizeof` と比べる |
 | `sfu_boot(&config)` | 電源投入。プラント初期化 → ペアリングの記録 → `app_main`（BSP ＋ 14 タスク）。2 回目はエラー |
-| `sfu_shutdown()` | タスクの巻き戻し。省略可 |
-| `sfu_step(&in, &out)` | 主経路。状態を注入 → `run_until(now + dt)` → 区間平均の合力・合トルクと状態を返す |
+| `sfu_shutdown()` | タスクの巻き戻しとスタックの解放。**この後は全ての入口が `SFU_ERR_SHUT_DOWN` を返す** |
+| `sfu_last_status()` | 直近の `sfu_step`／`sfu_shutdown` の結果。wasm で結果を読む手立て |
+| `sfu_step(&in, &out)` | 主経路。状態を注入 → `run_until(now + dt_us)` → 区間平均の合力・合トルクと状態を返す |
 | `sfu_param_count()` ／ `sfu_param_info(i, &out)` | ファームが公開する調整値（99 個）の数と素性 |
 | `sfu_param_set(name, value)` ／ `sfu_param_get(name, &out)` | 名前で読み書き。型は SSOT のテーブルから引く |
 | `sfu_set_wind(x, y, z)` | 一定の風力 [N]、Unity の世界系 |
 | `sfu_set_motor_health(motor, gain)` | モータごとの推力の健全度（1 = 正常、0 = 停止） |
 | `sfu_set_imu_bias(ax, ay, az, gx, gy, gz)` | 一定の生 IMU バイアス、機体ローカルの Unity 系 |
-| `sfu_log_read(buffer, capacity)` ／ `sfu_log_dropped()` | ファームのログをリングバッファから取り出す |
+| `sfu_log_read_record(&out)` ／ `sfu_log_dropped()` | ファームのログを**構造化した記録**として 1 つずつ取り出す |
+| `sfu_log_read(buffer, capacity)` | 同じものを改行区切りの文字列で取り出す（印字するだけの呼び出し側用） |
+| `sfu_set_log_level(level)` | 残す最も低い段。既定は `SFU_LOG_INFO`（`ESP_LOGD`／`ESP_LOGV` を捨てる） |
 
-構造体は 4 つあり、いずれも先頭に `uint32_t struct_size` を置き、呼び出し側が自分の宣言の
+構造体は 5 つあり、いずれも先頭に `uint32_t struct_size` を置き、呼び出し側が自分の宣言の
 `sizeof` を書き込む。橋渡しがそれと比べ、食い違えば `SFU_ERR_STRUCT_SIZE` を返す。短い構造体の
 末尾を越えて読む代わりにその場で拒否するためであり、後の版が構造体を末尾に伸ばしても古い
 呼び出し側が壊れないためでもある。
 
 この ABI での大きさ（ネイティブ arm64・wasm32 のどちらも同じ）: `SfuConfig` 48 バイト、
-`SfuStepIn` 96 バイト、`SfuStepOut` 160 バイト。
+`SfuStepIn` 96 バイト、`SfuStepOut` 168 バイト、`SfuParamInfo` 84 バイト、
+`SfuLogRecord` 272 バイト。
+
+### wasm では `sfu_step` の戻り値を読まない
+
+**wasm では `sfu_step` の戻り値は意味を持たない。`out->status`（または `sfu_last_status()`）を
+読むこと。** fiber 版スケジューラは呼び出しの途中でスタックを切り替え、Asyncify はそれを wasm
+スタック全体の巻き戻しと巻き直しで実現する。JavaScript が受け取るのは巻き直しの際に生じた値
+（0）であって、C のコードが返した値ではない。最小の例で再現して確かめてある。
+`out->status` は `sfu_step` が**最後に**記憶域へ書くので残る。ネイティブの呼び出し側は
+どちらを読んでもよいが、両方で動く必要のある呼び出し側は `status` を読む。
+
+### 刻み幅は整数のマイクロ秒
+
+`SfuStepIn::dt_us` は `uint32_t` で、秒ではなく**マイクロ秒**である。浮動小数を境界に出すと
+丸めが橋渡しの中で起き、呼び出し側がその結果を予測できない。整数であれば、`dt_us` の N 刻みは
+必ずちょうど `N × dt_us` に時計を置く（`just unity-native-test` が 12,000 刻みで確かめる）。
+
+- 0、または上限（`SFU_DT_US_MAX` = 100,000 µs = 100 ms）を超える値は `SFU_ERR_BAD_ARGUMENT`
+- 上限**ちょうど**は受理する
+- `SFU_PLANT_SUBSTEP_US`（250 µs）の倍数でない値も受理し、時計はちょうどその値だけ進む。
+  プラントは副刻みの端数を繰り越すので、端数は失われるのではなく**次の**刻みの
+  `wrench_dt_s` に現れる
 
 ### 1 刻みの処理
 
@@ -135,8 +190,10 @@ RC の注入を仮想時間で行うことが、刻みが RC 周期より長く�
 |---|---|
 | `bridge/sfu_api.h` | C ABI の宣言。C# 側はこれと同じ構造体を自分で宣言する |
 | `bridge/sfu_bridge.cpp` | その実装。起動手順は `simulator/sils/emu/emu_main.cpp` に倣う |
-| `bridge/sfu_log_ring.cpp` | ファームのログのリングバッファ（512 行 × 256 バイト） |
+| `bridge/sfu_log_ring.cpp` | ファームのログのリングバッファ（記録 512 個。1 記録 = 仮想時刻・段・タグ・本文） |
 | `bridge/shim/esp_log.h` | `ESP_LOGx` の行き先を stderr からそのリングバッファへ変える |
+| `bridge/sfu_log_jsonl.hpp` | 記録を JSON Lines で書き出す（`AGENTS.md` のログの決まりの形） |
+| `bridge/sfu_smoke_options.hpp` | 2 つの最小動作確認が共有するコマンド行の解析 |
 | `bridge/sfu_rc_script.hpp` | 2 つの最小動作確認が共有する台本の操縦入力 |
 | `bridge/sfu_bridge_smoke.cpp` | Unity 無しの最小動作確認（プラントが剛体を持つ） |
 | `bridge/sfu_external_smoke.cpp` | 外部供給の最小動作確認（C++ が Unity の代役） |
@@ -175,21 +232,84 @@ just unity-native-test 30
 `unity-native-test` が回すもの:
 
 1. `frames_unity_test` — Unity の座標変換の単体試験（28 項目）。ネイティブと wasm の両方
-2. `sfu_bridge_smoke` を 2 回実行し、標準出力を `diff` で突き合わせる
+2. `sfu_bridge_smoke` を 2 回実行し、標準出力を `diff` で突き合わせる（決定論）
 3. `sfu_external_smoke` を 2 回実行し、同じく突き合わせる
-4. 同じ 3 つを wasm（Node.js）でも実行する
+4. 同じ 2 つを wasm でも実行し、**ネイティブの出力と `diff` で突き合わせる**（バイト単位の一致）
 5. `sfu_module_check.mjs` — 出荷する `sfu_firmware.js` を JS から読み込み、構造体の大きさを
    `sfu_struct_size` と突き合わせてから 30 秒飛ばす
+6. JSON Lines のログを書き、`jq` が全行を読めることを確かめる
+7. `actuator_parity_test` — ビルド済みの SILS に在るときだけ
+
+`sfu_bridge_smoke` は飛行のほかに、ABI の約束も確かめる: 2 回目の `sfu_boot` が拒まれること、
+N 刻み後の `now_us` がちょうど N×2500 µs であること、範囲外の `dt_us` が丸められず拒まれること、
+`sfu_shutdown` の後は全ての入口が `SFU_ERR_SHUT_DOWN` を返すこと。`sfu_external_smoke` と
+`sfu_module_check.mjs` は飛行の途中で突風を当て、**終了時に水平付近へ戻っており FLYING のまま**
+であることを求める。高度だけではトルクの符号を確かめられない（符号を全反転させても同じ上昇が
+出る）ためで、反転させた版が実際に不合格になることを確かめてある。
 
 `actuator_parity_test`（`actuator_model.hpp` と MuJoCo 版 `plant.cpp` の電池電圧がビット一致
 することを確かめる）は MuJoCo を要するため、`simulator/sils` 側のターゲットにしてある。
+`unity-native-test` は、ビルド済みの SILS に在れば実行し、無ければ「省略した」と表示する。
 
 ```bash
 cmake --build <sils の build> --target actuator_parity_test
 <sils の build>/actuator_parity_test simulator/sils/models/stampfly.xml
 ```
 
+同試験は設定 2 つ（既定と、`motor_delay_ms = 8.0`・`torque_authority = 0.75`）で比べる。
+乱流と反トルクは MuJoCo 版に取り出し口が無いため比べられない ― 既知の穴で、詳しくは
+同ファイルの冒頭にある。
+
 ビルドの生成物（`build-*/`、`.cache/`）は git に入れない（`.gitignore` 済み）。
+
+## ファームのログを構造化した記録として取り出す
+
+ファームは無改変のまま `ESP_LOGx(tag, fmt, ...)` を呼ぶ。`bridge/shim/esp_log.h` の差し替えが
+それを受け、**文字列 1 本にする前の形**でリングバッファへ置く。1 記録が持つのはマクロが実際に
+持っていた 4 つである。
+
+| 欄 | 内容 |
+|---|---|
+| `sim_us` | その時点の仮想時刻 [µs]（壁時計ではない。2 回の実行で同じ値になる） |
+| `level` | `SFU_LOG_ERROR`／`_WARN`／`_INFO`／`_DEBUG`／`_VERBOSE`（`esp_log_level_t` と同じ数値） |
+| `tag` | `ESP_LOGx` のタグ |
+| `message` | 書式を適用した本文。**レベルやタグの接頭辞は付けない** |
+
+`ESP_LOGD`／`ESP_LOGV` はコンパイル時に消さず、リングの入口で閾値と比べて捨てる。閾値は
+`sfu_set_log_level` でいつでも動かせるので、動いているシミュレータをビルドし直さずに
+デバッグの段を出せる。既定は `SFU_LOG_INFO` で、SILS のホスト版と同じ振る舞いになる。
+
+3 つの最小動作確認は `--log-jsonl <path>` でこれを JSON Lines として書き出す。鍵は
+`AGENTS.md`「新しく書くコードのログの決まり」のとおり。`run_id` は実行ごとに入口で 1 つ発行し
+（`--run-id` で外から渡せる）、形は `lib/sfcli/utils/jsonl_log.py` の `new_run_id()` と同じ
+`YYYYMMDDTHHMMSSZ-` ＋ 16 進 8 桁である。`boot_id` は `<run_id>-b1`。
+
+```bash
+# ログを書きながら飛ばす（既定の出力先はビルドディレクトリの中で、git 管理外）
+./simulator/unity/native/build-native/sfu_bridge_smoke 30 \
+    --log-jsonl simulator/unity/native/build-native/logs/bridge_smoke.jsonl
+
+# 警告だけを読む
+jq -c 'select(.level=="warn")' simulator/unity/native/build-native/logs/bridge_smoke.jsonl
+
+# あるタグの行を仮想時刻つきで追う
+jq -r 'select(.tag=="StateManager") | "\(.sim_us) \(.msg)"' <path>
+```
+
+1 行はこの形になる。
+
+```json
+{"ts":"2026-09-20T11:35:54.459Z","level":"warn","src":"fw","event":"fw.log",
+ "run_id":"20260920T113554Z-5bee2788","boot_id":"20260920T113554Z-5bee2788-b1",
+ "sim_us":3000,"tag":"MagTask","msg":"BMM150 init failed: ESP_ERR — Mag disabled (Optional)"}
+```
+
+橋渡し自身の行は `src: "bridge"` で、`bridge.boot`／`bridge.shutdown`／`bridge.error` を出す。
+
+**ログを取り出してもシミュレーションの結果は変わらない。** 記録の取り出しは時計を動かさず、
+タスクを走らせず、プラントの状態にも触れない。ログを書く実行と書かない実行の標準出力が完全に
+一致することを確かめてある。2 回の実行で違うのは `ts` と `run_id` の末尾の乱数だけなので、
+一致を比べるときはその 2 つを除き、`sim_us`・`level`・`tag`・`msg` の列を比べる。
 
 ## 5. ソース一覧が変わっていないことの確かめ方
 
@@ -251,7 +371,7 @@ Chrome の実測は同じ `.js`／`.wasm` を素の HTML ページから読み�
 | C# 側で座標変換を書かないこと | `Rigidbody` の `position`・`rotation`・`linearVelocity`・`angularVelocity` をそのまま渡す（符号反転も軸の入替もしない）。`angularVelocity` は世界系のまま渡す。返る力とトルクは Unity の機体系なので `AddRelativeForce`・`AddRelativeTorque` にそのまま渡せる。詳しくは `frames_unity.hpp` の冒頭と `simulator/sils/docs/coordinate_frames.md` §7.5 |
 | 構造体の宣言 | C# 側は `sfu_api.h` と同じ 4 つの構造体を自分で宣言する。最初の呼び出しの前に `sfu_struct_size` で自分の `sizeof` と突き合わせること。`sfu_module_check.mjs` が JavaScript で同じことをしているので手本になる |
 | 1 刻みの手順の手本 | `bridge/sfu_external_smoke.cpp` が `SimLoop.Update()` と同じ順序で書いてある。状態を詰める → `sfu_step` → 力を加える → 積分する → 次の刻み用の加速度計の測定値を作る |
-| `takeWrench` の `dt_s` | 2.5 ms 固定ではない。プラントの副刻みの端数が繰り越されるため、最初の刻みは 2.25 ms になりうる。返ってきた `wrench_dt_s` を使うこと |
+| `wrench_dt_s` は診断用 | 返る `force_local`・`torque_local`・`wind_force_world` は**区間平均の力**である。力を自分の物理刻みで積分するのはホストなので、`AddRelativeForce` 等へはそのまま渡す ― `wrench_dt_s` を掛けたり割ったりしない。`wrench_dt_s` はその平均が覆う区間の長さで、2.5 ms 固定ではない（プラントが副刻みの端数を繰り越すため、最初の刻みは 2.25 ms になりうる）。ホストの刻みと大きく食い違っていれば何かがおかしい、と分かるための診断の値である |
 | エディタ用 dylib の読み込み直し | 再生のたびに読み込み直す仕組みは Unity プロジェクトと一緒に作る。段階 2 では dylib までとした |
 | 接触モデル | `sfu_external_smoke.cpp` の床は z=0 のばね・ダンパで、PhysX の接触ソルバではない。空中の軌跡は近いが、接地の瞬間から分かれる |
 | スタックの大きさ | タスクごとに 1 MiB（14 タスクで 14 MiB）。ファームの `config::STACK_*` は 32bit 向けの値なので従っていない |
@@ -300,30 +420,60 @@ WebAssembly build (fiber scheduler).
 
 | Executable | Build | Wall-clock per simulated second | Peak altitude | Final altitude | Verdict |
 |---|---|---|---|---|---|
-| `sfu_bridge_smoke` | native (thread) | 0.0091 s | 0.684 m | 0.485 m | hover OK |
-| `sfu_bridge_smoke` | wasm (fiber) / Node.js | 0.0028 s | 0.684 m | 0.492 m | hover OK |
-| `sfu_external_smoke` | native (thread) | 0.0085–0.0106 s | 0.681 m | 0.489 m | hover OK |
-| `sfu_external_smoke` | wasm (fiber) / Node.js | 0.0029–0.0030 s | 0.681 m | 0.476 m | hover OK |
-| `sfu_module_check.mjs` | wasm module / Node.js | 0.0027–0.0028 s | 0.681 m | 0.487 m | hover OK |
+| `sfu_bridge_smoke` | native (thread) | 0.0090 s | 0.684 m | 0.492 m | hover OK |
+| `sfu_bridge_smoke` | wasm (fiber) / Node.js | 0.0030 s | 0.684 m | 0.492 m | hover OK |
+| `sfu_external_smoke` | native (thread) | 0.0094 s | 0.680 m | 0.480 m | hover OK |
+| `sfu_external_smoke` | wasm (fiber) / Node.js | 0.0031 s | 0.680 m | 0.480 m | hover OK |
+| `sfu_module_check.mjs` | wasm module / Node.js | 0.0033 s | 0.680 m | 0.484 m | hover OK |
 
 All are far under the 0.30 s pass criterion. The thread build being about three times slower is
-consistent with why stage 1 chose the fiber scheduler (plan §9). The 0.476–0.492 m spread in the
-final altitude comes from per-compiler floating-point rounding and from the host integrators
-differing (C++ `float` against JavaScript's doubles).
+consistent with why stage 1 chose the fiber scheduler (plan §9).
 
-Both smoke checks **print identical stdout across two runs** (`just unity-native-test` confirms
-it with `diff`). Only the speed figure goes to stderr: a wall-clock measurement never repeats,
-and mixing it into stdout would break that check.
+### Native and wasm Agree BYTE FOR BYTE
+
+`sfu_bridge_smoke` and `sfu_external_smoke` print **identical stdout under native and under
+wasm**, and `just unity-native-test` confirms it with `diff` on every run. This section used to
+say the spread in the final altitude came from per-compiler floating-point rounding; that was
+not true. Only `sfu_module_check.mjs` differs, by a few millimetres, and that is its host
+integrator (C++ `float` against JavaScript's doubles), not the compiler.
+
+To keep the agreement, `CMakeLists.txt` adds `-ffp-contract=off` to **every target**. By default
+a compiler may contract `a*b + c` into one fused multiply-add, rounding once instead of twice,
+and Clang and Emscripten make that choice independently. Measured, **the flag changed neither
+side's output by a single bit** in this configuration — Emscripten was not contracting, and
+Xcode's clang was not contracting this code either. It is there so that a future compiler
+version or optimisation setting cannot quietly break the agreement.
+
+It is deliberately NOT added to the stage 1(a) spike in `spike/`. Adding it there was measured
+to leave the trace hash at `48852b7d2bddad63`, unchanged; `spike/` is the record of that
+measurement as it was taken, and there is no reason to rebuild a record after the fact.
+
+All three checks also **print identical stdout across two runs**. Only the speed figure goes to
+stderr: a wall-clock measurement never repeats, and mixing it into stdout would break that check.
+
+### The Flight Depends on the Heap Layout at Boot (a known open fault)
+
+**Touching the heap before `sfu_boot` changes the flight.** One 48-byte allocation ahead of the
+boot turns the hover into an emergency DISARM on "Impact detected: 8.0G"; a 16-byte shift is
+enough to flip it, and the contents of what was allocated are irrelevant. Someone else is
+investigating it.
+
+So all three hosts here — the two C++ checks and `sfu_module_check.mjs` — **leave the heap alone
+until `sfu_boot` returns**. Option parsing holds only `const char*` into `argv`
+(`sfu_smoke_options.hpp`); the `run_id` string and the log file are built after the boot; and
+`sfu_module_check.mjs` does all of its `_malloc` before the boot, in a fixed amount and order.
+Breaking that discipline makes the checks split into passing and failing runs, so keep to it
+until the cause is removed.
 
 ### Artefact Sizes
 
 | Artefact | Size | Purpose |
 |---|---|---|
-| `sfu_firmware.wasm` | 442,003 bytes | What Unity WebGL loads through `.jslib` |
-| `sfu_firmware.js` | 72,043 bytes | The loader beside it, exporting `createSfuFirmware` |
-| `libsfu_firmware.dylib` | 518,536 bytes | The development plugin for the Unity editor (macOS arm64) |
+| `sfu_firmware.wasm` | 444,482 bytes | What Unity WebGL loads through `.jslib` |
+| `sfu_firmware.js` | 72,352 bytes | The loader beside it, exporting `createSfuFirmware` |
+| `libsfu_firmware.dylib` | 518,744 bytes | The development plugin for the Unity editor (macOS arm64) |
 
-The dylib exposes exactly the 14 `sfu_*` symbols (confirmed with `nm -gU`). The firmware, plant
+The dylib exposes exactly the 17 `sfu_*` symbols (confirmed with `nm -gU`). The firmware, plant
 and scheduler symbols stay behind `-fvisibility=hidden`, so nothing inside the Unity editor's
 process can reach one by name.
 
@@ -342,7 +492,8 @@ The post-move build was also used to rebuild `emu_vehicle`, `rtos_smoke` and `fr
 
 ### The C ABI (`bridge/sfu_api.h`)
 
-Fourteen entry points. Everything crossing the boundary is in **Unity's own conventions**
+Seventeen entry points (the ABI revision is **2**). Everything crossing the boundary is in
+**Unity's own conventions**
 (left-handed, Y up, quaternion in x,y,z,w order, metres, seconds, radians per second); the
 conversion to NED/FRD happens only in `simulator/sils/frames/frames_unity.hpp`.
 
@@ -351,22 +502,47 @@ conversion to NED/FRD happens only in `simulator/sils/frames/frames_unity.hpp`.
 | `sfu_abi_version()` | The ABI revision; checked before anything else |
 | `sfu_struct_size(which)` | The size this module compiled a struct to, for the C# side to check its own `sizeof` against |
 | `sfu_boot(&config)` | Power on: plant init → seed the pairing store → `app_main` (BSP plus 14 tasks). A second call is an error |
-| `sfu_shutdown()` | Unwind the tasks. Optional |
-| `sfu_step(&in, &out)` | The main path: inject the state → `run_until(now + dt)` → return the interval-averaged force and torque plus the state |
+| `sfu_shutdown()` | Unwind the tasks and free their stacks. **After it every entry point returns `SFU_ERR_SHUT_DOWN`** |
+| `sfu_last_status()` | The result of the most recent `sfu_step` / `sfu_shutdown`; how to read a result under wasm |
+| `sfu_step(&in, &out)` | The main path: inject the state → `run_until(now + dt_us)` → return the interval-averaged force and torque plus the state |
 | `sfu_param_count()` / `sfu_param_info(i, &out)` | How many tuning parameters the firmware exposes (99) and their identity |
 | `sfu_param_set(name, value)` / `sfu_param_get(name, &out)` | Read and write by name; the type comes from the SSOT table |
 | `sfu_set_wind(x, y, z)` | Constant wind force [N] in Unity's world frame |
 | `sfu_set_motor_health(motor, gain)` | Per-motor thrust health (1 healthy, 0 dead) |
 | `sfu_set_imu_bias(ax, ay, az, gx, gy, gz)` | Constant raw IMU bias, body-local Unity frame |
-| `sfu_log_read(buffer, capacity)` / `sfu_log_dropped()` | Take the firmware's log out of the ring buffer |
+| `sfu_log_read_record(&out)` / `sfu_log_dropped()` | Take the firmware's log out as **structured records**, one at a time |
+| `sfu_log_read(buffer, capacity)` | The same thing as newline-separated text, for a caller that only prints |
+| `sfu_set_log_level(level)` | The lowest level kept; the default `SFU_LOG_INFO` discards `ESP_LOGD` / `ESP_LOGV` |
 
-Each of the four structs starts with `uint32_t struct_size`, which the caller fills with the
+Each of the five structs starts with `uint32_t struct_size`, which the caller fills with the
 `sizeof` of its OWN declaration. The bridge compares and returns `SFU_ERR_STRUCT_SIZE` on a
 mismatch, rather than reading past the end of a shorter struct — and so that a later version can
 grow a struct at the end without breaking an older caller.
 
 Sizes under this ABI (the same for native arm64 and for wasm32): `SfuConfig` 48 bytes,
-`SfuStepIn` 96 bytes, `SfuStepOut` 160 bytes.
+`SfuStepIn` 96 bytes, `SfuStepOut` 168 bytes, `SfuParamInfo` 84 bytes, `SfuLogRecord` 272 bytes.
+
+### Do Not Read `sfu_step`'s Return Value Under wasm
+
+**Under wasm the return value of `sfu_step` is meaningless — read `out->status` (or
+`sfu_last_status()`).** The fiber scheduler switches stacks inside the call, and Asyncify
+implements that by unwinding and rewinding the whole wasm stack, so what JavaScript receives is
+the rewind stub's value (0), not the one the C code returned. This was reproduced in a minimal
+example. `out->status` is the LAST thing `sfu_step` writes to memory, so it survives. A native
+caller may read either; a caller that must work in both places reads `status`.
+
+### The Step Is Whole Microseconds
+
+`SfuStepIn::dt_us` is a `uint32_t` of MICROSECONDS, not seconds. A float crossing the boundary
+would have to be rounded inside the bridge, where no caller could predict the result; with an
+integer, N ticks of `dt_us` land the clock on exactly `N × dt_us` (`just unity-native-test`
+confirms it over 12,000 ticks).
+
+- Zero, or anything above the cap (`SFU_DT_US_MAX` = 100,000 µs = 100 ms), is `SFU_ERR_BAD_ARGUMENT`
+- The cap **itself** is accepted
+- A value that is not a multiple of `SFU_PLANT_SUBSTEP_US` (250 µs) is accepted too, and the
+  clock advances by exactly that much. The plant carries its sub-step remainder over, so the
+  remainder appears in the NEXT tick's `wrench_dt_s` rather than being lost
 
 ### What Happens in One Tick
 
@@ -402,8 +578,10 @@ flies with the latter.
 |---|---|
 | `bridge/sfu_api.h` | The C ABI declarations; the C# side declares the same structs itself |
 | `bridge/sfu_bridge.cpp` | Its implementation; the startup follows `simulator/sils/emu/emu_main.cpp` |
-| `bridge/sfu_log_ring.cpp` | The firmware's log ring buffer (512 lines of 256 bytes) |
+| `bridge/sfu_log_ring.cpp` | The firmware's log ring buffer (512 records of virtual time, level, tag and body) |
 | `bridge/shim/esp_log.h` | Redirects `ESP_LOGx` from stderr into that ring buffer |
+| `bridge/sfu_log_jsonl.hpp` | Writes those records as JSON Lines, in `AGENTS.md`'s shape |
+| `bridge/sfu_smoke_options.hpp` | The command line both C++ checks share |
 | `bridge/sfu_rc_script.hpp` | The scripted stick input both smoke checks share |
 | `bridge/sfu_bridge_smoke.cpp` | The minimum-operation check without Unity (the plant owns the body) |
 | `bridge/sfu_external_smoke.cpp` | The externally supplied check (C++ stands in for Unity) |
@@ -442,21 +620,74 @@ just unity-native-test 30
 What `unity-native-test` runs:
 
 1. `frames_unity_test` — the Unity coordinate-transform unit test (28 checks), native and wasm
-2. `sfu_bridge_smoke` twice, with the two stdout streams compared by `diff`
+2. `sfu_bridge_smoke` twice, with the two stdout streams compared by `diff` (determinism)
 3. `sfu_external_smoke` twice, compared the same way
-4. The same three under wasm (Node.js)
+4. The same two under wasm, **compared against the native output with `diff`** (byte-identity)
 5. `sfu_module_check.mjs` — loads the shipped `sfu_firmware.js` from JS, checks the struct sizes
    against `sfu_struct_size`, and flies 30 seconds
+6. Writes a JSON Lines log and confirms `jq` can read every line of it
+7. `actuator_parity_test`, only when a built SILS has one
+
+`sfu_bridge_smoke` also checks the ABI's promises: a second `sfu_boot` is refused, `now_us` after
+N ticks is exactly N×2500 µs, an out-of-range `dt_us` is refused rather than clamped, and after
+`sfu_shutdown` every entry point returns `SFU_ERR_SHUT_DOWN`. `sfu_external_smoke` and
+`sfu_module_check.mjs` hit the vehicle with a gust partway through and require it to be **back
+near level and still FLYING at the end**: altitude alone cannot establish the torque's sign
+(reversing every component still produces the same climb), and the reversed build was confirmed
+to fail.
 
 `actuator_parity_test` (battery voltage bit-identical between `actuator_model.hpp` and the
 MuJoCo `plant.cpp`) needs MuJoCo, so it is a target on the `simulator/sils` side.
+`unity-native-test` runs it when a built SILS has one and prints "skipped" when it does not.
 
 ```bash
 cmake --build <the sils build> --target actuator_parity_test
 <the sils build>/actuator_parity_test simulator/sils/models/stampfly.xml
 ```
 
+It compares two configurations: the default, and `motor_delay_ms = 8.0` with
+`torque_authority = 0.75`. Turbulence and the reaction torque cannot be compared at all, because
+the MuJoCo Plant has no accessor for either — a known gap, described at the head of that file.
+
 Build outputs (`build-*/`, `.cache/`) are not committed (see `.gitignore`).
+
+## Taking the Firmware's Log Out as Structured Records
+
+The firmware calls `ESP_LOGx(tag, fmt, ...)` unmodified. The `bridge/shim/esp_log.h` placed
+earlier on the include path receives it and stores it in the ring **before it is made into one
+string** — the four things the macro actually had.
+
+| Field | Content |
+|---|---|
+| `sim_us` | The virtual clock at that moment [µs]; not the wall clock, so two runs agree |
+| `level` | `SFU_LOG_ERROR` / `_WARN` / `_INFO` / `_DEBUG` / `_VERBOSE` (the `esp_log_level_t` numbers) |
+| `tag` | The `ESP_LOGx` tag |
+| `message` | The body with the format applied. **No level or tag prefix is pasted on** |
+
+`ESP_LOGD` / `ESP_LOGV` are not compiled out; they reach the ring and are discarded there
+against a threshold the host moves with `sfu_set_log_level`, so a developer can turn the debug
+levels on in a running simulator without a rebuild. The default is `SFU_LOG_INFO`, which
+behaves as the SILS host build does.
+
+All three checks write this out as JSON Lines with `--log-jsonl <path>`, using the keys from
+`AGENTS.md`. `run_id` is issued once per run at the entrance (`--run-id` passes one in) in the
+same shape `lib/sfcli/utils/jsonl_log.py`'s `new_run_id()` produces: `YYYYMMDDTHHMMSSZ-` plus
+eight hex digits. `boot_id` is `<run_id>-b1`.
+
+```bash
+# Fly while writing the log (the default destination is inside the build directory, untracked)
+./simulator/unity/native/build-native/sfu_bridge_smoke 30 \
+    --log-jsonl simulator/unity/native/build-native/logs/bridge_smoke.jsonl
+
+# Read just the warnings
+jq -c 'select(.level=="warn")' simulator/unity/native/build-native/logs/bridge_smoke.jsonl
+```
+
+**Reading the log does not change the simulation.** Draining the ring moves no clock, runs no
+task and touches no plant state; a run that writes a log and one that does not were confirmed to
+print identical stdout. The only fields that differ between two runs are `ts` and the random
+tail of `run_id`, so a comparison leaves those out and compares `sim_us`, `level`, `tag` and
+`msg`.
 
 ## 5. How the Source Lists Were Checked
 
@@ -519,7 +750,7 @@ Difference" records what is known.
 | Do not write coordinate transforms in C# | Pass `Rigidbody.position`, `.rotation`, `.linearVelocity` and `.angularVelocity` straight through — no sign flips, no axis swaps. `angularVelocity` stays in the world frame. The returned force and torque are in Unity's body frame, so they go straight into `AddRelativeForce` and `AddRelativeTorque`. See the head of `frames_unity.hpp` and `simulator/sils/docs/coordinate_frames.md` §7.5 |
 | Declaring the structs | The C# side declares the same four structs as `sfu_api.h`, and checks its own `sizeof` against `sfu_struct_size` before the first call. `sfu_module_check.mjs` does exactly this in JavaScript and serves as the worked example |
 | The worked example for one tick | `bridge/sfu_external_smoke.cpp` is written in the order `SimLoop.Update()` will use: pack the state → `sfu_step` → apply the forces → integrate → compute the accelerometer reading for the next tick |
-| `takeWrench`'s `dt_s` | Not a fixed 2.5 ms. The plant carries its sub-tick remainder over, so the first tick can be 2.25 ms. Use the returned `wrench_dt_s` |
+| `wrench_dt_s` is for diagnosis | `force_local`, `torque_local` and `wind_force_world` are interval-AVERAGED forces. The host integrates them over its own physics step, so they go straight into `AddRelativeForce` and friends — do not multiply or divide by `wrench_dt_s`. That field is the length of the interval the average covers, which is not a fixed 2.5 ms (the plant carries its sub-step remainder over, so the first tick can be 2.25 ms). It is there so a host can notice when it has drifted far from its own tick |
 | Reloading the editor dylib | Reloading it between play sessions comes with the Unity project; stage 2 stops at the dylib |
 | Contact model | The floor in `sfu_external_smoke.cpp` is a spring-damper at z=0, not PhysX's contact solver. Trajectories are close in the air and part ways on impact |
 | Stack sizes | 1 MiB per task (14 MiB for 14 tasks). The firmware's `config::STACK_*` values are 32-bit figures and are deliberately not honoured |

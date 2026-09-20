@@ -64,7 +64,34 @@ namespace unity = sils::frames::unity;
 // -----------------------------------------------------------------------------
 
 sils::Plant g_plant;
-bool g_booted = false;
+
+/// Where the module is in its one and only lifetime. A plain pair of booleans
+/// would allow "shut down but not booted", which cannot happen; an enumeration
+/// says so in the type.
+/// モジュールがその唯一の生涯のどこにいるか。真偽値 2 つでは「起動していないのに
+/// 終了済み」という有り得ない状態を表せてしまう。列挙であれば型がそれを禁じる。
+enum class Lifetime {
+    NotBooted,   ///< before sfu_boot / sfu_boot の前
+    Running,     ///< after a successful sfu_boot / sfu_boot 成功後
+    ShutDown,    ///< after sfu_shutdown; the fiber stacks are freed / スタック解放済み
+};
+Lifetime g_lifetime = Lifetime::NotBooted;
+
+/// A latched fatal error. SFU_ERR_SCHEDULER_STALL leaves the firmware's stacks
+/// in an unknown state, so once it happens the module refuses to run further
+/// rather than stepping into whatever was left behind.
+/// 保持される致命的な誤り。SFU_ERR_SCHEDULER_STALL はファームのスタックを不明な
+/// 状態に残すので、一度起きたらモジュールはそれ以上動かない。残されたものの中へ
+/// 踏み込まないためである。
+int32_t g_fatal = SFU_OK;
+
+/// What the most recent sfu_step or sfu_shutdown produced. The only way to read
+/// a result under Asyncify, where the return value crossing into JavaScript is
+/// the rewind stub's and not the C function's.
+/// 直近の sfu_step か sfu_shutdown が出した値。Asyncify のもとで結果を読む唯一の
+/// 手立てである。JavaScript へ渡る戻り値は C の関数のものではなく巻き直しの
+/// 補助関数のものになるためである。
+int32_t g_last_status = SFU_OK;
 
 /// Whether the host injects the rigid body each tick (SfuConfig::host_owns_body).
 /// ホストが剛体を毎刻み注入するかどうか（SfuConfig::host_owns_body）。
@@ -249,6 +276,111 @@ const sf::params::ParamEntry* find_param(const char* name)
     return nullptr;
 }
 
+/// SFU_OK when the module may be stepped or disturbed right now, and the reason
+/// it may not otherwise. One place, so every entry point refuses for the same
+/// reasons in the same order.
+/// いま刻みや外乱を受け付けてよいなら SFU_OK、だめならその理由を返す。1 か所に
+/// まとめてあるので、どの入口も同じ理由を同じ順序で拒む。
+int32_t runnable_status()
+{
+    if (g_lifetime == Lifetime::ShutDown)  return SFU_ERR_SHUT_DOWN;
+    if (g_lifetime == Lifetime::NotBooted) return SFU_ERR_NOT_BOOTED;
+    if (g_fatal != SFU_OK)                 return g_fatal;
+    return SFU_OK;
+}
+
+/// Check everything sfu_step needs before it touches any state. Split out so
+/// the entry point itself reads as inject → advance → report.
+/// sfu_step が状態に触れる前に確かめるものをまとめる。入口そのものが
+/// 注入 → 前進 → 報告 と読めるように切り出してある。
+int32_t validate_step(const SfuStepIn* in, SfuStepOut* out)
+{
+    if (in == nullptr || out == nullptr) return SFU_ERR_NULL_ARGUMENT;
+    if (in->struct_size != sizeof(SfuStepIn)) return SFU_ERR_STRUCT_SIZE;
+    if (out->struct_size != sizeof(SfuStepOut)) return SFU_ERR_STRUCT_SIZE;
+
+    const int32_t runnable = runnable_status();
+    if (runnable != SFU_OK) return runnable;
+
+    // A zero step would advance nothing while still costing a full round trip,
+    // and a step past the cap means the host has fallen so far behind that it
+    // should slow the simulation down instead. Both are the caller's mistake,
+    // so both are refused rather than silently clamped.
+    // 0 の刻みは何も進めないのに往復の費用だけ掛かる。上限を超える刻みは、ホストが
+    // シミュレーションを遅らせるべきほど遅れていることを意味する。どちらも
+    // 呼び出し側の誤りなので、黙って丸めずに拒む。
+    const bool in_range = (in->dt_us > 0u && in->dt_us <= SFU_DT_US_MAX);
+    if (!in_range) return SFU_ERR_BAD_ARGUMENT;
+    return SFU_OK;
+}
+
+/// Put everything the host has into the plant: the rigid body, the raycasts and
+/// the sticks. The body and the raycasts go in only when the host owns them;
+/// with host_owns_body = 0 the plant's own integrator and its own downward-range
+/// synthesis stay in charge (sfu_bridge_smoke's path).
+/// ホストが持っている情報をプラントへ入れる。剛体・レイキャスト・スティック。
+/// 剛体とレイキャストを入れるのはホストがそれらを持つときだけである。
+/// host_owns_body = 0 ではプラント自身の積分器と、自前で作る下向きの距離が
+/// 引き続き担当する（sfu_bridge_smoke の経路）。
+void inject_host_state(const SfuStepIn& in)
+{
+    if (g_host_owns_body) {
+        g_plant.setExternalState(external_state_from(in));
+
+        sils::RangeInput range;
+        range.downward_m      = in.range_down_m;
+        range.downward_valid  = (in.range_down_valid != 0);
+        range.ground_height_m = in.ground_height_m;
+        g_plant.setRange(range);
+    }
+
+    g_rc_throttle = in.rc_throttle;
+    g_rc_roll     = in.rc_roll;
+    g_rc_pitch    = in.rc_pitch;
+    g_rc_yaw      = in.rc_yaw;
+    g_rc_flags    = in.rc_flags;
+}
+
+/// Advance the firmware by dt_us of virtual time. on_advance steps the plant
+/// and feeds the sticks along the way, so by the time this returns the whole
+/// tick has happened. A task that never yielded is fatal and latched.
+/// ファームを dt_us ぶんの仮想時間だけ進める。途中で on_advance がプラントを進め
+/// スティックを送るので、ここから戻るときには 1 刻みぶんがすべて済んでいる。
+/// トークンを返さなかったタスクは致命的で、その状態は保持される。
+int32_t advance_firmware(uint32_t dt_us)
+{
+    g_now_us += (int64_t)dt_us;
+    const bool advanced = sils::rtos::Scheduler::instance().run_until(g_now_us);
+    if (!advanced) {
+        g_fatal = SFU_ERR_SCHEDULER_STALL;
+        return g_fatal;
+    }
+    return SFU_OK;
+}
+
+/// Report what the rotors produced, the actuator state and the firmware's own
+/// view of the world.
+/// ロータが出したもの・アクチュエータの状態・ファーム自身が見ている世界を返す。
+void report_step(SfuStepOut& out)
+{
+    const sils::Wrench wrench = g_plant.takeWrench();
+    store_vec3(out.force_local,  unity::force_to_unity(wrench.force_frd));
+    store_vec3(out.torque_local, unity::torque_to_unity(wrench.torque_frd));
+    store_vec3(out.wind_force_world, unity::force_to_unity(wrench.wind_ned));
+    out.wrench_dt_s = wrench.dt_s;
+
+    float duty[SFU_MOTOR_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
+    sils_board_get_motor_duty(duty);
+    for (int motor = 0; motor < SFU_MOTOR_COUNT; ++motor) {
+        out.motor_duty[motor]  = duty[motor];
+        out.motor_omega[motor] = g_plant.motorOmega(motor);
+    }
+    out.battery_voltage = g_plant.batteryVoltage();
+    out.now_us = g_now_us;
+
+    fill_firmware_state(out);
+}
+
 }  // namespace
 
 // =============================================================================
@@ -266,6 +398,7 @@ int32_t sfu_struct_size(int32_t which)
         case SFU_STRUCT_STEP_IN:    return (int32_t)sizeof(SfuStepIn);
         case SFU_STRUCT_STEP_OUT:   return (int32_t)sizeof(SfuStepOut);
         case SFU_STRUCT_PARAM_INFO: return (int32_t)sizeof(SfuParamInfo);
+        case SFU_STRUCT_LOG_RECORD: return (int32_t)sizeof(SfuLogRecord);
         default:                    return SFU_ERR_BAD_INDEX;
     }
 }
@@ -274,7 +407,8 @@ int32_t sfu_boot(const SfuConfig* config)
 {
     if (config == nullptr) return SFU_ERR_NULL_ARGUMENT;
     if (config->struct_size != sizeof(SfuConfig)) return SFU_ERR_STRUCT_SIZE;
-    if (g_booted) return SFU_ERR_ALREADY_BOOTED;
+    if (g_lifetime == Lifetime::ShutDown) return SFU_ERR_SHUT_DOWN;
+    if (g_lifetime == Lifetime::Running) return SFU_ERR_ALREADY_BOOTED;
 
     // The plant takes no model file: this build links plant_external.cpp, which
     // has no MuJoCo and takes its rigid body from the host.
@@ -309,82 +443,79 @@ int32_t sfu_boot(const SfuConfig* config)
     // にあたる。
     sf::params::set_bool("calibration.enable", config->boot_calibration != 0);
 
-    g_booted = true;
+    g_lifetime = Lifetime::Running;
     return SFU_OK;
 }
 
 int32_t sfu_shutdown(void)
 {
-    if (!g_booted) return SFU_ERR_NOT_BOOTED;
+    // Refuse a second shutdown BEFORE the scheduler is touched. The fiber
+    // scheduler's shutdown() frees each task's stack; running it twice would
+    // free them again, and a later sfu_step would switch onto memory that is no
+    // longer ours. Marking the module finished is what closes that door.
+    // 2 回目の終了は、スケジューラに触れる**前**に拒む。fiber 版スケジューラの
+    // shutdown() は各タスクのスタックを解放するので、2 度走らせれば二重解放になり、
+    // その後の sfu_step は既に自分のものでない記憶域へ切り替えてしまう。モジュールを
+    // 終了済みにすることが、その扉を閉じる手立てである。
+    if (g_lifetime == Lifetime::ShutDown) {
+        g_last_status = SFU_ERR_SHUT_DOWN;
+        return SFU_ERR_SHUT_DOWN;
+    }
+    if (g_lifetime == Lifetime::NotBooted) {
+        g_last_status = SFU_ERR_NOT_BOOTED;
+        return SFU_ERR_NOT_BOOTED;
+    }
+
+    g_lifetime = Lifetime::ShutDown;
     sils::rtos::Scheduler::instance().shutdown();
+    g_last_status = SFU_OK;
     return SFU_OK;
 }
 
 int32_t sfu_step(const SfuStepIn* in, SfuStepOut* out)
 {
-    if (in == nullptr || out == nullptr) return SFU_ERR_NULL_ARGUMENT;
-    if (in->struct_size != sizeof(SfuStepIn)) return SFU_ERR_STRUCT_SIZE;
-    if (out->struct_size != sizeof(SfuStepOut)) return SFU_ERR_STRUCT_SIZE;
-    if (!g_booted) return SFU_ERR_NOT_BOOTED;
-
-    // 1. Inject what the host has: the rigid body, the raycasts, the sticks.
-    //    The rigid body and the raycasts go in only when the host owns them;
-    //    with host_owns_body = 0 the plant's own integrator and its own
-    //    downward-range synthesis stay in charge (sfu_bridge_smoke's path).
-    // 1. ホストが持っている情報を注入する: 剛体・レイキャスト・スティック。
-    //    剛体とレイキャストを入れるのはホストがそれらを持つときだけである。
-    //    host_owns_body = 0 ではプラント自身の積分器と、自前で作る下向きの距離が
-    //    引き続き担当する（sfu_bridge_smoke の経路）。
-    if (g_host_owns_body) {
-        g_plant.setExternalState(external_state_from(*in));
-
-        sils::RangeInput range;
-        range.downward_m      = in->range_down_m;
-        range.downward_valid  = (in->range_down_valid != 0);
-        range.ground_height_m = in->ground_height_m;
-        g_plant.setRange(range);
+    // Three steps, in order: inject what the host has, advance the firmware,
+    // report what came out. Everything before that is refusals.
+    // 3 つの段を順に: ホストが持っている情報を注入し、ファームを進め、出てきた
+    // ものを報告する。その前にあるのは拒否だけである。
+    const int32_t rejected = validate_step(in, out);
+    if (rejected != SFU_OK) {
+        // `out` may be unusable (null, or the wrong size), so only a caller
+        // that gave a well-formed struct gets the code in it. The rest read
+        // sfu_last_status().
+        // `out` は使えないかもしれない（null、あるいは大きさ違い）ので、値を
+        // 書き入れてもらえるのは正しい形の構造体を渡した呼び出し側だけである。
+        // 残りは sfu_last_status() を読む。
+        const bool out_is_usable =
+            (out != nullptr && out->struct_size == sizeof(SfuStepOut));
+        if (out_is_usable) out->status = rejected;
+        g_last_status = rejected;
+        return rejected;
     }
 
-    g_rc_throttle = in->rc_throttle;
-    g_rc_roll     = in->rc_roll;
-    g_rc_pitch    = in->rc_pitch;
-    g_rc_yaw      = in->rc_yaw;
-    g_rc_flags    = in->rc_flags;
+    inject_host_state(*in);
 
-    // 2. Advance the firmware. on_advance steps the plant and feeds the sticks
-    //    along the way, so by the time this returns the whole tick has happened.
-    // 2. ファームを進める。途中で on_advance がプラントを進めスティックを送るので、
-    //    ここから戻るときには 1 刻みぶんがすべて済んでいる。
-    // Round, never truncate: (double)0.0025f is 0.00249999994..., so a cast
-    // would advance the firmware clock by 2499 us per tick and let it lag the
-    // host physics by 0.04 % forever.
-    // 切り捨てではなく四捨五入する。(double)0.0025f は 0.00249999994… なので、
-    // キャストだと 1 刻みが 2499 us になり、ファームの時計がホストの物理に対して
-    // 0.04 % 遅れ続ける。
-    g_now_us += (int64_t)std::llround((double)in->dt_s * 1e6);
-    const bool advanced = sils::rtos::Scheduler::instance().run_until(g_now_us);
-    if (!advanced) return SFU_ERR_SCHEDULER_STALL;
-
-    // 3. Report what the rotors produced and the firmware's own position estimate.
-    // 3. ロータが出したものと、ファームが推定した自機の位置を返す。
-    const sils::Wrench wrench = g_plant.takeWrench();
-    store_vec3(out->force_local,  unity::force_to_unity(wrench.force_frd));
-    store_vec3(out->torque_local, unity::torque_to_unity(wrench.torque_frd));
-    store_vec3(out->wind_force_world, unity::force_to_unity(wrench.wind_ned));
-    out->wrench_dt_s = wrench.dt_s;
-
-    float duty[SFU_MOTOR_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
-    sils_board_get_motor_duty(duty);
-    for (int motor = 0; motor < SFU_MOTOR_COUNT; ++motor) {
-        out->motor_duty[motor]  = duty[motor];
-        out->motor_omega[motor] = g_plant.motorOmega(motor);
+    const int32_t advanced = advance_firmware(in->dt_us);
+    if (advanced != SFU_OK) {
+        out->status = advanced;
+        g_last_status = advanced;
+        return advanced;
     }
-    out->battery_voltage = g_plant.batteryVoltage();
-    out->now_us = g_now_us;
 
-    fill_firmware_state(*out);
+    report_step(*out);
+
+    // Written LAST, after every other field: under Asyncify this is the only
+    // value that reaches a JavaScript caller (see sfu_api.h's head note), so a
+    // caller that sees SFU_OK here knows the rest of the struct is filled in.
+    // 他の全ての欄の後、**最後に**書く。Asyncify のもとで JavaScript の呼び出し側
+    // へ届く値はこれだけであり（sfu_api.h 冒頭の注記）、ここに SFU_OK を見た
+    // 呼び出し側は、構造体の残りが埋まっていることを知れる。
+    out->status = SFU_OK;
+    g_last_status = SFU_OK;
     return SFU_OK;
 }
+
+int32_t sfu_last_status(void) { return g_last_status; }
 
 int32_t sfu_param_count(void) { return sf::params::count(); }
 
@@ -457,14 +588,16 @@ int32_t sfu_param_get(const char* name, double* out)
 
 int32_t sfu_set_wind(float world_x, float world_y, float world_z)
 {
-    if (!g_booted) return SFU_ERR_NOT_BOOTED;
+    const int32_t runnable = runnable_status();
+    if (runnable != SFU_OK) return runnable;
     g_plant.setWind(unity::force_from_unity(Vec3{world_x, world_y, world_z}));
     return SFU_OK;
 }
 
 int32_t sfu_set_motor_health(int32_t motor, float gain)
 {
-    if (!g_booted) return SFU_ERR_NOT_BOOTED;
+    const int32_t runnable = runnable_status();
+    if (runnable != SFU_OK) return runnable;
     if (motor < 0 || motor >= SFU_MOTOR_COUNT) return SFU_ERR_BAD_INDEX;
     g_plant.setHealth((int)motor, gain);
     return SFU_OK;
@@ -473,7 +606,8 @@ int32_t sfu_set_motor_health(int32_t motor, float gain)
 int32_t sfu_set_imu_bias(float accel_x, float accel_y, float accel_z,
                          float gyro_x, float gyro_y, float gyro_z)
 {
-    if (!g_booted) return SFU_ERR_NOT_BOOTED;
+    const int32_t runnable = runnable_status();
+    if (runnable != SFU_OK) return runnable;
     // The accelerometer bias is a polar vector and the gyro bias an axial one,
     // the same as the readings they offset.
     // 加速度計のバイアスは極性ベクトル、ジャイロのバイアスは軸性ベクトルである。

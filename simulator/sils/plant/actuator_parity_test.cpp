@@ -49,6 +49,22 @@
  * （倍率を出すには MuJoCo 側の機体の高さが要るが、アクチュエータのモデルはそれを
  * 持たない）。
  *
+ * **Turbulence and the reaction torque are NOT compared, because the MuJoCo
+ * Plant has no way to read either one out.** Its turbulence force and its
+ * yaw reaction torque are applied straight to the MuJoCo body and never
+ * published, so there is nothing on that side to compare the actuator model's
+ * values against. They are therefore transcriptions this test cannot guard:
+ * a change to either formula must be made in both files by hand, and checked by
+ * reading them side by side. Giving the MuJoCo Plant an accessor for the two
+ * would bring them into this test; until then, this is a known gap.
+ *
+ * **乱流と反トルクは比べていない。MuJoCo 版にどちらの取り出し口も無いからである。**
+ * 向こうの乱流の力とヨーの反トルクは MuJoCo の剛体へ直接加えられ、publish される
+ * ことがない。よって比べる相手がそちら側に存在しない。この 2 つは本試験が守れない
+ * 写しであり、どちらかの式を変えるときは両方のファイルを手で直し、並べて読んで
+ * 確かめるほかない。MuJoCo 版に取り出し口を足せば本試験の対象にできる。それまでは
+ * 既知の穴である。
+ *
  * ## Running it / 実行のしかた
  *
  *   actuator_parity_test <path to simulator/sils/models/stampfly.xml>
@@ -109,15 +125,43 @@ constexpr int kSteps = 1600;
 constexpr int kHealthDropStep = 600;   // 1.5 s
 constexpr int kWindStep       = 1000;  // 2.5 s
 
-/// The configuration both plants are given. The battery model is ON, which is
-/// what makes the voltage a running check on the ODE; everything else is left at
-/// its default so the comparison covers the path the scenarios actually use.
-/// 両方のプラントに与える設定。電池モデルを ON にすることで、電圧が ODE の継続的な
-/// 検査になる。それ以外は既定のままにして、シナリオが実際に通る経路を比べる。
-sils::Plant::Config make_config()
+/// The default configuration: the battery model ON — which is what makes the
+/// voltage a running check on the ODE — and everything else left alone, so the
+/// comparison covers the path the scenarios actually use.
+/// 既定の設定。電池モデルを ON にすることで電圧が ODE の継続的な検査になり、
+/// それ以外は既定のままにして、シナリオが実際に通る経路を比べる。
+sils::Plant::Config default_config()
 {
     sils::Plant::Config cfg;
     cfg.batt_model_enable = true;
+    return cfg;
+}
+
+/// A second configuration that moves two knobs the default leaves alone.
+///
+/// Both were chosen because they reach the BATTERY CHAIN, which is what this
+/// test can actually observe. `motor_delay_ms` delays the duty on its way to
+/// the motors, so every ω trajectory — and therefore every current, and
+/// therefore the voltage — is shifted in time. `torque_authority` scales the
+/// roll/pitch differential torque, which is computed from the same per-motor
+/// thrusts the current is; a transcription error in either one shows up in the
+/// voltage within a few steps. A knob that only touched the rigid body would be
+/// invisible here, which is why the two are these two.
+///
+/// 既定が動かさない 2 つのノブを動かす第 2 の設定。
+///
+/// どちらも**電池の鎖**へ効くから選んである。本試験が実際に観測できるのはそこ
+/// だからである。`motor_delay_ms` は duty がモータへ届くまでを遅らせるので、ω の
+/// 軌跡すべてが ― したがって電流が、したがって電圧が ― 時間方向にずれる。
+/// `torque_authority` はロール／ピッチの差動トルクの倍率で、そのトルクは電流と同じ
+/// 各モータ推力から作られる。どちらの写し間違いも数ステップのうちに電圧に現れる。
+/// 剛体にしか効かないノブはここからは見えない。2 つがこの 2 つである理由である。
+sils::Plant::Config delayed_config()
+{
+    sils::Plant::Config cfg;
+    cfg.batt_model_enable = true;
+    cfg.motor_delay_ms    = 8.0f;    // longer than the 2.5 ms control period
+    cfg.torque_authority  = 0.75f;   // deliberately not 1
     return cfg;
 }
 
@@ -152,25 +196,21 @@ sf::MotorOutput scripted_duty(int i, float hover_duty)
     return cmd;
 }
 
-}  // namespace
-
-int main(int argc, char** argv)
+/// Run one configuration end to end and report each check. Written as a
+/// function so a second configuration costs one more call rather than a copy of
+/// the whole body.
+/// 1 つの設定を端から端まで走らせ、各検査を報告する。関数にしてあるので、第 2 の
+/// 設定は本体の複製ではなく呼び出し 1 つで済む。
+void run_configuration(const char* model_path, const sils::Plant::Config& cfg,
+                       const char* label)
 {
-    if (argc < 2) {
-        std::fprintf(stderr,
-                     "usage: actuator_parity_test <stampfly.xml>\n"
-                     "使い方: actuator_parity_test <stampfly.xml>\n");
-        return 1;
-    }
-
-    std::printf("actuator_parity_test — actuator_model.hpp vs the MuJoCo Plant\n");
-
-    const sils::Plant::Config cfg = make_config();
+    std::printf("\n-- %s --\n", label);
 
     sils::Plant plant;
-    if (!plant.init(argv[1], cfg)) {
-        std::fprintf(stderr, "[parity] plant init failed: %s\n", argv[1]);
-        return 1;
+    if (!plant.init(model_path, cfg)) {
+        std::fprintf(stderr, "[parity] plant init failed: %s\n", model_path);
+        ++g_failures;
+        return;
     }
     // Start the body on the ground, level and at rest, so the MuJoCo side sees
     // the same situation a scenario starts from.
@@ -267,7 +307,32 @@ int main(int argc, char** argv)
           "dutyToThrust after discharge");
     check(bit_equal(plant.hoverDuty(), actuator.hoverDuty()),
           "hoverDuty after discharge");
+}
 
-    std::printf("%s (%d failure(s))\n", g_failures == 0 ? "ALL PASS" : "FAILED", g_failures);
+}  // namespace
+
+int main(int argc, char** argv)
+{
+    if (argc < 2) {
+        std::fprintf(stderr,
+                     "usage: actuator_parity_test <stampfly.xml>\n"
+                     "使い方: actuator_parity_test <stampfly.xml>\n");
+        return 1;
+    }
+
+    std::printf("actuator_parity_test — actuator_model.hpp vs the MuJoCo Plant\n");
+
+    // Two configurations, not one. The default alone would leave
+    // `motor_delay_ms` and `torque_authority` at values that never exercise
+    // their statements, so a transcription error in either could sit in
+    // actuator_model.hpp unnoticed.
+    // 設定は 1 つではなく 2 つ。既定だけでは `motor_delay_ms` と
+    // `torque_authority` が、それぞれの文を一度も動かさない値のままになる。
+    // どちらの写し間違いも actuator_model.hpp の中で気づかれずに残りうる。
+    run_configuration(argv[1], default_config(), "default configuration");
+    run_configuration(argv[1], delayed_config(),
+                      "motor_delay_ms = 8.0, torque_authority = 0.75");
+
+    std::printf("\n%s (%d failure(s))\n", g_failures == 0 ? "ALL PASS" : "FAILED", g_failures);
     return g_failures == 0 ? 0 : 1;
 }

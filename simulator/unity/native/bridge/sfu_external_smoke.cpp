@@ -32,19 +32,37 @@
  * Euler with a spring-damper floor, standing in for PhysX. It is NOT a claim
  * about what PhysX will do; PhysX's contact solver and this floor will part ways
  * on impact. What it does establish is that the force and torque crossing the
- * ABI are the right magnitude, the right sign and in the right frame, because a
- * vehicle flown by wrong ones does not take off and hold.
+ * ABI are the right magnitude, the right sign and in the right frame.
  *
  * ここの物理は「動く最も単純なもの」を意図的に選んである。準陰的オイラーと、
  * ばね・ダンパの床で、PhysX の代役である。PhysX がどう振る舞うかを主張するもの
  * ではない。PhysX の接触ソルバとこの床は、接地の瞬間から分かれる。確かめられる
- * のは、ABI を渡る力とトルクの大きさ・符号・座標系が正しいことである。それらが
- * 違っていれば、機体は離陸して保持しないからである。
+ * のは、ABI を渡る力とトルクの大きさ・符号・座標系が正しいことである。
+ *
+ * ## Why a gust, and why the attitude is a verdict / なぜ突風を入れ、姿勢で判定するか
+ *
+ * Altitude alone does NOT establish the torque's sign. A vertical take-off into
+ * an undisturbed hover starts level and stays level, so the attitude loop is
+ * never asked to correct anything and the torque stays near zero: reversing
+ * every torque component still produces the same climb. This check therefore
+ * pushes the vehicle off level with a lateral gust partway through the flight,
+ * and requires it to be **back near level and still FLYING at the end**. With
+ * the torque reversed, the attitude loop's correction drives the tilt further
+ * instead of back, and the vehicle tumbles — so the reversed build fails.
+ *
+ * 高度だけではトルクの符号を確かめられない。外乱の無いホバリングへ鉛直に離陸する
+ * 飛行は、水平に始まり水平のままなので、姿勢ループは何も直すよう求められず、
+ * トルクは 0 付近に留まる。トルクの全成分を反転させても同じ上昇が出てしまう。
+ * よってこの確認は、飛行の途中で横向きの突風を当てて機体を水平から外し、
+ * **終了時に水平付近へ戻っており、かつ FLYING のままであること**を求める。トルクが
+ * 反転していれば、姿勢ループの修正は傾きを戻さず深める向きに働き、機体は転がる ―
+ * 反転させた版は不合格になる。
  *
  * Usage / 使い方:
- *   sfu_external_smoke [simulated seconds, default 30]
+ *   sfu_external_smoke [simulated seconds, default 30] [--log-jsonl <path>]
  *
  * @design docs/plans/unity-simulator.md §3 1 刻みの処理, §5 段階 2
+ *         AGENTS.md「新しく書くコードのログの決まり」
  */
 
 #include <chrono>
@@ -52,8 +70,12 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include <string>
+
 #include "sfu_api.h"
+#include "sfu_log_jsonl.hpp"
 #include "sfu_rc_script.hpp"
+#include "sfu_smoke_options.hpp"
 
 namespace {
 
@@ -82,12 +104,46 @@ constexpr float kFloorDampingNsPerM  = 3.0f;
 
 /// Host tick: 2.5 ms, the 400 Hz the Unity SimLoop will run its physics at.
 /// ホストの刻み: 2.5 ms。Unity の SimLoop が物理を回す 400 Hz である。
-constexpr float kTickSeconds = 0.0025f;
+constexpr uint32_t kTickUs = 2500;
+constexpr float kTickSeconds = (float)kTickUs * 1e-6f;
 
 constexpr float kRestHeightM = 0.013f;
 
 constexpr double kHoverMinM = 0.15;
 constexpr double kHoverMaxM = 3.0;
+
+/// The gust: a lateral force in the Unity world frame, switched on well after
+/// the vehicle is airborne and switched off again, so the attitude loop has to
+/// both absorb it and recover from it before the run ends.
+/// 突風。Unity の世界系での横向きの力で、機体が十分に浮いてから入れ、また切る。
+/// 姿勢ループは、実行が終わるまでにそれを受け止め、かつそこから戻らなければ
+/// ならない。
+constexpr int64_t kGustStartUs = 10000000;   // 10 s
+constexpr int64_t kGustEndUs   = 12000000;   // 12 s
+/// Sized against the weight (0.037 kg · 9.81 = 0.363 N): about a fifth of it,
+/// enough to tilt the vehicle several degrees and make the attitude loop work,
+/// far too little to throw it out of the hover band on its own.
+/// 重量（0.037 kg · 9.81 = 0.363 N）に対する大きさ。その 5 分の 1 ほどで、機体を
+/// 数度傾けて姿勢ループを働かせるには十分、単独でホバリングの帯から放り出すには
+/// まったく足りない。
+constexpr float kGustForceN = 0.07f;
+
+/// The verdict on the attitude: the vehicle must end within this much of level.
+/// A build with the torque's sign reversed does not come back at all — it
+/// tumbles — so the threshold only has to separate "recovered" from "tumbling",
+/// not to be a tight performance figure.
+/// 姿勢についての判定。機体は水平からこの範囲内で終わらなければならない。トルクの
+/// 符号を反転させた版はそもそも戻らず転がるので、閾値は「戻った」と「転がった」を
+/// 分けられればよく、厳しい性能の数値である必要は無い。
+constexpr double kLevelMaxDeg = 20.0;
+
+/// `sf::FlightState::FLYING` as the ABI reports it. Written out as a number
+/// rather than included from the firmware's header, because this check touches
+/// `sfu_api.h` and nothing else — exactly the position the C# side is in.
+/// ABI が返す `sf::FlightState::FLYING` の値。ファームのヘッダから取り込まずに
+/// 数値で書くのは、この確認が触れるのが `sfu_api.h` だけだからである ― C# 側が
+/// 置かれるのとまさに同じ立場である。
+constexpr int32_t kFlightStateFlying = 5;
 
 /// A three-component vector in Unity's frame. Deliberately its own tiny type
 /// rather than sf::math::Vec3, so nothing here can reach a StampFly-frame helper
@@ -277,11 +333,146 @@ void pack_state(const Body& body, SfuStepIn& in)
     in.ground_height_m = body.position.y;
 }
 
+/// The angle between the vehicle's own up axis and the world's, in degrees.
+/// Zero when level, 180 when inverted — one number that says how far from level
+/// the vehicle is, whichever way it tipped.
+/// 機体自身の上方向と世界の上方向のなす角 [度]。水平で 0、反転で 180 ― どちらへ
+/// 倒れたかによらず、水平からどれだけ離れているかを 1 つの数で表す。
+double tilt_from_level_deg(const UQuat& rotation)
+{
+    const UVec3 body_up = rotate_to_world(rotation, UVec3{0.0f, 1.0f, 0.0f});
+    double cosine = (double)body_up.y;
+    if (cosine > 1.0) cosine = 1.0;
+    if (cosine < -1.0) cosine = -1.0;
+    constexpr double kDegPerRad = 57.29577951308232;
+    return std::acos(cosine) * kDegPerRad;
+}
+
+/// What the run is judged on, gathered as it goes.
+/// 実行の判定に使うもの。進行しながら集める。
+struct Verdict {
+    double max_altitude = 0.0;
+    double last_altitude = 0.0;
+    double last_tilt_deg = 0.0;
+    double max_tilt_deg = 0.0;
+    int32_t last_flight_state = 0;
+};
+
+/// Switch the gust on at its start and off at its end. Stated as "the force the
+/// gust has at this moment", so the same call works however long a tick is.
+/// 突風を、始まりで入れ、終わりで切る。「この時点で突風が持つ力」として書いてある
+/// ので、刻みの長さに関わらず同じ呼び出しで済む。
+void apply_gust(int64_t now_us, bool& gust_is_on)
+{
+    const bool should_be_on = (now_us >= kGustStartUs && now_us < kGustEndUs);
+    if (should_be_on == gust_is_on) return;
+    gust_is_on = should_be_on;
+    // Unity's +X is right: a sideways push, which rolls the vehicle.
+    // Unity の +X は右。横向きに押すので、機体はロールする。
+    sfu_set_wind(should_be_on ? kGustForceN : 0.0f, 0.0f, 0.0f);
+}
+
+/// One line per simulated second, so a failing run leaves a readable trace.
+/// シミュレーション 1 秒に 1 行。失敗した実行が読める記録を残すようにするため。
+void report_second(const SfuStepOut& out, const Verdict& verdict)
+{
+    std::printf("EXT t=%6.2f alt=%7.3f tilt=%5.1f state=%d armed=%d vbatt=%.2f "
+                "force=%7.4f,%7.4f,%7.4f dt=%.6f\n",
+                (double)out.now_us * 1e-6, verdict.last_altitude, verdict.last_tilt_deg,
+                (int)out.flight_state, (int)out.armed, out.battery_voltage,
+                out.force_local[0], out.force_local[1], out.force_local[2],
+                out.wrench_dt_s);
+}
+
+/// The flight itself. Returns SFU_OK, or the code the bridge refused with.
+/// 飛行そのもの。SFU_OK か、橋渡しが拒んだ値を返す。
+int32_t fly(double sim_seconds, sfu::JsonlLog& log, Verdict& verdict)
+{
+    Body body;
+    SfuStepIn  in{};
+    SfuStepOut out{};
+    in.struct_size  = sizeof(SfuStepIn);
+    out.struct_size = sizeof(SfuStepOut);
+    in.dt_us = kTickUs;
+
+    int64_t next_report_us = 0;
+    bool gust_is_on = false;
+
+    const int64_t total_us = (int64_t)(sim_seconds * 1e6);
+    while (out.now_us < total_us) {
+        // --- What SimLoop.Update() does, in order ---
+        // --- SimLoop.Update() が行うことを、その順序で ---
+        pack_state(body, in);
+        sfu::rc_script_at(out.now_us + (int64_t)kTickUs,
+                          in.rc_throttle, in.rc_roll, in.rc_pitch, in.rc_yaw, in.rc_flags);
+        apply_gust(out.now_us, gust_is_on);
+
+        const int32_t stepped = sfu_step(&in, &out);
+        if (stepped != SFU_OK) return stepped;
+
+        body.accel_local = advance_body(body, out, kTickSeconds);
+
+        verdict.last_altitude = body.position.y;
+        if (verdict.last_altitude > verdict.max_altitude) {
+            verdict.max_altitude = verdict.last_altitude;
+        }
+        verdict.last_tilt_deg = tilt_from_level_deg(body.rotation);
+        if (verdict.last_tilt_deg > verdict.max_tilt_deg) {
+            verdict.max_tilt_deg = verdict.last_tilt_deg;
+        }
+        verdict.last_flight_state = out.flight_state;
+
+        if (out.now_us >= next_report_us) {
+            constexpr int64_t kReportPeriodUs = 1000000;
+            next_report_us += kReportPeriodUs;
+            report_second(out, verdict);
+            // Drain the firmware's log on the same cadence, which is also what
+            // a host does: read once per frame, not once at the end.
+            // ファームのログも同じ周期で取り出す。ホストが行うのもこれである ―
+            // 最後に 1 回ではなく、1 コマに 1 回読む。
+            log.drain_firmware();
+        }
+    }
+    return SFU_OK;
+}
+
+/// Print the verdict and say whether the run passed.
+/// 判定を印字し、実行が合格したかを返す。
+bool announce(const Verdict& verdict)
+{
+    std::printf("[external_smoke] max altitude %.3f m, final altitude %.3f m\n",
+                verdict.max_altitude, verdict.last_altitude);
+    std::printf("[external_smoke] max tilt %.1f deg, final tilt %.1f deg, state %d\n",
+                verdict.max_tilt_deg, verdict.last_tilt_deg,
+                (int)verdict.last_flight_state);
+
+    // Three conditions, all of them necessary. Altitude alone passes with the
+    // torque reversed; the tilt and the flight state are what do not.
+    // 3 つの条件で、どれも欠かせない。高度だけではトルクを反転させても通ってしまう。
+    // 通らなくするのが傾きと飛行状態である。
+    const bool hovering = (verdict.last_altitude > kHoverMinM &&
+                           verdict.last_altitude < kHoverMaxM);
+    const bool level = (verdict.last_tilt_deg < kLevelMaxDeg);
+    const bool flying = (verdict.last_flight_state == kFlightStateFlying);
+
+    std::printf("[external_smoke] hover %s (altitude %s, level %s, FLYING %s)\n",
+                (hovering && level && flying) ? "OK" : "FAILED",
+                hovering ? "OK" : "FAILED", level ? "OK" : "FAILED",
+                flying ? "OK" : "FAILED");
+    return hovering && level && flying;
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
 {
-    const double sim_seconds = (argc > 1) ? std::atof(argv[1]) : 30.0;
+    const sfu::SmokeOptions options = sfu::parse_smoke_options(argc, argv);
+    if (!options.ok) {
+        std::fprintf(stderr,
+                     "usage: sfu_external_smoke [seconds] [--log-jsonl <path>] "
+                     "[--run-id <id>]\n");
+        return 1;
+    }
 
     SfuConfig config{};
     config.struct_size      = sizeof(SfuConfig);
@@ -298,65 +489,49 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    Body body;
-    SfuStepIn  in{};
-    SfuStepOut out{};
-    in.struct_size  = sizeof(SfuStepIn);
-    out.struct_size = sizeof(SfuStepOut);
-    in.dt_s = kTickSeconds;
+    // Only NOW may anything allocate. One run, one run_id, issued here and
+    // carried by every line the run writes — the firmware's and the bridge's
+    // alike. See sfu_smoke_options.hpp on why this waits for the boot.
+    // 確保を行ってよいのはここからである。1 回の実行に 1 つの run_id を発行し、
+    // この実行が書く全ての行が持つ ― ファームのものも橋渡しのものも同じように。
+    // なぜ起動を待つのかは sfu_smoke_options.hpp を参照。
+    const std::string run_id = (options.run_id != nullptr)
+        ? std::string(options.run_id) : sfu::make_run_id();
+    sfu::JsonlLog log(
+        (options.log_jsonl_path != nullptr) ? std::string(options.log_jsonl_path)
+                                            : std::string(), run_id);
+    log.write_bridge("info", "bridge.boot", -1, "sfu_boot");
 
-    double max_altitude = 0.0;
-    double last_altitude = 0.0;
-    int64_t next_report_us = 0;
-
-    const int64_t total_us = (int64_t)(sim_seconds * 1e6);
+    Verdict verdict;
     const auto wall_start = std::chrono::steady_clock::now();
-    while (out.now_us < total_us) {
-        // --- What SimLoop.Update() does, in order ---
-        // --- SimLoop.Update() が行うことを、その順序で ---
-        pack_state(body, in);
-        sfu::rc_script_at(out.now_us + (int64_t)(kTickSeconds * 1e6),
-                          in.rc_throttle, in.rc_roll, in.rc_pitch, in.rc_yaw, in.rc_flags);
+    const int32_t flown = fly(options.sim_seconds, log, verdict);
+    const double wall_seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
 
-        const int32_t stepped = sfu_step(&in, &out);
-        if (stepped != SFU_OK) {
-            std::fprintf(stderr, "[external_smoke] sfu_step failed: %d\n", (int)stepped);
-            return 1;
-        }
-
-        body.accel_local = advance_body(body, out, kTickSeconds);
-
-        last_altitude = body.position.y;
-        if (last_altitude > max_altitude) max_altitude = last_altitude;
-
-        if (out.now_us >= next_report_us) {
-            constexpr int64_t kReportPeriodUs = 1000000;
-            next_report_us += kReportPeriodUs;
-            std::printf("EXT t=%6.2f alt=%7.3f state=%d armed=%d vbatt=%.2f "
-                        "force=%7.4f,%7.4f,%7.4f dt=%.6f\n",
-                        (double)out.now_us * 1e-6, last_altitude,
-                        (int)out.flight_state, (int)out.armed, out.battery_voltage,
-                        out.force_local[0], out.force_local[1], out.force_local[2],
-                        out.wrench_dt_s);
-        }
+    if (flown != SFU_OK) {
+        log.write_bridge("error", "bridge.error", -1, "sfu_step failed");
+        std::fprintf(stderr, "[external_smoke] sfu_step failed: %d\n", (int)flown);
+        return 1;
     }
 
     // The speed goes to stderr, not stdout: two runs must print identical
     // stdout, and a wall-clock measurement never repeats exactly.
     // 速度は stdout ではなく stderr へ出す。2 回の実行の stdout は一致しなければ
     // ならず、実時間の測定値がそのまま繰り返されることはないからである。
-    const double wall_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - wall_start).count();
     std::fprintf(stderr,
                  "[external_smoke] simulated %.1f s in %.3f s of wall clock — "
                  "REAL TIME PER SIMULATED SECOND = %.4f s (target <= 0.30)\n",
-                 sim_seconds, wall_seconds, wall_seconds / sim_seconds);
+                 options.sim_seconds, wall_seconds, wall_seconds / options.sim_seconds);
 
-    std::printf("[external_smoke] max altitude %.3f m, final altitude %.3f m\n",
-                max_altitude, last_altitude);
-    const bool hovering = (last_altitude > kHoverMinM && last_altitude < kHoverMaxM);
-    std::printf("[external_smoke] hover %s\n", hovering ? "OK" : "FAILED");
+    const bool passed = announce(verdict);
+
+    log.drain_firmware();
+    log.write_bridge("info", "bridge.shutdown", -1, passed ? "hover OK" : "hover FAILED");
+    if (log.is_open()) {
+        std::fprintf(stderr, "[external_smoke] log %s (run_id %s)\n",
+                     (options.log_jsonl_path != nullptr ? options.log_jsonl_path : ""), run_id.c_str());
+    }
 
     sfu_shutdown();
-    return hovering ? 0 : 2;
+    return passed ? 0 : 2;
 }

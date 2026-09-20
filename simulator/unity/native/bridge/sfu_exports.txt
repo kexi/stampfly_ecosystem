@@ -14,6 +14,7 @@ _sfu_abi_version
 _sfu_struct_size
 _sfu_boot
 _sfu_shutdown
+_sfu_last_status
 _sfu_step
 _sfu_param_count
 _sfu_param_info
@@ -23,4 +24,6 @@ _sfu_set_wind
 _sfu_set_motor_health
 _sfu_set_imu_bias
 _sfu_log_read
+_sfu_log_read_record
 _sfu_log_dropped
+_sfu_set_log_level

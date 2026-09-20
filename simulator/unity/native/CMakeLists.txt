@@ -36,6 +36,27 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# -ffp-contract=off, on EVERY target in this project, both toolchains.
+#
+# By default a compiler may contract `a*b + c` into one fused multiply-add,
+# which rounds once instead of twice. Clang and Emscripten make that choice
+# independently, so the same source can produce different last bits on the two
+# — and then the native and wasm minimum-operation checks cannot be compared
+# byte for byte, which is exactly what `just unity-native-test` does. Turning
+# contraction off costs a little speed (the checks run about 100x faster than
+# real time either way) and buys an output that is identical everywhere.
+#
+# -ffp-contract=off を、本プロジェクトの**全ての**ターゲットに、両方の
+# ツールチェーンで付ける。
+#
+# 既定では、コンパイラは `a*b + c` を 1 つの積和融合へ縮約してよいことになって
+# いる。縮約すると丸めが 2 回でなく 1 回になる。Clang と Emscripten はその選択を
+# 別々に行うので、同じソースから両者で下位ビットの違う結果が出うる。すると
+# ネイティブと wasm の最小動作確認をバイト単位で比べられない ― それこそが
+# `just unity-native-test` の行うことである。縮約を切ると速度をいくらか失うが
+# （どちらにせよ確認は実時間の約 100 倍で走る）、どこでも同一の出力が得られる。
+add_compile_options(-ffp-contract=off)
+
 # Paths. NATIVE_DIR is this directory; the rest are derived from it so the
 # project can be configured from anywhere.
 # パス。NATIVE_DIR はこのディレクトリで、残りはそこから導く。どこから構成しても
@@ -197,7 +218,7 @@ if(EMSCRIPTEN)
   # なので、モジュールの作り直しがそのまま再起動である。
   # ---------------------------------------------------------------------------
   set(SFU_WASM_EXPORTS
-      _sfu_abi_version,_sfu_struct_size,_sfu_boot,_sfu_shutdown,_sfu_step,_sfu_param_count,_sfu_param_info,_sfu_param_set,_sfu_param_get,_sfu_set_wind,_sfu_set_motor_health,_sfu_set_imu_bias,_sfu_log_read,_sfu_log_dropped,_malloc,_free)
+      _sfu_abi_version,_sfu_struct_size,_sfu_boot,_sfu_shutdown,_sfu_last_status,_sfu_step,_sfu_param_count,_sfu_param_info,_sfu_param_set,_sfu_param_get,_sfu_set_wind,_sfu_set_motor_health,_sfu_set_imu_bias,_sfu_log_read,_sfu_log_read_record,_sfu_log_dropped,_sfu_set_log_level,_malloc,_free)
 
   # A library exports nothing on its own, so the module needs a translation unit
   # of its own to link. It is empty on purpose: every entry point comes from
@@ -213,7 +234,7 @@ if(EMSCRIPTEN)
     LINK_FLAGS "${SFU_WASM_RUNTIME_FLAGS} \
 -sMODULARIZE=1 -sEXPORT_NAME=createSfuFirmware -sEXIT_RUNTIME=0 \
 -sEXPORTED_FUNCTIONS=[${SFU_WASM_EXPORTS}] \
--sEXPORTED_RUNTIME_METHODS=[ccall,cwrap,getValue,setValue,HEAPU8,HEAPF32,HEAP32]")
+-sEXPORTED_RUNTIME_METHODS=[ccall,cwrap,getValue,setValue,UTF8ToString,HEAPU8,HEAPF32,HEAP32,HEAPU32]")
 else()
   # ---------------------------------------------------------------------------
   # libsfu_firmware.dylib — the macOS arm64 plugin the Unity editor loads, so the

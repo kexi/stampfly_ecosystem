@@ -15,6 +15,17 @@
 # 単位を集められるようにするためである。変数名も中身も、直書きされていたときの
 # ままにしてあるので、既存の各ターゲットのソース一覧は移動前と同じである。
 #
+# MOVING THIS FILE MEANS FIXING THE RELATIVE PATHS INSIDE IT. The paths below
+# are written relative to THIS file's directory (simulator/sils/cmake/), so a
+# move to another depth changes how many levels each `../` has to climb. CMake
+# will not warn: a glob that matches nothing simply yields an empty list, and
+# the build then fails much later with undefined symbols.
+# このファイルを別のディレクトリへ移すときは、中の相対パスの段数を直すこと。
+# 下のパスは**このファイル**のディレクトリ（simulator/sils/cmake/）からの相対で
+# 書いてあるので、深さの違う場所へ移すと `../` が登るべき段数が変わる。CMake は
+# 警告しない。何にも一致しない glob はただ空の一覧になり、ビルドはずっと後に
+# なって未定義記号で落ちる。
+#
 # The includer must define VN (the firmware/vehicle directory) beforehand.
 # It sets: EMU_FW_SRCS, EMU_FW_INCS, CMAKE_C_STANDARD.
 # 読み込む側は VN（firmware/vehicle のディレクトリ）を先に定義しておくこと。

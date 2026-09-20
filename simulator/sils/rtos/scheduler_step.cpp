@@ -41,11 +41,13 @@
  *      calls run_until() forever would grow that vector without bound. Define
  *      SILS_SCHEDULER_STEP_TRACE=1 to record it anyway, for the cross-check
  *      against the fiber scheduler (spike/step_trace.cpp does exactly that).
- *   2. No hang budget. run()'s grant_and_wait() gives a task ten wall-clock
- *      seconds and then calls std::abort(). Aborting the process is right for a
- *      batch run and wrong inside an application, so this file waits without a
- *      deadline for the token and reports a failure to hand it over by
- *      returning false.
+ *   2. A longer hang budget, and no abort. run()'s grant_and_wait() gives a task
+ *      ten wall-clock seconds and then calls std::abort(). Aborting the process
+ *      is right for a batch run and wrong inside an application, so this file
+ *      waits up to sixty seconds (an interactive host may sit at a breakpoint
+ *      or be descheduled, and must not be mistaken for a hung task) and reports
+ *      a failure to hand the token over by returning false. The caller decides
+ *      what to do about it; the bridge treats it as fatal and latches it.
  *
  * run() のループとの、意図的な相違は 2 点。どちらも対話的なホストに必要なもので、
  * スケジュール自体は変えない:
@@ -54,10 +56,13 @@
  *      を延々と呼ぶホストではこの列が際限なく伸びる。fiber 版との突き合わせで
  *      記録が要るときは SILS_SCHEDULER_STEP_TRACE=1 を定義する
  *      （spike/step_trace.cpp がそうしている）。
- *   2. ハング上限を持たない。run() の grant_and_wait() はタスクに壁時計 10 秒を
- *      与え、過ぎると std::abort() する。一括実行では正しいが、アプリケーションの
- *      中でプロセスを落とすのは誤り。よって本ファイルはトークンを期限なしで待ち、
- *      受け渡しに失敗したことは false を返して伝える。
+ *   2. ハング上限が長く、abort しない。run() の grant_and_wait() はタスクに壁時計
+ *      10 秒を与え、過ぎると std::abort() する。一括実行では正しいが、
+ *      アプリケーションの中でプロセスを落とすのは誤り。よって本ファイルは 60 秒まで
+ *      待ち（対話的なホストはブレークポイントで止まったり OS に退避させられたり
+ *      するので、ハングしたタスクと取り違えてはならない）、トークンの受け渡しに
+ *      失敗したことは false を返して伝える。どうするかは呼び出し側が決める。
+ *      橋渡しはこれを致命的なものとして保持する。
  *
  * @design docs/plans/unity-simulator.md — 段階 2 ネイティブコア
  */
