@@ -262,4 +262,27 @@ else()
     # 静的ライブラリから sfu_* の入口を再 export する。これが無いとリンカが落とす。
     # dylib の中からそれらを呼ぶものは無いからである。
     LINK_FLAGS "-Wl,-exported_symbols_list,${NATIVE_DIR}/bridge/sfu_exports.txt")
+
+  # ---------------------------------------------------------------------------
+  # sfu_shutdown_check — proves `sfu_shutdown` always returns and always gives
+  # its threads back, from every point in the module's lifetime and from a
+  # thread other than the one that stepped.
+  #
+  # It does NOT link sfu_firmware. It opens the dylib with `dlopen` exactly as
+  # `EditorFirmware` does, because the deadlock it guards against lived in the
+  # relationship between a host and a loaded module — a check that linked the
+  # firmware statically could not hold two modules at once, which is the state
+  # the editor is in after a second play session.
+  #
+  # sfu_shutdown_check — `sfu_shutdown` が、モジュールの生涯のどの時点からでも、
+  # また刻んだのとは別のスレッドからでも、必ず戻り必ずスレッドを返すことを確かめる。
+  #
+  # sfu_firmware をリンク**しない**。`EditorFirmware` と同じく `dlopen` で dylib を
+  # 開く。防ぐ対象のデッドロックが、ホストと読み込まれたモジュールの関係の中に
+  # 在ったからである。ファームを静的にリンクする確認では、モジュールを 2 つ同時に
+  # 持てない ― 2 回目の再生の後のエディタはその状態に在る。
+  # ---------------------------------------------------------------------------
+  add_executable(sfu_shutdown_check ${NATIVE_DIR}/bridge/sfu_shutdown_check.cpp)
+  target_include_directories(sfu_shutdown_check PRIVATE ${NATIVE_DIR}/bridge)
+  add_dependencies(sfu_shutdown_check sfu_firmware_shared)
 endif()

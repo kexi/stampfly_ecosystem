@@ -56,6 +56,25 @@ unity-native-test seconds="30": unity-native-build
     ./simulator/unity/native/build-native/sfu_external_smoke {{ seconds }} 2>/dev/null > simulator/unity/native/build-native/external_smoke.run2.txt
     diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-native/external_smoke.run2.txt
     @echo "[unity-native-test] native: frames_unity_test OK; both smoke checks hover and repeat identically"
+    # `sfu_shutdown` must always return and always give its threads back. It once
+    # did not: booting and shutting down without a single `sfu_step` in between
+    # left all fourteen task threads parked forever, which is how the Unity
+    # editor hung (`SimLoop.BootFirmware` boots and returns without stepping that
+    # frame). Ten repetitions over eight tick counts — 0 first, the one that hung
+    # — from a thread other than the one that stepped, with a second module
+    # resident and booted throughout, as the editor has after a second play
+    # session. Each repetition must come back to the same live thread count, so a
+    # teardown that returns but leaks is caught too.
+    # `sfu_shutdown` は必ず戻り、必ずスレッドを返さなければならない。かつてそうで
+    # なかった。間に `sfu_step` を 1 回も挟まずに起動して終了すると、14 本のタスクの
+    # スレッドが永久に待機したままになり、それが Unity のエディタが固まった経路で
+    # ある（`SimLoop.BootFirmware` は起動してその frame では刻まずに戻る）。刻みの
+    # 回数 8 通り ― 固まった 0 を先頭に ― を 10 回繰り返し、刻んだのとは別のスレッド
+    # から、もう 1 つのモジュールを起動したまま常駐させて行う。2 回目の再生の後の
+    # エディタがその状態だからである。繰り返しごとに同じスレッド数へ戻ることも
+    # 求めるので、戻りはするが漏らす後始末も捕まえられる。
+    ./simulator/unity/native/build-native/sfu_shutdown_check \
+        simulator/unity/native/build-native/libsfu_firmware.dylib 10
     # The same two flights with the heap shifted before `sfu_boot`. The flight
     # must not depend on where the heap sits: it once did, because the fiber
     # scheduler took its task stacks from `malloc` (8-byte aligned under wasm32)

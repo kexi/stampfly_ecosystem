@@ -75,6 +75,27 @@
 namespace sils {
 namespace rtos {
 
+// Whether the last shutdown() gave up on a task that would not yield the
+// run-token and therefore left its thread and its 1 MiB stack behind. A host
+// that keeps running can report the leak; a host about to exit can ignore it.
+//
+// A FREE function declared here rather than a member on Scheduler, because
+// scheduler.hpp must not be touched at all: the existing builds (emu_vehicle
+// and the smoke targets) compile against that header, and the fiber scheduler
+// mirrors it. Anything that wants this declares it itself — only a host that
+// links THIS file can call it, which is exactly the set of callers it is for.
+//
+// 直近の shutdown() が、実行トークンを返さないタスクを諦め、そのスレッドと 1 MiB
+// のスタックを残したかどうか。動き続けるホストはその漏れを報告でき、終了間際の
+// ホストは無視してよい。
+//
+// Scheduler のメンバではなくここの**自由関数**にするのは、scheduler.hpp に一切
+// 手を触れないためである。既存のビルド（emu_vehicle と各スモーク）は同ヘッダを
+// コンパイル対象としており、fiber 版もそれに倣っている。必要とする側が自分で
+// 宣言すればよく、呼べるのは**本ファイル**をリンクしたホストだけ ― それこそが
+// この関数の宛先の全体である。
+bool shutdown_left_threads();
+
 namespace {
 
 // The entry-time on_advance has already been delivered at the current virtual
@@ -89,6 +110,14 @@ namespace {
 // しているクラスのレイアウトが変わってしまう。
 bool g_entry_hook_delivered = false;
 
+// What shutdown_left_threads() above reports. Set by shutdown() when it gave up
+// on a task that would not yield the token and therefore left that thread and
+// its stack behind. A file-local flag for the same reason as the one above.
+// 上の shutdown_left_threads() が報告するもの。shutdown() が、トークンを返さない
+// タスクを諦め、そのスレッドとスタックを残したときに立つ。ファイル内の変数に
+// する理由は上のものと同じである。
+bool g_shutdown_incomplete = false;
+
 // Wall-clock budget for one task step. The ONLY use of the wall clock here, and
 // only as a detector for a task that never yields; the schedule itself uses the
 // virtual clock alone. Generous, because a host that stops at a breakpoint or
@@ -98,6 +127,18 @@ bool g_entry_hook_delivered = false;
 // 上限を大きく取るのは、ブレークポイントで止まったホストや OS に退避させられた
 // ホストを、ハングしたタスクと取り違えないため。
 constexpr std::chrono::seconds kStepHangBudget{60};
+
+// Wall-clock budget for ONE grant during shutdown(), which is much shorter than
+// the one above on purpose. A task being torn down does no work: it wakes in a
+// blocking primitive and throws. Anything that takes seconds there is not slow,
+// it is stuck, and the caller is a host waiting to close a play session — the
+// one place where waiting a minute is worse than leaking a thread.
+// shutdown() での付与 1 回あたりの壁時計上限。上のものよりずっと短いのは意図的で
+// ある。片付けられるタスクは仕事をしない。ブロッキングプリミティブの中で起きて
+// throw するだけである。そこで何秒も掛かるものは、遅いのではなく詰まっている。
+// そして呼び出し側は再生の終了を待つホストである ― 1 分待つことがスレッド 1 本を
+// 漏らすことより悪くなる、唯一の場面である。
+constexpr std::chrono::seconds kTeardownGrantBudget{2};
 
 // Hand the run-token to `task` and wait until it yields it back. Identical to
 // run()'s grant_and_wait() except for what happens when the budget expires:
@@ -114,19 +155,21 @@ constexpr std::chrono::seconds kStepHangBudget{60};
 bool grant_and_wait_no_abort(std::unique_lock<std::mutex>& lk,
                              Task* task,
                              Task*& running,
-                             std::condition_variable& sched_cv)
+                             std::condition_variable& sched_cv,
+                             std::chrono::seconds budget,
+                             const char* caller)
 {
     running = task;
     task->state = TaskState::Running;
     task->cv.notify_all();
-    const bool yielded = sched_cv.wait_for(lk, kStepHangBudget,
+    const bool yielded = sched_cv.wait_for(lk, budget,
                                            [&] { return running == nullptr; });
     if (!yielded) {
         std::fprintf(stderr,
-                     "[scheduler] run_until: task '%s' did not yield within %llds — "
+                     "[scheduler] %s: task '%s' did not yield within %llds — "
                      "infinite loop without a blocking primitive?\n",
-                     task->name.c_str(),
-                     static_cast<long long>(kStepHangBudget.count()));
+                     caller, task->name.c_str(),
+                     static_cast<long long>(budget.count()));
     }
     return yielded;
 }
@@ -154,7 +197,8 @@ bool Scheduler::run_until(int64_t target_us)
 #ifdef SILS_SCHEDULER_STEP_TRACE
             trace_.push_back({now_us_, next->id});
 #endif
-            if (!grant_and_wait_no_abort(lk, next, running_, sched_cv_)) {
+            if (!grant_and_wait_no_abort(lk, next, running_, sched_cv_,
+                                         kStepHangBudget, "run_until")) {
                 return false;
             }
             continue;
@@ -224,14 +268,104 @@ bool Scheduler::run_until(int64_t target_us)
 
 void Scheduler::shutdown()
 {
-    // The same teardown run() performs at its end (unwind every parked task and
-    // join its thread). Exposed so a run_until() driver can do it once its own
-    // loop is finished.
-    // run() が末尾で行うのと同じ後始末（待機中の各タスクを巻き戻してスレッドを
-    // join する）。run_until() で回すホストが自分のループを終えたときに実行できる
-    // よう公開する。
-    stop_all();
+    // Unwind every task thread and join it, the same end state run() reaches
+    // through stop_all(). The loop below is NOT stop_all(), and the difference
+    // is the whole reason this function exists — see the note above.
+    // 各タスクのスレッドを巻き戻して join し、run() が stop_all() で到達するのと
+    // 同じ終状態にする。下のループは stop_all() ではなく、その違いこそがこの関数の
+    // 存在理由である。上の注記を参照。
+    g_shutdown_incomplete = false;
+
+    {
+        std::unique_lock<std::mutex> lk(m_);
+        shutdown_ = true;
+
+        // Keep granting the token to whatever has not exited yet, sweep after
+        // sweep, until a whole sweep finds nothing left to do.
+        //
+        // One sweep is not enough. A task whose thread has never been granted
+        // the token is still parked in run_task_thread's FIRST wait, before it
+        // has entered the firmware's task function at all. Granting the token
+        // there does not unwind it: run_task_thread does not test shutdown_
+        // before the call, so the task runs its setup for the first time and
+        // then parks in a blocking primitive — now inside block_current, where
+        // the throw lives. It needs a SECOND grant to unwind, and a single pass
+        // over tasks_ has already moved on.
+        //
+        // まだ終了していないものへトークンを渡す掃きを、何も残らない掃きに至るまで
+        // 繰り返す。
+        //
+        // 1 周では足りない。一度もトークンを渡されていないタスクのスレッドは、
+        // run_task_thread の**最初の**待機に留まっており、ファームのタスク関数へ
+        // まだ入ってすらいない。そこでトークンを渡しても巻き戻しは起きない。
+        // run_task_thread は呼び出しの前に shutdown_ を見ないので、タスクは初めて
+        // 自分の setup を走らせ、そしてブロッキングプリミティブで待機する ―
+        // throw が在る block_current の中である。巻き戻すには**2 度目の**付与が
+        // 要るが、tasks_ の 1 周はもう先へ進んでしまっている。
+        //
+        // This is the deadlock the Unity editor met: `sfu_boot` creates the
+        // fourteen task threads but runs none of them, so a host that boots and
+        // shuts down without a single `sfu_step` in between left every task
+        // parked in `ulTaskNotifyTake`/`vTaskDelay` with nobody to grant it
+        // again, and the join at the end waited forever. run() never meets it
+        // because its loop has already run every task by the time it tears down.
+        //
+        // Unity のエディタが出会ったデッドロックがこれである。`sfu_boot` は 14 本の
+        // タスクのスレッドを作るがどれも走らせないので、間に `sfu_step` を 1 回も
+        // 挟まずに起動して終了したホストでは、全タスクが `ulTaskNotifyTake`／
+        // `vTaskDelay` で待機したまま、再び付与する者が居なくなり、末尾の join が
+        // 永久に待った。run() がこれに出会わないのは、後始末に入る時点でループが
+        // 既に全タスクを走らせているからである。
+        bool made_progress = true;
+        while (made_progress) {
+            made_progress = false;
+            for (Task* task : tasks_) {
+                if (task->exited) continue;
+                made_progress = true;
+                if (!grant_and_wait_no_abort(lk, task, running_, sched_cv_,
+                                             kTeardownGrantBudget, "shutdown")) {
+                    // The task never gave the token back. Granting the token to
+                    // anything else now would race that task, so stop handing it
+                    // out and leave the rest parked: a leak is recoverable, a
+                    // schedule with two tasks running is not.
+                    // トークンが返らなかった。ここで他へ渡せばそのタスクと競合する
+                    // ので、付与をやめ、残りは待機させたままにする。漏れは取り返せる
+                    // が、2 つのタスクが同時に走るスケジュールは取り返せない。
+                    g_shutdown_incomplete = true;
+                    made_progress = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Join what has exited. A thread that never yielded the token is NOT joined
+    // — joining it would be the very wait this function exists to bound — so its
+    // stack and its thread stay behind and `shutdown_left_threads()` says so.
+    // Leaking is the lesser evil: the alternative is the hang.
+    // 終了したものを join する。トークンを返さなかったスレッドは join **しない** ―
+    // それこそが、この関数が上限を設けている当の待ちだからである ― ので、その
+    // スタックとスレッドは残り、`shutdown_left_threads()` がそれを伝える。漏らす
+    // 方がましである。そうしない道は、あの固まりだからである。
+    for (Task* task : tasks_) {
+        const bool joinable_and_done = task->exited && task->thread.joinable();
+        if (joinable_and_done) {
+            task->thread.join();
+        } else if (task->thread.joinable()) {
+            // Detach so the std::thread object can be destroyed without
+            // std::terminate, which is what a joinable thread's destructor does.
+            // std::thread の破棄で std::terminate にならないよう detach する。
+            // join 可能なままのスレッドのデストラクタはそうするからである。
+            task->thread.detach();
+        }
+    }
+
     g_entry_hook_delivered = false;
+}
+
+bool shutdown_left_threads()
+{
+    return g_shutdown_incomplete;
 }
 
 }  // namespace rtos
