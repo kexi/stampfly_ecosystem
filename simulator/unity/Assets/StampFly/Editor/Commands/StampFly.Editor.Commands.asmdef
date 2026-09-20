@@ -1,0 +1,19 @@
+{
+    "name": "StampFly.Editor.Commands",
+    "rootNamespace": "StampFly.Editor.Commands",
+    "references": [
+        "StampFly.Sim",
+        "Unity.Pipeline"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

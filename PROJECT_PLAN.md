@@ -362,7 +362,7 @@ simulator/
 ├── sils/       # Software-in-the-Loop 本体（決定論的・ESP-IDF ホストビルド）
 ├── tests/      # シミュレータ横断のテスト
 ├── tools/      # シミュレータ間比較などの補助
-├── unity/      # Unity 版（WebGL、実装中）— 現状は native/ にファームウェアの WebAssembly 化と C の関数群
+├── unity/      # Unity 版（WebGL、実装中）— Unity プロジェクト（Assets・Packages・ProjectSettings）、native/、Schemas/
 └── vpython/    # VPython 版（軽量・ブラウザ 3D 表示）
 ```
 
@@ -374,7 +374,9 @@ simulator/
   既存の 3 つ（SILS・VPython 版・Genesis 版）を置き換えず、リアルタイム操縦・カメラ/前向き ToF の模擬・
   障害物のある 3D 環境を受け持つ。**現状は `native/` に、段階 1 の技術検証（無改変ファームウェアの
   WebAssembly 化）と段階 2 のネイティブコア（Unity から呼ぶ C の関数群 `bridge/`、wasm モジュール、Unity を使わない
-  最小動作確認）があり、Unity プロジェクト本体はまだ無い**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
+  最小動作確認）がある。`unity/` の直下は Unity プロジェクト（エディタ 6000.6.2f1、URP）で、現状は骨組みと、PhysX の
+  小さな剛体の検証（`Assets/StampFly/Tests/PlayMode/`）、WebGL から別の wasm モジュールを呼ぶ検証、同梱の空間ファイル
+  （`Assets/StampFly/Worlds/`、形式は `Schemas/`）まで。ファームウェアを飛ばす本体（`SimLoop` など）はまだ無い**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
   切り出してあり、SILS と `unity/native/` の両方のビルドが同じ一覧を使う
 
 ---

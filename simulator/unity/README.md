@@ -1,0 +1,452 @@
+# Unity 版シミュレータ — プロジェクトの骨組みと段階 1(c)(e) の検証
+
+> **Note:** [English version follows after the Japanese section.](#english) / 日本語の後に英語版があります。
+
+## 1. 概要
+
+### このディレクトリについて
+
+`docs/plans/unity-simulator.md`（Unity 版シミュレータ計画）の Unity プロジェクト本体を置く。
+このコミットの時点で入っているのは、以後の開発の土台になるプロジェクトの骨組みと、
+計画 §9 の **(c) PhysX の剛体** と **(e) Unity CLI** の検証結果である。
+
+ファームウェアを WebAssembly で動かす側（段階 1(a) の成果と `just unity-native-spike`）は
+隣の [`native/README.md`](native/README.md) にある。Unity は `Assets`・`Packages`・
+`ProjectSettings` 以外のルート直下のフォルダを見ないため、`native/` と同居できる。
+
+### 対象読者
+
+段階 2 以降でこのプロジェクトに手を入れる担当者。
+
+### 版と構成
+
+| 項目 | 値 |
+|------|------|
+| エディタ | 6000.6.2f1（arm64、Web モジュール入り）。`ProjectSettings/ProjectVersion.txt` で固定 |
+| 元にしたテンプレート | `com.unity.template.urp-blank` 17.2.1（Universal 3D） |
+| 描画 | URP（`com.unity.render-pipelines.universal` 17.6.0） |
+| 入力 | Input System 1.20.0 |
+| UI | UI Toolkit（`com.unity.modules.uielements`、組み込みモジュール） |
+| 試験 | Test Framework 1.8.0 |
+| 端末からの操作 | `com.unity.pipeline` 0.7.0-exp.1（`unity pipeline install` が追加） |
+| 直列化 | Force Text（`m_SerializationMode: 2`）。`.meta` は全てコミットする |
+
+## 2. 開き方・試験・ビルド
+
+Unity CLI は `~/.unity/bin/unity`。以下のコマンドはこのディレクトリを作業場所として実行する。
+
+### 開く
+
+```bash
+unity open .                      # エディタで開く（Hub に登録が無くてもパスとして開ける）
+unity status --json               # 動いているエディタの接続口・PID・状態を見る
+unity close .                     # 保存せずに終了する
+```
+
+### 試験
+
+```bash
+unity test . --mode PlayMode  --output test-results.xml --non-interactive
+unity test . --mode EditMode  --output test-results.xml --non-interactive
+unity test . --mode PlayMode --filter PhysXStabilityTest --output results.xml --non-interactive
+```
+
+`--mode` を省くとエディタの既定の試験プラットフォームが走る。報告書は NUnit 形式で
+`--output` のパスに書かれ、`--report-format junit,nunit` と `--junit-output` で JUnit 形式も
+出せる。**終了コードは合格で 0、1 件でも不合格なら 8**（Unity 自身の処理は 2 で終わる）。
+名前が 1 つも当たらない `--filter` は、試験を走らせずに 0 で終わる。
+
+### WebGL ビルド
+
+WebGL には Unity 内蔵のコマンドライン用ビルドが無い。ビルドプロファイルか、
+static メソッドの指定が要る。このプロジェクトは後者を持っている。
+
+```bash
+unity build . --target WebGL \
+  --execute-method StampFly.Editor.Builders.WebGLBuilder.Build \
+  -o /path/to/output --non-interactive --no-tail
+```
+
+`--execute-method` を付けずに `--target WebGL` だけを渡すと、
+`Target WebGL has no built-in command-line build.` で終了コード 2 になる。
+
+置き場を `Editor/Build/` ではなく `Editor/Builders/` にしてあるのは、リポジトリ直下の
+`.gitignore` の `build/`（macOS では大文字小文字を区別しない）が `Editor/Build/` ごと
+除外してしまうためである。
+
+### 端末からエディタを操作する
+
+```bash
+unity pipeline install --project-path .   # com.unity.pipeline を追加する（1 回だけ）
+unity command                             # 使える命令の一覧
+unity command --query stampfly --json     # 名前で絞る
+unity command stampfly_probe --json       # 実行する
+```
+
+## 3. 段階 1(c) の検証 — PhysX の剛体
+
+### 確かめたこと
+
+質量 0.037 kg、慣性 (9.16, 13.3, 20.4)×10⁻⁶ kg·m²（機体 FLU の x 前・y 左・z 上）の剛体を、
+`Physics.simulationMode = Script` で 400 Hz（`Physics.Simulate(0.0025)`）で回して確かめた。
+数値は `Assets/StampFly/Tests/PlayMode/PhysXStabilityTest.cs`（判定つき 6 件）と
+`PhysXDiagnosticsProbe.cs`・`PhysXAngularMomentumProbe.cs`（判定を置かない計測）が出す。
+16 件すべて合格、所要 2.25 秒。
+
+### 結果
+
+| 確認項目 | 測った値 | 判定 |
+|------|--------|------|
+| 1 トルク応答 | 3 軸それぞれ τ/I = 100 rad/s² に対し誤差 **0.0000%**（機体 x: I=1.33e-5、y: I=2.04e-5、z: I=9.16e-6） | 合格（許容 ±1%） |
+| 2 着地 | 0.5 m から落として静止高 **0.010300 m**（箱の厚みの半分 0.0103 m と一致）。着地後 2 秒の高さの変動幅 **5.47×10⁻⁵ m**、残速度 2.21×10⁻⁷ m/s | 合格 |
+| 3 刻みの比較 | 400 Hz と 1600 Hz の 1 秒後の位置差 **4.68 mm**（半刻みの遅れの予測 4.60 mm と 1.7% 差）。1600 Hz と 3200 Hz では 0.80 mm、比 5.87（1 次なら 6.0） | 合格（積分の次数どおりで、不安定ではない） |
+| 4 ジャイロ項 | **明示的に足す必要がある。** 足さないと角運動量の向きが 1 秒で **15.1619 度**ずれ、この角度は刻みを 400→6400 Hz にしても変わらない | 合格（下記） |
+| 5 加速度計 | 静止接地で 200 標本の平均 **9.809999 m/s²**（機体の上向き）、最大偏差 **2.06×10⁻³ m/s²** | 合格 |
+| 6 再現性 | 同じ入力で 2 回走らせ、1 秒後の位置が **完全一致**（差 0.0 m） | 合格 |
+
+### ジャイロ項についての結論
+
+**PhysX はオイラーの運動方程式の −ω×(Iω) を積分していない。** トルクの無い剛体では
+世界座標系の角速度 ω を一定に保つ（`[probeE]`: `worldRate` が 0.2 秒を通じて (20, 0, 30) のまま）。
+慣性が非対称なので、これは世界座標系の角運動量 L = R I R⁻¹ ω の向きが回ってしまうことを意味する。
+`|L|` は 7 桁一致で保たれるが、向きが 1 秒で 15.1619 度ずれる。この角度は刻みによらない
+（400 / 800 / 1600 / 3200 / 6400 Hz で 15.1619・15.1619・15.1619・15.1619・15.1618 度）ので、
+積分誤差ではなく物理の欠落である。主軸 1 本まわりだけの回転なら連成が無く、ずれは 0 になる（`[probeD]`）。
+
+`AddRelativeTorque(-ω×Iω)` を明示的に足すと、機体座標系の角速度がオイラーの式どおりに
+歳差し（`[probeF]`: (20, 0, 30) → (19.1, −3.0, 30.5) → … → (−19.3, −4.0, 30.8)）、
+世界座標系の L の向きが止まる。**二重計上ではない**ことの証でもある。PhysX も足していれば、
+2 つ目を足すと向きは良くならず悪くなるはずである。
+
+足すときは **刻みの中点で評価する**（`GyroscopicTerm.BodyTorqueAtMidpoint`）。刻みの先頭で
+評価すると陽的な積分にエネルギーが入り、400 Hz で `|L|` が 1 秒あたり **10.77% 増える**。
+中点評価にすると **0.006% 増**に収まり、向きのずれも 1.1172 度から 0.4049 度に減る。
+追加の費用は外積 1 つである。
+
+| 400 Hz で 1 秒 | 向きのずれ | 角運動量の大きさの変化 |
+|---|---|---|
+| 項を足さない | 15.1619 度 | ×1.000000 |
+| 先頭で評価して足す | 1.1172 度 | ×1.107671 |
+| **中点で評価して足す** | **0.4049 度** | **×1.000060** |
+
+### PhysX の設定
+
+`ProjectSettings/DynamicsManager.asset` と `Assets/StampFly/Runtime/Sim/PhysicsStepSettings.cs`
+の両方に同じ値を置いてある（前者は既定、後者は実行時に上書きする）。
+
+| 設定 | 既定 | この値 | 理由 |
+|------|------|--------|------|
+| `Physics.simulationMode` | FixedUpdate | **Script** | 刻みを `SimLoop` が自前で回す（計画 §3） |
+| `defaultContactOffset` | 0.01 m | **0.001 m** | 既定は機体の半分の厚み 0.0103 m と同じ桁で、箱が厚み 1 つぶん近く浮く |
+| `bounceThreshold` | 2 m/s | **20 m/s** | 着地で跳ね続けさせない |
+| `defaultSolverIterations` | 6 | **12** | 質量 0.037 kg での接触の収束を確かなものにする |
+| `defaultSolverVelocityIterations` | 1 | **4** | 同上 |
+| `defaultMaxDepenetrationVelocity` | 10 m/s | **1 m/s** | めり込みの押し戻しで機体が飛ばないようにする |
+| `defaultMaxAngularSpeed` | 50 rad/s | **10⁶ rad/s** | 37 g の機体は高い角速度に達する。頭打ちにさせない |
+| `m_EnableEnhancedDeterminism` | 0 | **1** | 実行ごとの再現性（確認項目 6）。実行中には変えられず、この設定でしか有効にできない |
+
+剛体側（`VehicleBody.Apply`）では `automaticInertiaTensor` と `automaticCenterOfMass` を
+どちらも false にし、慣性テンソルを直接書く。`linearDamping` と `angularDamping` は 0
+（空気抵抗は C++ のプラントが担う）、`sleepThreshold` は 0（途中で休止させない）。
+
+### 軸の割り当て
+
+MuJoCo モデル（`simulator/sils/models/stampfly.xml`）は機体 FLU（x 前・y 左・z 上）。
+Unity は左手系（x 右・y 上・z 前）。慣性と衝突箱は次のように移す。
+
+| FLU | 値 | Unity | 値 |
+|-----|-----|-------|-----|
+| Ixx（前軸） | 9.16e-6 | z | 9.16e-6 |
+| Iyy（左右軸） | 13.3e-6 | x | 13.3e-6 |
+| Izz（上軸） | 20.4e-6 | y | 20.4e-6 |
+| 衝突箱 半長 | 0.0408 / 0.0408 / 0.0103 | 全長 (x, y, z) | 0.0816 / 0.0206 / 0.0816 |
+
+## 4. 段階 1(e) の検証 — Unity CLI
+
+| 確認項目 | 結果 |
+|------|------|
+| `unity test` の指定 | `--mode PlayMode` ／ `--mode EditMode`。省略するとエディタの既定が走る |
+| 報告書 | `--output <path>` に NUnit 形式。`--report-format nunit,junit,both` と `--junit-output` もある |
+| 終了コード | 合格 **0**、不合格 **8**（内側の Unity は 2 で終わる）。名前が当たらない `--filter` は 0 |
+| 所要 | PlayMode 16 件で CLI 全体 62 秒（うち試験そのものは 2.25 秒。残りは資産の取り込みとエディタの起動） |
+| `unity build` の WebGL | `--target WebGL` だけでは通らない（終了コード 2、`Target WebGL has no built-in command-line build.`）。`--execute-method` かビルドプロファイルが要る |
+| WebGL ビルドの所要と大きさ | ほぼ空の場面 1 つで、初回 **4 分 13 秒**・2 回目 **2 分 16 秒**（`Library/` が温まっているため）。出力 **11 MB**（`.wasm.br` 6.90 MB ＋ `.data.br` 3.21 MB ＋ `.framework.js.br` 66 KB ＋ `.loader.js` 28 KB） |
+| `unity pipeline install` | `com.unity.pipeline` 0.7.0-exp.1 を `Packages/manifest.json` に追加する。終了コード 0 |
+| `[CliCommand]` の宣言規則 | **static メソッド**（公開範囲は問わない。private でも登録される。インスタンスメソッドだけが登録されず警告になる）。`[CliCommand(name, description, MainThreadRequired = true, RuntimeOnly = false, Tags = new[]{...})]`。戻り値は任意（文字列・数値・匿名オブジェクト・null）で、サーバが応答の封筒に包む。引数は `[CliArg(name, description, Required = , DefaultValue = )]` で、属性は省略可 |
+| 主スレッド | `MainThreadRequired` の既定は **true**。Unity の API の大半が主スレッドを要るため |
+| 再生中に届くか | **届く。** 再生に入ってから `stampfly_probe` を実行し、`isPlaying: true`・`frameCount: 2` が返った。動いている再生ループの主スレッドで実行される |
+| 接続口 | エディタ 1 つにつき 1 つ（実測で 127.0.0.1:7800）。`unity status --json` が接続口・プロジェクトのパス・PID・状態を返す |
+
+検証用の命令は `Assets/StampFly/Editor/Commands/SimulatorProbeCommands.cs` にある。
+段階 6 で計画の `ISimCommands` に置き換える。
+
+`com.unity.pipeline` の `Unity.Pipeline` アセンブリは
+`UNITY_EDITOR || DEVELOPMENT_BUILD || ENABLE_RUNTIME_PIPELINE` の条件付きでしか入らない。
+計画 §4「中継の受け口は開発用ビルドだけに入れる」の検査は、この条件を手掛かりにできる。
+
+## 5. 置き場の構成
+
+```
+simulator/unity/
+├── Assets/
+│   ├── Scenes/SampleScene.unity          テンプレート由来。段階 3 で作り直す
+│   ├── Settings/                         テンプレート由来の URP 設定
+│   ├── InputSystem_Actions.inputactions  テンプレート由来
+│   └── StampFly/
+│       ├── Runtime/Sim/                  StampFly.Sim アセンブリ
+│       │   ├── VehicleBody.cs            質量・慣性・衝突箱・剛体の設定
+│       │   ├── PhysicsStepSettings.cs    PhysX の全体設定と刻みの長さ
+│       │   ├── GyroscopicTerm.cs         -ω×(Iω) と世界座標系の角運動量
+│       │   └── AccelerometerModel.cs     R⁻¹((v後−v前)/dt − g)
+│       ├── Editor/Builders/              WebGL ビルドの入口
+│       ├── Editor/Commands/              [CliCommand] の検証用
+│       └── Tests/PlayMode/               判定 6 件＋計測 10 件
+├── Packages/manifest.json
+├── ProjectSettings/
+└── native/                               段階 1(a) の WebAssembly 検証（別文書）
+```
+
+生成物（`Library/`・`Temp/`・`Logs/`・`obj/`・`UserSettings/`・`Build/`・`Data/`・
+`*.csproj`・`*.sln`）はリポジトリ直下の `.gitignore` で除外する。`.meta` は除外しない
+（参照が頼る GUID を持つため）。Git LFS は使わない。
+
+## 6. 段階 3 への引き継ぎ
+
+| 事項 | 内容 |
+|------|------|
+| ジャイロ項 | `SimLoop` は毎刻み `GyroscopicTerm.BodyTorqueAtMidpoint` を `AddRelativeTorque` で足す。足し忘れると非対称な慣性の挙動が実機と食い違う |
+| 場面 | `SampleScene.unity` はテンプレートのまま。段階 3 で `SimLoop`・`VehicleBody`・床を持つ場面に作り直す |
+| 圧縮 | WebGL の既定は Brotli（`.br`）。GitHub Pages は `Content-Encoding` を付けられないので、計画 §4 のとおり Decompression Fallback を有効にする必要がある。この検証では既定のまま測った |
+| EditMode 試験 | まだ 1 件も無い。`unity test --mode EditMode` は通るが空で終わる |
+| 刻みの比較 | 400 Hz と 1600 Hz の差 4.68 mm は固定刻みの積分に必ず伴う半刻みの遅れで、精度を上げたいなら刻みを細かくするほか無い。MuJoCo 版は 4000 Hz で積分しており、空中の軌跡を突き合わせるときはこの差を見込む |
+
+---
+
+<a id="english"></a>
+
+# Unity Simulator — Project Skeleton and the Stage 1(c)(e) Checks
+
+## 1. Overview
+
+### About This Directory
+
+Holds the Unity project itself for `docs/plans/unity-simulator.md` (the Unity simulator
+plan). As of this commit it contains the project skeleton that later work builds on, plus
+the results of the plan's §9 checks **(c) the PhysX rigid body** and **(e) the Unity CLI**.
+
+The side that runs the firmware as WebAssembly — stage 1(a)'s deliverable and
+`just unity-native-spike` — is in [`native/README.md`](native/README.md) next door. Unity
+ignores root-level folders other than `Assets`, `Packages` and `ProjectSettings`, so
+`native/` can sit here.
+
+### Target Audience
+
+Whoever works on this project from stage 2 onward.
+
+### Versions and Composition
+
+| Item | Value |
+|------|-------|
+| Editor | 6000.6.2f1 (arm64, with the Web module). Pinned in `ProjectSettings/ProjectVersion.txt` |
+| Source template | `com.unity.template.urp-blank` 17.2.1 (Universal 3D) |
+| Rendering | URP (`com.unity.render-pipelines.universal` 17.6.0) |
+| Input | Input System 1.20.0 |
+| UI | UI Toolkit (`com.unity.modules.uielements`, a built-in module) |
+| Tests | Test Framework 1.8.0 |
+| Terminal control | `com.unity.pipeline` 0.7.0-exp.1 (added by `unity pipeline install`) |
+| Serialization | Force Text (`m_SerializationMode: 2`). Every `.meta` is committed |
+
+## 2. Opening, Testing, Building
+
+The Unity CLI is `~/.unity/bin/unity`. Run the commands below from this directory.
+
+### Opening
+
+```bash
+unity open .                      # open in the editor (a path works without a Hub entry)
+unity status --json               # port, PID and state of every running editor
+unity close .                     # exit without saving
+```
+
+### Testing
+
+```bash
+unity test . --mode PlayMode  --output test-results.xml --non-interactive
+unity test . --mode EditMode  --output test-results.xml --non-interactive
+unity test . --mode PlayMode --filter PhysXStabilityTest --output results.xml --non-interactive
+```
+
+Omitting `--mode` runs the editor's default test platform. The report is NUnit XML at
+`--output`; `--report-format nunit,junit,both` with `--junit-output` also produces JUnit.
+**The exit code is 0 on pass and 8 when any test fails** (Unity's own process exits 2). A
+`--filter` matching nothing exits 0 without running anything.
+
+### WebGL Build
+
+WebGL has no built-in command-line build in Unity; the target needs either a build profile
+or a static method. This project carries the latter.
+
+```bash
+unity build . --target WebGL \
+  --execute-method StampFly.Editor.Builders.WebGLBuilder.Build \
+  -o /path/to/output --non-interactive --no-tail
+```
+
+Passing `--target WebGL` without `--execute-method` exits 2 with
+`Target WebGL has no built-in command-line build.`
+
+The folder is `Editor/Builders/` rather than `Editor/Build/` because the repository-root
+`.gitignore` rule `build/` — matched case-insensitively on macOS — would exclude the whole
+of `Editor/Build/`.
+
+### Driving the Editor from a Terminal
+
+```bash
+unity pipeline install --project-path .   # add com.unity.pipeline (once)
+unity command                             # list the available commands
+unity command --query stampfly --json     # filter by name
+unity command stampfly_probe --json       # execute
+```
+
+## 3. Stage 1(c) — The PhysX Rigid Body
+
+### What Was Checked
+
+A body of 0.037 kg with inertia (9.16, 13.3, 20.4)×10⁻⁶ kg·m² (body FLU: x forward, y
+left, z up), stepped at 400 Hz with `Physics.simulationMode = Script` and
+`Physics.Simulate(0.0025)`. The numbers come from
+`Assets/StampFly/Tests/PlayMode/PhysXStabilityTest.cs` (6 checks with verdicts) and
+`PhysXDiagnosticsProbe.cs` / `PhysXAngularMomentumProbe.cs` (measurements without
+verdicts). All 16 pass, in 2.25 s.
+
+### Results
+
+| Check | Measured | Verdict |
+|-------|----------|---------|
+| 1 Torque response | τ/I = 100 rad/s² on each of the three axes, error **0.0000%** (Unity x: I=1.33e-5, y: I=2.04e-5, z: I=9.16e-6) | Pass (tolerance ±1%) |
+| 2 Landing | Dropped from 0.5 m, resting height **0.010300 m**, matching the box's half thickness of 0.0103 m. Height spread over 2 s after landing **5.47×10⁻⁵ m**, residual speed 2.21×10⁻⁷ m/s | Pass |
+| 3 Step rate | 400 Hz versus 1600 Hz differ by **4.68 mm** after 1 s (the half-step lag predicts 4.60 mm, a 1.7% gap). 1600 versus 3200 Hz: 0.80 mm, ratio 5.87 (first order predicts 6.0) | Pass — the integrator's order, not an instability |
+| 4 Gyroscopic term | **Must be added explicitly.** Without it the angular-momentum direction moves **15.1619 degrees** in 1 s, and that angle does not change from 400 Hz to 6400 Hz | Pass (see below) |
+| 5 Accelerometer | At rest on the floor, 200 samples average **9.809999 m/s²** along the body's up axis, maximum deviation **2.06×10⁻³ m/s²** | Pass |
+| 6 Reproducibility | Two runs with identical input give an **exactly identical** position after 1 s (difference 0.0 m) | Pass |
+
+### Conclusion on the Gyroscopic Term
+
+**PhysX does not integrate Euler's −ω×(Iω).** For a torque-free body it holds the world
+angular velocity ω constant (`[probeE]`: `worldRate` stays (20, 0, 30) throughout 0.2 s).
+Because the inertia is asymmetric, that means the world angular momentum L = R I R⁻¹ ω
+swings in direction instead of staying put. `|L|` is conserved to seven digits, but the
+direction moves 15.1619 degrees per second. That angle is independent of the step (15.1619,
+15.1619, 15.1619, 15.1619 and 15.1618 degrees at 400 / 800 / 1600 / 3200 / 6400 Hz), so it is
+missing physics rather than integration error. Rotation about a single principal axis has no
+coupling and shows zero drift (`[probeD]`).
+
+Adding `AddRelativeTorque(-ω×Iω)` explicitly makes the body rate precess as Euler's equation
+requires (`[probeF]`: (20, 0, 30) → (19.1, −3.0, 30.5) → … → (−19.3, −4.0, 30.8)) and holds
+the world L direction. That is also the evidence it is **not double counted**: were PhysX
+applying the term too, a second copy would make the direction worse, not better.
+
+Evaluate the term at the **step's midpoint** (`GyroscopicTerm.BodyTorqueAtMidpoint`).
+Evaluating at the step start injects energy into the explicit integrator: at 400 Hz `|L|`
+grows **10.77% per second**. The midpoint form holds it to **0.006%** and cuts the direction
+error from 1.1172 to 0.4049 degrees, for the cost of one more cross product.
+
+| 400 Hz over 1 s | Direction error | Angular-momentum magnitude |
+|---|---|---|
+| Term not added | 15.1619 deg | ×1.000000 |
+| Added, evaluated at the step start | 1.1172 deg | ×1.107671 |
+| **Added, evaluated at the midpoint** | **0.4049 deg** | **×1.000060** |
+
+### PhysX Settings
+
+The same values live in both `ProjectSettings/DynamicsManager.asset` (the defaults) and
+`Assets/StampFly/Runtime/Sim/PhysicsStepSettings.cs` (applied at runtime).
+
+| Setting | Default | This project | Reason |
+|---------|---------|--------------|--------|
+| `Physics.simulationMode` | FixedUpdate | **Script** | `SimLoop` drives the stepping itself (plan §3) |
+| `defaultContactOffset` | 0.01 m | **0.001 m** | The default is the same order as the vehicle's half thickness of 0.0103 m, floating the box off the floor by nearly its own thickness |
+| `bounceThreshold` | 2 m/s | **20 m/s** | Stops the vehicle chattering on landing |
+| `defaultSolverIterations` | 6 | **12** | Makes contact converge reliably at 0.037 kg |
+| `defaultSolverVelocityIterations` | 1 | **4** | As above |
+| `defaultMaxDepenetrationVelocity` | 10 m/s | **1 m/s** | Keeps a depenetration push from launching the vehicle |
+| `defaultMaxAngularSpeed` | 50 rad/s | **10⁶ rad/s** | A 37 g body reaches high rates; do not clamp them |
+| `m_EnableEnhancedDeterminism` | 0 | **1** | Run-to-run reproducibility (check 6). It cannot be set at runtime, only here |
+
+On the body itself (`VehicleBody.Apply`), `automaticInertiaTensor` and
+`automaticCenterOfMass` are both false and the inertia tensor is written directly.
+`linearDamping` and `angularDamping` are 0 (drag belongs to the C++ plant) and
+`sleepThreshold` is 0 (the body must never sleep mid-run).
+
+### Axis Mapping
+
+The MuJoCo model (`simulator/sils/models/stampfly.xml`) uses body FLU (x forward, y left,
+z up); Unity is left-handed (x right, y up, z forward). Inertia and the collision box map
+as follows.
+
+| FLU | Value | Unity | Value |
+|-----|-------|-------|-------|
+| Ixx (forward axis) | 9.16e-6 | z | 9.16e-6 |
+| Iyy (lateral axis) | 13.3e-6 | x | 13.3e-6 |
+| Izz (up axis) | 20.4e-6 | y | 20.4e-6 |
+| Collision box half extents | 0.0408 / 0.0408 / 0.0103 | Full size (x, y, z) | 0.0816 / 0.0206 / 0.0816 |
+
+## 4. Stage 1(e) — The Unity CLI
+
+| Item | Result |
+|------|--------|
+| Selecting a test mode | `--mode PlayMode` or `--mode EditMode`. Omitting it runs the editor's default |
+| Report | NUnit XML at `--output <path>`. `--report-format nunit,junit,both` and `--junit-output` are also available |
+| Exit code | **0** on pass, **8** on any failure (the inner Unity process exits 2). A `--filter` matching nothing exits 0 |
+| Duration | 62 s for the whole CLI invocation on 16 PlayMode tests, of which the tests themselves take 2.25 s; the rest is asset import and editor startup |
+| `unity build` for WebGL | `--target WebGL` alone does not work (exit 2, `Target WebGL has no built-in command-line build.`). It needs `--execute-method` or a build profile |
+| WebGL build time and size | One near-empty scene: **4 min 13 s** cold, **2 min 16 s** on a repeat with a warm `Library/`. **11 MB** of output (`.wasm.br` 6.90 MB + `.data.br` 3.21 MB + `.framework.js.br` 66 KB + `.loader.js` 28 KB) |
+| `unity pipeline install` | Adds `com.unity.pipeline` 0.7.0-exp.1 to `Packages/manifest.json`. Exit code 0 |
+| `[CliCommand]` declaration | A **static method** (accessibility does not matter — a private static method registers too; only an instance method is skipped, with a warning). `[CliCommand(name, description, MainThreadRequired = true, RuntimeOnly = false, Tags = new[]{...})]`. The return type is free (string, number, anonymous object, null) and the server wraps it in the response envelope. Parameters take `[CliArg(name, description, Required = , DefaultValue = )]`, which is optional |
+| Main thread | `MainThreadRequired` defaults to **true**, because most Unity APIs need the main thread |
+| Arrival during play | **It arrives.** Running `stampfly_probe` after entering play mode returned `isPlaying: true` and `frameCount: 2`; it runs on the main thread of the live player loop |
+| Port | One per editor (127.0.0.1:7800 in this measurement). `unity status --json` reports the port, project path, PID and state |
+
+The probe command lives in `Assets/StampFly/Editor/Commands/SimulatorProbeCommands.cs` and
+is replaced by the plan's `ISimCommands` in stage 6.
+
+The `Unity.Pipeline` assembly in `com.unity.pipeline` is compiled only under
+`UNITY_EDITOR || DEVELOPMENT_BUILD || ENABLE_RUNTIME_PIPELINE`. The plan's §4 rule — the
+relay endpoint belongs only in development builds — can key its check off that constraint.
+
+## 5. Layout
+
+```
+simulator/unity/
+├── Assets/
+│   ├── Scenes/SampleScene.unity          from the template; rebuilt in stage 3
+│   ├── Settings/                         the template's URP settings
+│   ├── InputSystem_Actions.inputactions  from the template
+│   └── StampFly/
+│       ├── Runtime/Sim/                  the StampFly.Sim assembly
+│       │   ├── VehicleBody.cs            mass, inertia, collision box, body settings
+│       │   ├── PhysicsStepSettings.cs    global PhysX settings and the step length
+│       │   ├── GyroscopicTerm.cs         -ω×(Iω) and the world angular momentum
+│       │   └── AccelerometerModel.cs     R⁻¹((v_after−v_before)/dt − g)
+│       ├── Editor/Builders/              the WebGL build entry point
+│       ├── Editor/Commands/              the [CliCommand] probe
+│       └── Tests/PlayMode/               6 checks with verdicts + 10 measurements
+├── Packages/manifest.json
+├── ProjectSettings/
+└── native/                               stage 1(a)'s WebAssembly work (separate document)
+```
+
+Generated folders (`Library/`, `Temp/`, `Logs/`, `obj/`, `UserSettings/`, `Build/`,
+`Data/`, `*.csproj`, `*.sln`) are excluded by the repository-root `.gitignore`. `.meta`
+files are not excluded, because they carry the GUIDs every reference relies on. Git LFS is
+not used.
+
+## 6. Hand-off to Stage 3
+
+| Item | Detail |
+|------|--------|
+| Gyroscopic term | `SimLoop` must add `GyroscopicTerm.BodyTorqueAtMidpoint` through `AddRelativeTorque` every step. Omitting it makes the asymmetric-inertia behaviour disagree with the real vehicle |
+| Scene | `SampleScene.unity` is still the template's. Stage 3 rebuilds it around `SimLoop`, `VehicleBody` and a floor |
+| Compression | WebGL defaults to Brotli (`.br`). GitHub Pages cannot set `Content-Encoding`, so Decompression Fallback must be enabled as the plan's §4 says. This check measured the default |
+| EditMode tests | There are none yet. `unity test --mode EditMode` succeeds but runs nothing |
+| Step-rate gap | The 4.68 mm between 400 Hz and 1600 Hz is the half-step lag a fixed-step integrator necessarily has; only a finer step reduces it. The MuJoCo version integrates at 4000 Hz, so expect this gap when comparing airborne trajectories |

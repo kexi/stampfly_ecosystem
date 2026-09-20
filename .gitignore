@@ -152,6 +152,30 @@ analysis/scripts/verify_hikoki64/
 simulator/unity/native/build-*/
 
 # ====================
+# Unity project generated folders
+# Unity プロジェクトの生成物
+# ====================
+# Unity regenerates all of these from Assets/ + Packages/ + ProjectSettings/.
+# `.meta` files are NOT ignored: they carry the GUIDs every reference relies on.
+# これらは Assets/・Packages/・ProjectSettings/ から Unity が作り直す。
+# `.meta` は除外しない（参照が頼る GUID を持つため）。
+simulator/unity/Library/
+simulator/unity/Temp/
+simulator/unity/Logs/
+simulator/unity/obj/
+simulator/unity/UserSettings/
+simulator/unity/Build/
+simulator/unity/Builds/
+simulator/unity/MemoryCaptures/
+simulator/unity/Recordings/
+# Burst writes Data/Plugins/ during a WebGL build.
+# WebGL のビルド中に Burst が Data/Plugins/ を書く。
+simulator/unity/Data/
+simulator/unity/*.csproj
+simulator/unity/*.sln
+simulator/unity/test-results*.xml
+
+# ====================
 # Beamer auto-generated listings
 # ====================
 docs/events/*/slides/*.listing
