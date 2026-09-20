@@ -505,6 +505,231 @@ PYTHONPATH=lib python3 -m sfcli unity logs --cmd <上で返った cmd_id>
 タイマーで駆動する差し替えを入れたページから読み込んだ。人が前面のタブで開く分には
 要らない。
 
+
+## 9. 刻みの輪と飛行（`StampFly.Native` ／ `StampFly.Sim` ／ `StampFly.Input` ／ `StampFly.Vehicle` ／ `StampFly.Ui` ／ `StampFly.App`）
+
+### この一式について
+
+無改変の C++ ファームウェアと PhysX を 2.5 ms ごとに繋ぎ、ブラウザとエディタの両方で
+飛ばす。計画 [`docs/plans/unity-simulator.md`](../../docs/plans/unity-simulator.md) の
+**段階 3「最小の WebGL 版」** の中核である。
+
+```
+Assets/StampFly/
+├── Runtime/Native/                   StampFly.Native（C ABI。StampFly.Core だけ参照する）
+│   ├── SfuAbi.cs                     定数・戻り値・4 つの構造体の C# の写し
+│   ├── SfuStructSizes.cs             大きさと位置の照合（起動時に必ず通る）
+│   ├── IFirmware.cs                  ファームの継ぎ目（boot／step／param／外乱／ログ）
+│   ├── WebGlFirmware.cs              .jslib 経由で別の wasm モジュールを呼ぶ
+│   ├── EditorFirmware.cs             dylib を一意な名前へ複写して dlopen で呼ぶ
+│   ├── FirmwareFactory.cs            ビルドに合う実装を選ぶ
+│   └── FirmwareLogText.cs            固定長のバイト列を StampFly.Core の記録にする
+├── Runtime/Sim/                      StampFly.Sim（Ui も Vehicle も参照しない）
+│   ├── SimLoop.cs                    1 刻みの輪。計画 §3 の 4 手順
+│   ├── SimClock.cs                   ペース配分（一時停止・コマ送り・倍率・実時間比）
+│   ├── SimControls.cs                P／N／[ ]／B／Backspace
+│   ├── DownwardRangefinder.cs        下向き ToF（レイ 1 本。30 mm の盲点つき）
+│   ├── FlightStateNames.cs           飛行状態とモードの番号 → 名前
+│   ├── VehicleBody.cs                質量・慣性・衝突箱（段階 1(c) から）
+│   ├── PhysicsStepSettings.cs        PhysX の全体設定（同上）
+│   ├── GyroscopicTerm.cs             −ω×(Iω)（同上）
+│   └── AccelerometerModel.cs         R⁻¹((v後−v前)/dt − g)（同上）
+├── Runtime/Input/                    StampFly.Input
+│   ├── IRcSource.cs                  RcFrame（12 bit の生 ADC）と尺度
+│   └── KeyboardRc.cs                 `sf sils fly` と同じ割り当て
+├── Runtime/Vehicle/                  StampFly.Vehicle（見た目だけ。コライダを持たない）
+│   ├── PropellerMesh.cs              3 枚羽根の手続き生成
+│   └── VehicleAppearance.cs          板・モータ缶 4 つ・プロペラ 4 つ
+├── Runtime/Ui/                       StampFly.Ui
+│   ├── SimHud.cs                     UI Toolkit の表示（実時間比・1 刻みの所要時間・fps）
+│   └── FollowCamera.cs               追従カメラ
+├── Runtime/App/                      StampFly.App（上の全部を繋ぐ最上位）
+│   ├── SimulatorBootstrap.cs         場面を実行時に組み立てる
+│   └── SimRemoteCommands.cs          `sim.*` ／ `rc.*` の登録（開発用ビルドだけ）
+├── Plugins/WebGL/SfuFirmware.jslib   別の wasm モジュールとの継ぎ目
+├── Scenes/Main.unity                 物体 1 つ（`SimulatorBootstrap`）だけを持つ
+└── Assets/WebGLTemplates/StampFly/   配信するページ（`?raf=worker` を持つ）
+```
+
+アセンブリは一方向に積む。`Native` → `Sim` → `{Vehicle, Ui}` → `App` であり、
+`Sim` は `Ui` も `Vehicle` も参照しない（参照すると循環になる）。3 者を繋ぐのは `App` だけで、
+場面が持つ物体も `SimulatorBootstrap` の 1 つだけである。統合のたびに `.unity` の
+テキストを読み合わせずに済ませるためである。
+
+### 1 刻みの処理（計画 §3）
+
+| 順 | 担当 | 処理 |
+|---|---|---|
+| 1 | C# | `Rigidbody` の位置・回転・世界系の速度と角速度、**前の刻みで求めた**加速度計の測定値、下向きレイの距離と地表からの高さ、RC の最新値を `SfuStepIn` に詰める |
+| 2 | C++ | `sfu_step` が状態を注入し、ファームを 2.5 ms 進め、区間平均の合力・合トルクを返す |
+| 3 | C# | `AddRelativeForce` ／ `AddRelativeTorque` ／ 風の `AddForce` ／ **ジャイロ項** → `Physics.Simulate(0.0025)` |
+| 4 | C# | 加速度計の測定値 = R⁻¹((v後 − v前)/dt − g)。接触力が自動で入る |
+
+**C# 側で座標変換を書かない。** `Rigidbody` の値はそのまま渡し（符号反転も軸の入替もせず、
+角速度は世界系のまま）、返る力とトルクは Unity の機体系なので `AddRelativeForce` ／
+`AddRelativeTorque` にそのまま渡す。`wrench_dt_s` を掛けたり割ったりしない（診断用である）。
+NED／FRD への変換は C++ の `frames_unity.hpp` だけが行う。
+
+**wasm では `sfu_step` の戻り値を読まない。** `SfuStepOut.Status`（168 バイトの 156 バイト目）
+から読む。Asyncify が戻り値の中身を置き換えるためである。`.jslib` も `EditorFirmware` も
+呼び出しの前にそこへ、橋渡しが決して書かない値（1）を入れてから読む。
+
+### 遅れたときの扱い
+
+ファームの刻みは飛ばさない。代わりに仮想時間を遅らせ、表示板に実時間比を出す。
+1 フレームの上限は **12 刻み**（シミュレーション 30 ms）で、これが無いと遅いフレームが
+より長い追いつきを求め、次のフレームをさらに遅くしてブラウザが描画をやめる。
+**0.5 秒を越えるフレームは停止とみなし、溜まりを捨てる。** 背面に回ったタブは任意の
+長さの停止を生むので（計画 §9 (e)）、戻ったときに 1 分ぶんを早送りさせないためである。
+
+### 構造体の照合
+
+C# は 4 つの構造体を自分で宣言し、生のポインタを渡す。よって `sfu_boot` の前に必ず
+`sfu_struct_size` と突き合わせ、合わなければ**構造体の名前と両方の数値を添えて**止まる。
+合計だけでなく位置も見る（入れ替わった 2 つの欄は合計では見えない）。
+
+| 構造体 | 大きさ | 見る位置 |
+|---|---|---|
+| `SfuConfig` | 48 | — |
+| `SfuStepIn` | 96 | `dt_us` が 92 |
+| `SfuStepOut` | 168 | `status` が 156、`now_us` が 80 |
+| `SfuParamInfo` | 84 | — |
+| `SfuLogRecord` | 272 | 合計のみ（下記） |
+
+**`SfuLogRecord` の中の位置は照合しない。** `ByValArray` の欄を
+`Marshal.OffsetOf` がどこに置くかで 2 つの実行環境の答えが食い違う（Mono は本文を 48、
+WebGL の IL2CPP は 16 と答える）のに、写すのはどちらも同じ 272 バイトだからである。
+この構造体を手で添字で読む箇所は無く、境界を渡るのは `Marshal.PtrToStructure` 経由だけ
+なので、合計が合っていれば足りる。刻みの 2 つの構造体は `.jslib` が数値で添字を作るため、
+位置も照合する。
+
+**構造体は非管理の記憶域へ書く。** `GCHandle.Alloc(構造体, Pinned)` を使ってはならない。
+IL2CPP は値を箱に入れ、`AddrOfPinnedObject` はその箱自身の番地を答えるので、欄の始まりと
+一致しない。実際 Chrome では、橋渡しが欄の外へ書き、どの刻みも呼び出し側の目印が
+`status` に残ったまま返ってきた（`[SimLoop] sfu_step failed: status 1` が毎刻み）。
+`Marshal.AllocHGlobal` で取った領域に `StructureToPtr` で書き、`PtrToStructure` で読み戻す。
+領域はファーム 1 つにつき 1 回だけ確保して使い回す（刻みはシミュレーションの 1 秒に 400 回
+ある）。Mono はたまたま箱でも動くが、両側とも同じやり方に揃えてある。
+
+### エディタの 2 回目の再生
+
+**エディタは `[DllImport]` で読み込んだネイティブライブラリを解放しない。** そのまま
+では 2 回目の再生で `sfu_boot` が「起動済み」を返す（1 モジュール＝1 回の電源投入）。
+`EditorFirmware` は、ハンドルをエディタに持たせないことでこれを避ける。dylib を一意な
+名前へ複写し、**その複写**を `dlopen`（`RTLD_NOW | RTLD_LOCAL`）で開き、入口ごとに
+`dlsym` で引き、`Dispose` で `dlclose` して複写を消す。**C 側にローダは要らない**
+（`FirmwarePowerCycleTest` が 1 つのエディタのプロセスで 2 回続けて起動させて確かめる）。
+Unity 抜きでも確かめてある（`dlopen` → boot → 400 刻み → `dlclose` を 1 プロセスで 2 回。
+2 回とも `boot -> 0`、`now_us = 1000000`）。
+
+### 既知の問題: `sfu_shutdown` がエディタの中でデッドロックする（2026-09-20）
+
+**エディタの中では `sfu_shutdown` を呼ばない。** ABI はこれを省略可としており
+（「モジュールを捨てるだけでも足りる」）、呼ぶと再生が返らなくなる。
+
+| 事項 | 内容 |
+|------|------|
+| 症状 | `unity test --mode PlayMode` が Play Mode に入ったまま返らない。CPU は 0.2% で、計算はしていない |
+| 場所 | `sfu_shutdown` → `sils::rtos::Scheduler::shutdown()` → `stop_all()`。14 本のタスクのスレッドは `ulTaskNotifyTake` → `block_current` → `_pthread_cond_wait` に停まったままで、合流しない |
+| 切り分け | 同じ dylib を素のプロセスから `dlopen` して boot → 100 刻み → `sfu_shutdown` すると **1 秒以内に 0 を返す**。よって止めているのはエディタが加えるものである（`sample` で全スレッドの停止位置を確認） |
+| 当座の対処 | `EditorFirmware.Dispose` は `dlclose` と複写の削除だけを行う。代償はタスクのスタック（14 MiB）がエディタのプロセスが終わるまで残ること |
+| WebGL 側 | 影響しない。捨てた wasm モジュールは自分のメモリごと消え、fiber 版スケジューラにスレッドは無い |
+| 直す場所 | `simulator/sils/rtos/scheduler_step.cpp` の `stop_all`（ネイティブ側の担当。刻みの輪の担当は触っていない） |
+
+### 操縦（`sf sils fly` と同じ割り当て）
+
+| キー | 働き | | キー | 働き |
+|---|---|---|---|---|
+| W / S | ピッチ 前 / 後 | | P | 一時停止・再開 |
+| A / D | ロール 左 / 右 | | N | 一時停止中に 1 刻み |
+| , / . | ヨー 左 / 右 | | [ / ] | 遅く / 速く（0.1〜4） |
+| Space / Z | スロットル 上 / 下 | | B | 電源の入れ直し（INIT から） |
+| R | ARM / DISARM | | Backspace | 出発点へ戻す（ファームはそのまま） |
+| H | ALT_HOLD の入切 | | − / + | 振れ幅 10〜100 |
+
+離したキーの軸は中央へ戻る。スロットルの意味はモードで変わるが C# 側は読み替えない。
+ACRO と STABILIZE では推力の指令、ALT_HOLD では中央が「この高さを保つ」である。
+どちらかを決めるのはファームで、実機の送信機のときと同じである。
+
+### ビルド
+
+```bash
+# 先にファームのモジュールを作る（無ければビルドが理由を添えて失敗する）
+nix develop -c just unity-native-build
+
+# 開発用（中継の受け口が入る）
+unity build . --target WebGL \
+  --execute-method StampFly.Editor.Builders.WebGLBuilder.Build \
+  -o Build/WebGL --non-interactive --no-tail
+
+# 配布用（`-stampflyRelease` が STAMPFLY_REMOTE を外す）
+sf unity build --release
+```
+
+ビルドの入口は `sfu_firmware.{js,wasm}` を出力の `StreamingAssets/` へ複写し、
+**Decompression Fallback を有効にする**（GitHub Pages は `Content-Encoding` を付けられない）。
+出力は `.gitignore` の `simulator/unity/Build/` に入るのでコミットされない。
+
+### 60fps と実時間比 1.0 の確かめ方（人が行う）
+
+**自動操作のタブは背面扱いで `requestAnimationFrame` が来ない**（計画 §9 (e)）ので、
+自動の検証は `?raf=worker` で Worker のタイマーに差し替える。その差し替えは 16 ms の
+固定周期で、Chrome 自身の垂直同期ではない。**よって 60fps と実時間比 1.0 は、人が
+前面のタブで確かめる必要がある。**
+
+```bash
+PYTHONPATH=lib python3 -m sfcli unity serve --dir simulator/unity/Build/WebGL --port 8770
+# 開いたタブを前面にしたまま、表示板の次の 3 つを読む:
+#   real-time  1.000      ← 実時間比。0.99〜1.01 なら追いつけている
+#   NN.N us/tick          ← 1 刻みの所要時間。2500 us に対する余裕
+#   60 fps                ← 描画の速さ
+```
+
+`BEHIND` の字が出るのは、1 フレームの上限（12 刻み）に当たったときである。読み込みの
+直後に一度出るのは正常で、飛行中に出続けるなら追いつけていない。
+
+### ブラウザでの確認の記録（2026-09-20）
+
+`?raf=worker` の自動操作のタブで、無改変のファームが**ブラウザの中で起動して刻み続ける**
+ことを確かめた。
+
+| 項目 | 値 |
+|------|------|
+| ファームのモジュール | 読み込み・起動とも成功（`stampflyFirmwareState.stage = "booted"`） |
+| 飛行状態 | INIT → **IDLE_GROUND**、モード STABILIZE、電池 4.19 V |
+| 1 刻みの所要時間 | **41.7 µs**（刻みの長さ 2500 µs に対し約 60 倍の余裕） |
+| 下向き ToF | 床置きで **(invalid)**。30 mm の盲点の扱いが実機と同じであることを示す |
+| フローの品質 | 0.90（`empty_room` の床の値） |
+| 出力の大きさ | 12 MB（`.wasm.unityweb` 7.2 MB ＋ `.data.unityweb` 4.0 MB ＋ ファーム 508 KB） |
+| コンソール | ファーム関係の誤りなし（URP の後処理シェーダの除外を告げる既知の行のみ） |
+
+**キーボードでの操縦は自動操作では確かめられない。** Unity の Input System はブラウザの
+入力の待ち行列を直接読み、DOM の `KeyboardEvent` を見ない。よって `javascript_tool` で
+合成したキーは届かず、ARM も押せない。自動で飛ばすには、別の担当の `RemoteBridge` を
+場面に置き、`rc.set`（本実装が登録済み）で台本のスティックを流す。**人が前面のタブで
+キーボードを叩く分には、そのまま動く。**
+
+`?raf=worker` の差し替えは 16 ms の固定周期であり、背面のタブでは実際には 10 fps 程度に
+なる。表示板に `BEHIND` が出るのはそのためで、1 刻みの所要時間（41.7 µs）とは別の話である。
+
+### 試験
+
+```bash
+unity test . --mode EditMode --output test-results.xml --non-interactive
+unity test . --mode PlayMode --output test-results.xml --non-interactive
+```
+
+| 置き場 | 見ること |
+|---|---|
+| `Tests/EditMode/SfuAbiLayoutTest.cs` | 5 つの構造体の大きさ、4 つの欄の位置、ABI の版、食い違うモジュールが名前付きで拒まれること |
+| `Tests/EditMode/RcScaleTest.cs` | 振れ幅 → 12 bit の生 ADC、頭打ち、中央、キーボードが無いときの中央、`Reset` が ARM を落とすこと、フラグのビットが ControlPacket と同じこと |
+| `Tests/EditMode/SimClockTest.cs` | 60fps で 6 刻み、端数の繰り越し、1 フレームの上限、一時停止中に仮想時刻が進まないこと、コマ送り、倍率、停止の溜まりを捨てること、実測の速さ |
+| `Tests/PlayMode/FirmwareFlightTest.cs` | **実物のファームで ARM → 離陸 → ALT_HOLD で保持 → 着地**、ALT_HOLD に達すること、N 刻みの時計がちょうど N×2500 µs であること、床に置いた機体が水平を保つこと |
+| `Tests/PlayMode/FirmwarePowerCycleTest.cs` | **2 回目の電源投入が INIT から通ること**、電源投入ごとに別の複写を開くこと、同じファームの 2 回目の起動が拒まれること |
+
+PlayMode の飛行の試験は `libsfu_firmware.dylib` を要り、無ければ
+`nix develop -c just unity-native-build` を文に添えて見送られる（不合格にはしない）。
+
 ---
 
 <a id="english"></a>

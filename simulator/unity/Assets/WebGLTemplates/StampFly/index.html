@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <title>StampFly Simulator</title>
+    <!--
+      The page the simulator is served from. It differs from Unity's own
+      template in exactly two ways, both for the browser checks:
+
+        * the canvas fills the window, so the readout and the vehicle are
+          legible without resizing anything, and
+        * `?raf=worker` replaces requestAnimationFrame with a Worker timer.
+
+      シミュレータを配信するページ。Unity 自身の雛形と違うのは 2 点だけで、
+      どちらもブラウザでの検証のためである。
+
+        * キャンバスが窓いっぱいに広がる。表示と機体が、窓の大きさを変えずに
+          読めるようにするため。
+        * `?raf=worker` で requestAnimationFrame を Worker のタイマーに差し替える。
+
+      @design docs/plans/unity-simulator.md §9 (e)
+    -->
+    <style>
+      html, body { margin: 0; padding: 0; height: 100%; background: #0d0f13; }
+      #unity-canvas { width: 100%; height: 100%; display: block; }
+    </style>
+  </head>
+  <body>
+    <canvas id="unity-canvas" tabindex="-1"></canvas>
+
+    <script>
+      /*
+       * Chrome does not call requestAnimationFrame in a tab that is not being
+       * shown, and an automated tab counts as not shown — so Unity's loader
+       * waits for a first frame that never arrives and the player never starts
+       * (plan §9 (e)). A Worker's timer is NOT throttled that way, so driving
+       * the callbacks from one lets an automated check run the simulator.
+       *
+       * This is for checking only, and it is opt-in through `?raf=worker`: a
+       * person opening the page in a visible tab gets Chrome's own vsync, which
+       * is what a real-time ratio of 1.0 at 60 fps has to be measured against.
+       *
+       * Chrome は、表示していないタブで requestAnimationFrame を呼ばない。
+       * 自動操作のタブは表示していない扱いになるので、Unity のローダは決して
+       * 来ない最初のコマを待ち、プレイヤーは起動しない（計画 §9 (e)）。Worker の
+       * タイマーはそのように抑えられないので、そこから呼び出しを駆動すれば
+       * 自動の検証もシミュレータを動かせる。
+       *
+       * これは検証のためのものであり、`?raf=worker` で明示したときだけ効く。人が
+       * 見えるタブで開けば Chrome 自身の垂直同期になる。60fps での実時間比 1.0 は、
+       * そちらに対して測らなければならないからである。
+       */
+      (function installWorkerAnimationFrame() {
+        var wantsWorkerTimer =
+          new URLSearchParams(window.location.search).get('raf') === 'worker';
+        if (!wantsWorkerTimer) { return; }
+
+        // 16 ms is one frame at about 60 Hz, the rate a shown tab would get.
+        // 16 ms は約 60 Hz の 1 コマで、表示中のタブが得る速さである。
+        var frameMilliseconds = 16;
+        var source =
+          'var id = setInterval(function () { postMessage(0); }, ' +
+          frameMilliseconds + ');';
+        var worker = new Worker(
+          URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+
+        var callbacks = new Map();
+        var nextHandle = 1;
+
+        worker.onmessage = function () {
+          var due = callbacks;
+          callbacks = new Map();
+          var now = performance.now();
+          due.forEach(function (callback) {
+            try { callback(now); } catch (error) { console.error(error); }
+          });
+        };
+
+        window.requestAnimationFrame = function (callback) {
+          var handle = nextHandle++;
+          callbacks.set(handle, callback);
+          return handle;
+        };
+        window.cancelAnimationFrame = function (handle) {
+          callbacks.delete(handle);
+        };
+
+        window.stampflyWorkerAnimationFrame = true;
+        console.log('[stampfly] requestAnimationFrame is driven by a Worker timer');
+      }());
+    </script>
+
+    <script src="Build/{{{ LOADER_FILENAME }}}"></script>
+    <script>
+      createUnityInstance(document.querySelector("#unity-canvas"), {
+        arguments: [],
+        dataUrl: "Build/{{{ DATA_FILENAME }}}",
+        frameworkUrl: "Build/{{{ FRAMEWORK_FILENAME }}}",
+#if USE_WASM
+        codeUrl: "Build/{{{ CODE_FILENAME }}}",
+#endif
+#if SYMBOLS_FILENAME
+        symbolsUrl: "Build/{{{ SYMBOLS_FILENAME }}}",
+#endif
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: {{{ JSON.stringify(COMPANY_NAME) }}},
+        productName: {{{ JSON.stringify(PRODUCT_NAME) }}},
+        productVersion: {{{ JSON.stringify(PRODUCT_VERSION) }}},
+        matchWebGLToCanvasSize: true,
+      }).then(function (unityInstance) {
+        window.stampflyUnity = unityInstance;
+        window.stampflyReady = true;
+        console.log('[stampfly] the player started');
+      }).catch(function (message) {
+        // Reported on the page and in the console rather than through alert():
+        // a dialog stops an automated check dead (plan §9 (d)).
+        // alert() ではなくページとコンソールへ出す。ダイアログは自動の検証を
+        // その場で止めてしまう（計画 §9 (d)）。
+        window.stampflyError = String(message);
+        console.error('[stampfly] ' + message);
+      });
+    </script>
+  </body>
+</html>

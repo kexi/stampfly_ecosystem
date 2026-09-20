@@ -2,7 +2,9 @@
     "name": "StampFly.Editor.Builders",
     "rootNamespace": "StampFly.Editor.Builders",
     "references": [
-        "StampFly.Sim"
+        "StampFly.Sim",
+        "StampFly.World",
+        "StampFly.App"
     ],
     "includePlatforms": [
         "Editor"

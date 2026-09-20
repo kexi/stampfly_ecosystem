@@ -22,6 +22,20 @@ namespace StampFly.Editor.Builders
     /// <c>unity build --target WebGL --execute-method</c> が呼ぶ入口。WebGL には
     /// Unity 内蔵のコマンドライン用ビルドが無く、ビルドプロファイルかこのような
     /// static メソッドのどちらかが要る。
+    ///
+    /// Besides building, it does two things the player cannot do for itself:
+    /// it copies the firmware's own wasm module beside the player (the firmware
+    /// is a SEPARATE module, not linked in), and it turns on Decompression
+    /// Fallback, because GitHub Pages cannot set <c>Content-Encoding</c> and a
+    /// Brotli file served without that header is not decompressed by the browser.
+    ///
+    /// ビルドのほかに、プレイヤー自身にはできない 2 つを行う。ファーム自身の wasm
+    /// モジュールをプレイヤーの隣へ複写すること（ファームは**別の**モジュールで
+    /// あり、リンクされない）と、Decompression Fallback を有効にすることである。
+    /// GitHub Pages は <c>Content-Encoding</c> を付けられず、そのヘッダ無しで
+    /// 配られた Brotli のファイルをブラウザは展開しないためである。
+    ///
+    /// @design docs/plans/unity-simulator.md §4 設計上の決定（公開）
     /// </summary>
     public static class WebGLBuilder
     {
@@ -29,24 +43,60 @@ namespace StampFly.Editor.Builders
         // CLI が出力先を渡してくる引数名。
         private const string OutputPathFlag = "-buildOutput";
 
+        // The flag `sf unity build --release` passes. A distributed build must
+        // not carry the command relay endpoint, so the symbol that compiles it
+        // in is added for a development build and left off for a release one.
+        // `sf unity build --release` が渡す引数。配布用ビルドには命令の中継の
+        // 受け口を入れないので、それを入れる定義記号は開発用ビルドにだけ付け、
+        // 配布用では付けない。
+        private const string ReleaseFlag = "-stampflyRelease";
+
+        // The symbol that compiles the relay endpoint in. Renaming it here means
+        // renaming it in the code that tests for it.
+        // 中継の受け口を入れる定義記号。ここで名前を変えるなら、判定している
+        // コード側の名前も変える。
+        private const string RemoteSymbol = "STAMPFLY_REMOTE";
+
         // Where the build lands when nothing says otherwise.
         // 指定が無いときの出力先。
         private const string DefaultOutputPath = "Build/WebGL";
 
+        // The page the player is served in. "PROJECT:" means the template comes
+        // from Assets/WebGLTemplates rather than from the editor's own set.
+        // プレイヤーを載せるページ。"PROJECT:" は、エディタ自身の雛形ではなく
+        // Assets/WebGLTemplates から取ることを表す。
+        private const string WebGlTemplate = "PROJECT:StampFly";
+
+        // The firmware module, relative to the repository root, and where it
+        // goes in the output. StreamingAssets is served as plain files beside
+        // the player, which is what the .jslib's <script> tag needs.
+        // ファームのモジュールの、リポジトリ直下からの相対の場所と、出力での
+        // 置き場。StreamingAssets はプレイヤーの隣に素のファイルとして配られる。
+        // .jslib の <script> のタグが要るのはそれである。
+        private const string FirmwareBuildDirectory = "simulator/unity/native/build-wasm";
+        private const string FirmwareOutputDirectory = "StreamingAssets";
+        private static readonly string[] FirmwareFiles =
+        {
+            "sfu_firmware.js",
+            "sfu_firmware.wasm",
+        };
+
         /// <summary>
-        /// Builds the enabled scenes for WebGL and exits non-zero if the build
+        /// Builds the enabled scenes for WebGL and exits non-zero if anything
         /// did not succeed, so the CLI reports the failure.
-        /// 有効な場面を WebGL 向けにビルドする。失敗したら非ゼロで終了し、CLI に
-        /// 失敗を伝える。
+        /// 有効な場面を WebGL 向けにビルドする。何かが失敗したら非ゼロで終了し、
+        /// CLI に失敗を伝える。
         /// </summary>
         public static void Build()
         {
             string outputPath = ReadOutputPath();
-            string[] scenes = EnabledScenePaths();
+            bool isRelease = HasFlag(ReleaseFlag);
+
+            ApplyWebGlSettings(isRelease);
 
             var options = new BuildPlayerOptions
             {
-                scenes = scenes,
+                scenes = EnabledScenePaths(),
                 locationPathName = outputPath,
                 target = BuildTarget.WebGL,
                 targetGroup = BuildTargetGroup.WebGL,
@@ -58,15 +108,133 @@ namespace StampFly.Editor.Builders
 
             Debug.Log(
                 $"[WebGLBuilder] result={summary.result} " +
-                $"output={outputPath} scenes={scenes.Length} " +
-                $"size={summary.totalSize} bytes " +
+                $"output={outputPath} scenes={options.scenes.Length} " +
+                $"release={isRelease} size={summary.totalSize} bytes " +
                 $"duration={summary.totalTime.TotalSeconds:F1} s");
 
-            bool succeeded = summary.result == BuildResult.Succeeded;
-            if (!succeeded)
+            bool buildFailed = summary.result != BuildResult.Succeeded;
+            if (buildFailed)
+            {
+                EditorApplication.Exit(1);
+                return;
+            }
+
+            bool copied = CopyFirmwareModule(outputPath);
+            if (!copied)
             {
                 EditorApplication.Exit(1);
             }
+        }
+
+        /// <summary>
+        /// The player settings the browser build needs, set here so a build from
+        /// any machine produces the same thing rather than depending on what was
+        /// last ticked in the editor.
+        /// ブラウザ向けのビルドに要るプレイヤーの設定。どの機械からのビルドでも
+        /// 同じものが出るよう、エディタで最後に付けた印に頼らずここで設定する。
+        /// </summary>
+        private static void ApplyWebGlSettings(bool isRelease)
+        {
+            // Brotli with the fallback loader: GitHub Pages cannot set
+            // Content-Encoding, and the fallback loader decompresses in
+            // JavaScript when the header is missing.
+            // フォールバックのローダ付きの Brotli。GitHub Pages は
+            // Content-Encoding を付けられず、ヘッダが無ければフォールバックの
+            // ローダが JavaScript で展開する。
+            PlayerSettings.WebGL.compressionFormat = WebGLCompressionFormat.Brotli;
+            PlayerSettings.WebGL.decompressionFallback = true;
+
+            // Our own page: it fills the window, reports a load failure without
+            // opening a dialog, and carries the `?raf=worker` shim an automated
+            // browser check needs.
+            // 自前のページ。窓いっぱいに広がり、読み込みの失敗をダイアログを開かずに
+            // 報告し、自動のブラウザ検証が要る `?raf=worker` の差し替えを持つ。
+            PlayerSettings.WebGL.template = WebGlTemplate;
+
+            // The firmware module is fetched as a plain file beside the player,
+            // so the player's own data need not be embedded in the loader.
+            // ファームのモジュールはプレイヤーの隣の素のファイルとして取得する
+            // ので、プレイヤー自身のデータをローダに埋め込む必要は無い。
+            PlayerSettings.WebGL.dataCaching = true;
+
+            string existing = PlayerSettings.GetScriptingDefineSymbols(
+                UnityEditor.Build.NamedBuildTarget.WebGL);
+            string updated = isRelease
+                ? RemoveSymbol(existing, RemoteSymbol)
+                : AddSymbol(existing, RemoteSymbol);
+            PlayerSettings.SetScriptingDefineSymbols(
+                UnityEditor.Build.NamedBuildTarget.WebGL, updated);
+        }
+
+        /// <summary>Adds a symbol if it is not already there. / まだ無ければ定義記号を足す。</summary>
+        private static string AddSymbol(string symbols, string symbol)
+        {
+            var parts = new System.Collections.Generic.List<string>(
+                symbols.Split(';', StringSplitOptions.RemoveEmptyEntries));
+            bool alreadyThere = parts.Contains(symbol);
+            if (!alreadyThere)
+            {
+                parts.Add(symbol);
+            }
+            return string.Join(";", parts);
+        }
+
+        /// <summary>Removes a symbol if it is there. / あれば定義記号を外す。</summary>
+        private static string RemoveSymbol(string symbols, string symbol)
+        {
+            var parts = new System.Collections.Generic.List<string>(
+                symbols.Split(';', StringSplitOptions.RemoveEmptyEntries));
+            parts.Remove(symbol);
+            return string.Join(";", parts);
+        }
+
+        /// <summary>
+        /// Copies the firmware's wasm module into the build. Without it the page
+        /// loads and then sits waiting for a module that never arrives, so a
+        /// missing module is a build failure with the command that fixes it.
+        /// ファームの wasm モジュールをビルドへ複写する。無ければページは読み込ま
+        /// れた後、決して来ないモジュールを待ち続ける。よってモジュールが無いことは
+        /// ビルドの失敗とし、直すためのコマンドを添えて報告する。
+        /// </summary>
+        private static bool CopyFirmwareModule(string outputPath)
+        {
+            string sourceDirectory = Path.Combine(
+                RepositoryRoot(), FirmwareBuildDirectory);
+            string destinationDirectory = Path.Combine(
+                outputPath, FirmwareOutputDirectory);
+            Directory.CreateDirectory(destinationDirectory);
+
+            foreach (string fileName in FirmwareFiles)
+            {
+                string source = Path.Combine(sourceDirectory, fileName);
+                bool sourceIsMissing = !File.Exists(source);
+                if (sourceIsMissing)
+                {
+                    Debug.LogError(
+                        $"[WebGLBuilder] the firmware module is not at {source}. " +
+                        "Run `nix develop -c just unity-native-build` first.");
+                    return false;
+                }
+
+                File.Copy(source, Path.Combine(destinationDirectory, fileName), true);
+            }
+
+            Debug.Log($"[WebGLBuilder] copied the firmware module into " +
+                      $"{destinationDirectory}");
+            return true;
+        }
+
+        /// <summary>
+        /// The repository root. The Unity project sits at
+        /// <c>simulator/unity</c>, so the root is two levels above it.
+        /// リポジトリ直下。Unity プロジェクトは <c>simulator/unity</c> に在るので、
+        /// 直下はその 2 つ上である。
+        /// </summary>
+        private static string RepositoryRoot()
+        {
+            string projectRoot = Directory.GetParent(Application.dataPath).FullName;
+            return Directory.GetParent(
+                Directory.GetParent(projectRoot).FullName).FullName;
         }
 
         /// <summary>Reads -buildOutput from the command line. / -buildOutput を読む。</summary>
@@ -83,6 +251,21 @@ namespace StampFly.Editor.Builders
             }
 
             return Path.GetFullPath(DefaultOutputPath);
+        }
+
+        /// <summary>Whether a bare flag is on the command line. / 値を取らない引数が在るか。</summary>
+        private static bool HasFlag(string flag)
+        {
+            foreach (string argument in Environment.GetCommandLineArgs())
+            {
+                bool isFlag = argument == flag;
+                if (isFlag)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         /// <summary>

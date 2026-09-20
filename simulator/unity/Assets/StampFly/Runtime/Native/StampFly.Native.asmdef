@@ -1,11 +1,8 @@
 {
-    "name": "StampFly.Sim",
-    "rootNamespace": "StampFly.Sim",
+    "name": "StampFly.Native",
+    "rootNamespace": "StampFly.Native",
     "references": [
-        "Unity.InputSystem",
-        "StampFly.Native",
-        "StampFly.Input",
-        "StampFly.World"
+        "StampFly.Core"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

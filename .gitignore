@@ -174,6 +174,13 @@ simulator/unity/Data/
 simulator/unity/*.csproj
 simulator/unity/*.sln
 simulator/unity/test-results*.xml
+# The test runner writes these into Assets/ while a run is in flight and
+# usually removes them; a run that is interrupted leaves them behind.
+# 試験の実行中に Assets/ へ書かれ、ふつうは消えるもの。中断された実行が残す。
+simulator/unity/Assets/InitTestScene*.unity
+simulator/unity/Assets/InitTestScene*.unity.meta
+simulator/unity/Assets/Resources/PerformanceTestRun*.json
+simulator/unity/Assets/Resources/PerformanceTestRun*.json.meta
 
 # ====================
 # Beamer auto-generated listings

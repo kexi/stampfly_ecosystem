@@ -375,8 +375,10 @@ simulator/
   障害物のある 3D 環境を受け持つ。**現状は `native/` に、段階 1 の技術検証（無改変ファームウェアの
   WebAssembly 化）と段階 2 のネイティブコア（Unity から呼ぶ C の関数群 `bridge/`、wasm モジュール、Unity を使わない
   最小動作確認）がある。`unity/` の直下は Unity プロジェクト（エディタ 6000.6.2f1、URP）で、現状は骨組みと、PhysX の
-  小さな剛体の検証（`Assets/StampFly/Tests/PlayMode/`）、WebGL から別の wasm モジュールを呼ぶ検証、同梱の空間ファイル
-  （`Assets/StampFly/Worlds/`、形式は `Schemas/`）まで。ファームウェアを飛ばす本体（`SimLoop` など）はまだ無い**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
+  小さな剛体の検証（`Assets/StampFly/Tests/PlayMode/`）、同梱の空間ファイル
+  （`Assets/StampFly/Worlds/`、形式は `Schemas/`）まで。段階 3 の中核（`SimLoop`、ファームウェアとのつなぎ `StampFly.Native`、キーボード操縦、ログと命令の受け口
+  `StampFly.Core`／`StampFly.Remote`）まで入っている。エディタでは実ファームウェアで離陸から着地まで飛ぶ。ブラウザでの
+  操縦の確認、障害物の編集 UI、ゲームパッド、カメラと前向き ToF はこれから**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
   切り出してあり、SILS と `unity/native/` の両方のビルドが同じ一覧を使う
 
 ---

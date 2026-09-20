@@ -5,6 +5,9 @@
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
         "StampFly.World",
+        "StampFly.Native",
+        "StampFly.Input",
+        "StampFly.Sim",
         "StampFly.Core",
         "StampFly.Remote"
     ],

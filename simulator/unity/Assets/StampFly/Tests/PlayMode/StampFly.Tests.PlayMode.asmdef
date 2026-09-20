@@ -5,7 +5,12 @@
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
         "StampFly.Sim",
-        "StampFly.World"
+        "StampFly.World",
+        "StampFly.Native",
+        "StampFly.Input",
+        "StampFly.Vehicle",
+        "StampFly.Ui",
+        "StampFly.App"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
