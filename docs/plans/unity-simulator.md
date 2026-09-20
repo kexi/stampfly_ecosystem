@@ -78,7 +78,7 @@
 | 座標変換 | C ABI は Unity の生の規約（左手系・Y 上・クォータニオンは xyzw）で受け渡し、変換は C++ の新規 `frames/frames_unity.hpp` に集中させる。C# 側は空間ファイル（ENU: x=東・y=北・z=上）と Unity の変換だけ持つ | 「座標変換は 1 か所」という SILS の方針に合わせる |
 | 力の渡し方 | 合力・合トルク（機体座標系、10 副刻みの力積平均）を返す | 往復が 1 回で済み、モーメントアームの長さを C# に写さなくてよい |
 | 再初期化 | 1 モジュール＝1 電源投入とする。同一モジュール内での再 `init` はしない。機体の置き直しはファームウェアを再起動せず、電源の入れ直しはモジュールを作り直す | ファームウェアのタスク群に静的変数が多く、無改変では初期状態に戻せない |
-| スレッド | **案 2 を第一候補とする**: ファームウェアを別の wasm モジュール（`sfu_firmware.wasm`、`-sMODULARIZE -sASYNCIFY`）にし、スレッド無しの fiber 型スケジューラ（新規 `rtos/scheduler_fiber.cpp`、`emscripten_fiber_t`。既存 `scheduler.cpp` とはリンクで切り替え）で動かし、`.jslib` 経由で同期呼び出しする。**案 1**（スレッドのまま `.a` を Unity に静的リンク、`-pthread`、実験的設定、COOP/COEP ヘッダが必須）は段階 1 で比較の数値を取るためだけに使い、案 2 が速度の目安を満たさないときの退避先とする | 案 2 は特別な HTTP ヘッダ無しで GitHub Pages にそのまま載り、Emscripten の版が Unity に縛られず、電源の入れ直しがモジュールの作り直しで済む。「Unity に静的リンクした `.a` の中で fiber」は、Asyncify の計装が Unity エンジン全体に掛かるので採れない |
+| スレッド | **案 2 に決定**（2026-09-20、段階 1(a) の実測で決着。§9 参照）: ファームウェアを別の wasm モジュール（`sfu_firmware.wasm`、`-sMODULARIZE -sASYNCIFY`）にし、スレッド無しの fiber 型スケジューラ（新規 `rtos/scheduler_fiber.cpp`、`emscripten_fiber_t`。既存 `scheduler.cpp` とはリンクで切り替え）で動かし、`.jslib` 経由で同期呼び出しする。**案 1**（スレッドのまま `.a` を Unity に静的リンク、`-pthread`、実験的設定、COOP/COEP ヘッダが必須）は退避先として残すが、案 2 が速度の目安を Node.js で約 100 倍・Chrome で約 17 倍上回ったため、切り替える理由は無い | 案 2 は特別な HTTP ヘッダ無しで GitHub Pages にそのまま載り、Emscripten の版が Unity に縛られず、電源の入れ直しがモジュールの作り直しで済む。「Unity に静的リンクした `.a` の中で fiber」は、Asyncify の計装が Unity エンジン全体に掛かるので採れない。実測ではその全体計装のままで目安を大きく下回り、`ASYNCIFY_ONLY` による絞り込みは不要だった |
 | エディタでの開発 | 配布はしないが、開発用に macOS arm64 のネイティブプラグイン（現行のスレッド型スケジューラのまま）を作る。C# 側は `IFirmware` で WebGL 用とエディタ用を切り替える | 毎回 WebGL ビルドを待たずに再生ボタンで試せ、`unity test` の Play Mode 試験も回せる |
 | 端末からシミュレータを操作する経路 | 3 層にする。土台はページ側の JavaScript API（`window.stampfly.command(json)` → `ISimCommands`）。その上に (1) URL の引数（`?world=gate_course&scn=...`。公開サイトでも使える）と (2) `sf unity serve` のローカルサーバ経由（Python 標準ライブラリ、127.0.0.1 のみ、Origin 検査つき。ページが `/api/cmd/next` を待ち受けて `/api/cmd/result` に返し、`sf unity cmd <命令>` が POST する）を載せる。`sf unity cmd` はエディタが動いていれば `unity command` へ、無ければローカルサーバへ送る | `com.unity.pipeline` はローカル HTTP で待ち受ける方式で、WebGL には届かない。サーバの前例は `simulator/sils/gui/server.py`、Origin 検査の前例は `lib/sfcli/commands/blocks.py` |
 | 操縦入力 | 最初はキーボード（割り当ては `sf sils fly` に合わせ、離すと中央へ戻る）。ゲームパッドは次の段階で、`navigator.getGamepads()` を直接読む `GamepadBridge.jslib` と軸の割り当て画面を作り、実機コントローラ用の既定の割り当てを同梱する | 実機コントローラの HID（Human Interface Device）は標準のゲームパッド配置に載らず、軸の順序が実装依存である。最初の合格基準をこれに依存させない |
@@ -152,11 +152,11 @@
 
 ## 8. 未確認事項
 
-段階 1 で確かめる。
+段階 1 で確かめる。決着したものは結果を添えて残す（§9 に数値がある）。
 
 | 事項 | 確かめること |
 |---|---|
-| Emscripten でのビルド | 無改変ファームウェアが Emscripten 3.1.38 でビルドできるか、Chrome で実時間に回るか |
+| ~~Emscripten でのビルド~~ **決着（2026-09-20）** | 無改変ファームウェアが Emscripten でビルドできるか、Chrome で実時間に回るか → **両方とも成立**。Emscripten 6.0.8-git（計画時に見込んでいた 3.1.38 ではない）で 97 翻訳単位すべてが通り、Chrome で 1 秒あたり 0.0172 秒（目安 0.30 秒の約 17 分の 1）。§9 (a-0)・(a-2') |
 | PhysX のジャイロ項 | PhysX が ω×Iω を積分するか。慣性が 9.16／13.3／20.4（単位 1e-6 kg·m²）と非対称なので、しない場合は明示的に足す。二重にならないことを確認する |
 | PhysX の既定値 | `Physics.defaultContactOffset` の既定 0.01m が機体の半分の厚み 0.0103m と干渉しないか。`angularDamping` の既定 0.05 を 0 にする |
 | Unity CLI の宣言規則 | `[CliCommand]` の書き方（`com.unity.pipeline` は 0.7 の実験版で、公開文書からは取得できなかった） |
@@ -165,19 +165,28 @@
 
 ## 9. 技術検証の記録（段階 1）
 
-段階 1 の結果を数値付きでここに記録し、その上で段階 2 以降へ入る。**現時点では未実施**（2026-09-20）。
+段階 1 の結果を数値付きでここに記録し、その上で段階 2 以降へ入る。**(a) を 2026-09-20 に実施し、合格した**。(b)〜(f) は Unity・実機コントローラを要するため未実施で、段階 3 以降で確かめる。成果物と詳しい数値・再現手順は [`../../simulator/unity/native/README.md`](../../simulator/unity/native/README.md) にある。
 
 | 項目 | 測定・確認の内容 | 結果 | 判定 |
 |---|---|---|---|
-| (a-1) fiber 版スケジューラ | `rtos_smoke` のトレースが現行と一致するか | 未実施 | — |
-| (a-2) 案 2 の速度（Chrome） | シミュレーション 1 秒あたりの実時間（目安 0.3 秒以下） | 未実施 | — |
-| (a-3) 案 1 の速度（Chrome） | 同上（`-pthread`、COOP/COEP ヘッダ付き） | 未実施 | — |
-| (b) `.jslib` からの同期呼び出し | 別モジュールの `sfu_step` を同期で呼べるか、作り直しで再起動できるか | 未実施 | — |
-| (c) PhysX の安定性 | 質量 37g・慣性 1e-5 桁で 400Hz、トルク応答 ±1%、着地で振動しないか | 未実施 | — |
-| (d) WebGL の標準入出力 | `prompt()` が開かないこと | 未実施 | — |
-| (e) Unity CLI | `install -m webgl` ／ `build` ／ `test` が手元で通るか、`unity command` が再生中に届くか | 未実施 | — |
-| (f) ゲームパッド | 実機コントローラが Chrome の Gamepad API でどう見えるか（軸・ボタンの並び） | 未実施 | — |
-| 結論 | スレッドの案（案 1 ／ 案 2）の決定 | 未実施 | — |
+| (a-0) Emscripten でのビルド | 無改変ファームウェア＋シミュレータ＋`devices/`＋`rtos/` がコンパイルできるか | Emscripten 6.0.8-git で 97 翻訳単位すべて成功。`firmware/` 配下は無編集。回避が要ったのは 2 件のみ（`tasks/cli_task.cpp` の `stdout` 再代入 — musl では `stdout` が const のため、`simulator/unity/native/compat_wasm/cstdio` を include の優先順位で前に置いて回避。既存の `esp_idf_host/cstdio` が Windows 向けに使うのと同じ手法。もう 1 件は `plant.hpp` の MuJoCo ヘッダで、`SILS_PLANT_EXTERNAL` の囲みで回避） | **合格** |
+| (a-1) fiber 版スケジューラ | `rtos_smoke` のトレースが現行と一致するか | `trace_dump` の出力全体の sha256 先頭が、スレッド版ネイティブ・fiber 版ネイティブ（ucontext）・fiber 版 wasm（Asyncify）の 3 つとも `48852b7d2bddad63` で一致（事象数 425） | **合格** |
+| (a-2) 案 2 の速度（Node.js） | シミュレーション 1 秒あたりの実時間（目安 0.3 秒以下） | 全 14 タスク＋検証用プラント（MuJoCo 無し、C++ 内の簡易 6 自由度積分）を Node.js v24 の WebAssembly で実行し、シミュレーション 60 秒を実時間 0.155 秒 = **1 秒あたり 0.0026 秒**（目安に対し約 100 倍の余裕）。`-O2`、Asyncify は全体計装のまま、wasm 412 KiB。Apple M2 Max | **合格** |
+| (a-2') 案 2 の速度（Chrome） | 同上（ブラウザでの実測） | 同じ `.js`／`.wasm` を素の HTML ページから読み込み（`Module.arguments=['60']`）、`python3 -m http.server` で 127.0.0.1 から配信して Chrome で実行。シミュレーション 60 秒を実時間 1.031 秒 = **1 秒あたり 0.0172 秒**（目安に対し約 17 倍の余裕）。COOP/COEP 等の特別な HTTP ヘッダは付けていない | **合格** |
+| (a-3) 案 1 の速度 | 同上（`-pthread`、COOP/COEP ヘッダ付き） | 未実施。スレッド版 `Scheduler` に `run_until` が無く、同じ入口でビルドできないため。段階 2 で `scheduler_step.cpp` を作ってから測る。案 2 が目安を 17〜100 倍上回ったので、比較は退避先の確認としてのみ行う | 未実施 |
+| (a-4) ホバリングの成立 | 離陸してホバリングが成立するか | ファームウェアの状態が INIT → IDLE\_GROUND → ARMED\_GROUND → FLYING と進み、最大高度 0.813 m から減衰して 0.576〜0.577 m を保持。Node.js で 2 回実行して出力が完全一致。Chrome でも同じ値 | **合格** |
+| (a-5) `run_until` の同期性 | Asyncify を使っても外から見て同期関数として返るか | 1 回の `main` の中で 12,000 回以上呼んで正常終了。`.jslib` から同期で呼ぶ案（(b)）の前提が成り立つ | **合格** |
+| (a-6) 既存ファイルへの影響 | 既存ビルドの計算結果が変わらないこと | 変更は `simulator/sils/plant/plant.hpp` だけで追加 18 行・削除 0 行（`#ifndef SILS_PLANT_EXTERNAL` の囲み 3 か所と説明コメント）。マクロ未定義時のプリプロセス後のトークン列は変わらない（`clang++ -E -P` で確認） | **合格** |
+| (b) `.jslib` からの同期呼び出し | 別モジュールの `sfu_step` を同期で呼べるか、作り直しで再起動できるか | 未実施（Unity プロジェクトが要る）。(a-5) で C++ 側の前提は確かめた | 未実施 |
+| (c) PhysX の安定性 | 質量 37g・慣性 1e-5 桁で 400Hz、トルク応答 ±1%、着地で振動しないか | 未実施（Unity が要る） | 未実施 |
+| (d) WebGL の標準入出力 | `prompt()` が開かないこと | 未実施（Unity WebGL ビルドが要る） | 未実施 |
+| (e) Unity CLI | `install -m webgl` ／ `build` ／ `test` が手元で通るか、`unity command` が再生中に届くか | 未実施（Unity が要る） | 未実施 |
+| (f) ゲームパッド | 実機コントローラが Chrome の Gamepad API でどう見えるか（軸・ボタンの並び） | 未実施（実機コントローラでの確認が要る） | 未実施 |
+| 結論 | スレッドの案（案 1 ／ 案 2）の決定 | **案 2（ファームウェアを別の wasm モジュールにし、fiber 型スケジューラで動かす）に決定。** 速度の目安を Node.js で約 100 倍、Chrome で約 17 倍上回り、トレースがビット単位で一致し、特別な HTTP ヘッダを要しないため | **決定済み** |
+
+### Node.js と Chrome の差について
+
+Chrome（1 秒あたり 0.0172 秒）は Node.js（同 0.0026 秒）より約 6.6 倍遅い。**理由は切り分けていない。** 実測に使ったページは約 200 行の出力を 1 行ごとに `console.log` と DOM への追記で出しており、また初回読み込みでは WebAssembly の最適化コンパイルが終わる前から走る。これらが効いている可能性はあるが、推測であって確かめていない。どちらも目安を大きく下回るため、段階 1 では切り分けを行わなかった。段階 3 で実時間比 1.0 を測るときに、出力を抑えた状態で測り直す。
 
 ---
 
@@ -261,7 +270,7 @@ When processing cannot keep up with real time, no firmware tick is skipped: virt
 | Frame conversion | The C ABI passes Unity's raw conventions (left-handed, Y up, quaternion as xyzw); all conversion is concentrated in a new C++ `frames/frames_unity.hpp`. The C# side only converts between the world file (ENU: x east, y north, z up) and Unity | Matches the SILS rule that frame conversion lives in one place |
 | How forces are passed | Total force and total torque (body frame, impulse-averaged over 10 sub-ticks) are returned | One round trip suffices, and no moment-arm lengths need to be duplicated in C# |
 | Re-initialization | One module equals one power-on. There is no second `init` within a module. Repositioning the vehicle does not restart the firmware; a power cycle recreates the module | The firmware's tasks hold many static variables and cannot be returned to their initial state without modification |
-| Threading | **Approach 2 is the first choice**: build the firmware as a separate wasm module (`sfu_firmware.wasm`, `-sMODULARIZE -sASYNCIFY`), run it on a thread-free fiber scheduler (a new `rtos/scheduler_fiber.cpp` using `emscripten_fiber_t`, selected against the existing `scheduler.cpp` at link time), and call it synchronously through `.jslib`. **Approach 1** (keep threads, statically link the `.a` into Unity, `-pthread`, experimental settings, COOP/COEP headers required) is used in stage 1 only to obtain comparison numbers, and is the fallback if approach 2 misses the speed target | Approach 2 loads on GitHub Pages with no special HTTP headers, keeps the Emscripten version independent of Unity's, and makes a power cycle a matter of recreating the module. "Fibers inside an `.a` statically linked into Unity" is not viable, because Asyncify instrumentation would then apply to the whole Unity engine |
+| Threading | **Approach 2, decided** (2026-09-20, settled by the stage 1(a) measurements; see §9): build the firmware as a separate wasm module (`sfu_firmware.wasm`, `-sMODULARIZE -sASYNCIFY`), run it on a thread-free fiber scheduler (a new `rtos/scheduler_fiber.cpp` using `emscripten_fiber_t`, selected against the existing `scheduler.cpp` at link time), and call it synchronously through `.jslib`. **Approach 1** (keep threads, statically link the `.a` into Unity, `-pthread`, experimental settings, COOP/COEP headers required) remains the fallback, but with approach 2 beating the speed target by roughly 100× under Node.js and 17× in Chrome there is no reason to switch | Approach 2 loads on GitHub Pages with no special HTTP headers, keeps the Emscripten version independent of Unity's, and makes a power cycle a matter of recreating the module. "Fibers inside an `.a` statically linked into Unity" is not viable, because Asyncify instrumentation would then apply to the whole Unity engine. In the measurement that whole-program instrumentation was kept and still came in far under the target, so narrowing it with `ASYNCIFY_ONLY` was unnecessary |
 | Editor-side development | Not distributed, but a macOS arm64 native plugin (keeping the current thread-based scheduler) is built for development. On the C# side, `IFirmware` switches between the WebGL and editor implementations | The play button can be used without waiting for a WebGL build each time, and `unity test` Play Mode tests can run |
 | Driving the browser simulator from a terminal | Three layers. The base is a page-side JavaScript API (`window.stampfly.command(json)` → `ISimCommands`). On top of it: (1) URL arguments (`?world=gate_course&scn=...`, usable on the public site) and (2) the local server behind `sf unity serve` (Python standard library, 127.0.0.1 only, with an Origin check; the page long-polls `/api/cmd/next` and answers to `/api/cmd/result`, while `sf unity cmd <command>` POSTs). `sf unity cmd` routes to `unity command` when the editor is running, and to the local server otherwise | `com.unity.pipeline` listens over local HTTP and does not reach WebGL. Precedents: the server in `simulator/sils/gui/server.py`, the Origin check in `lib/sfcli/commands/blocks.py` |
 | Stick input | Keyboard first (bindings matching `sf sils fly`, self-centering on release). Gamepads come in the next stage, via a `GamepadBridge.jslib` that reads `navigator.getGamepads()` directly, an axis-assignment screen, and a shipped default mapping for the real controller | The real controller's HID (Human Interface Device) descriptor does not map onto the standard gamepad layout, and axis ordering is implementation-dependent. The first pass criteria must not depend on it |
@@ -335,11 +344,11 @@ When processing cannot keep up with real time, no firmware tick is skipped: virt
 
 ## 8. Open Questions
 
-To be settled in stage 1.
+To be settled in stage 1. Settled items are kept with their result (the numbers are in §9).
 
 | Item | What to confirm |
 |---|---|
-| Emscripten build | Whether the unmodified firmware builds with Emscripten 3.1.38 and runs at real-time speed in Chrome |
+| ~~Emscripten build~~ **Settled (2026-09-20)** | Whether the unmodified firmware builds with Emscripten and runs at real-time speed in Chrome → **both hold**. All 97 translation units compile under Emscripten 6.0.8-git (not the 3.1.38 assumed when this plan was written), and Chrome runs at 0.0172 s per simulated second, about one seventeenth of the 0.30 s target. §9 (a-0) and (a-2') |
 | PhysX gyroscopic term | Whether PhysX integrates ω×Iω. Inertia is asymmetric (9.16 / 13.3 / 20.4 in units of 1e-6 kg·m²), so if it does not, the term is added explicitly — while confirming it is not applied twice |
 | PhysX defaults | Whether the default `Physics.defaultContactOffset` of 0.01 m conflicts with the vehicle's half-thickness of 0.0103 m. The default `angularDamping` of 0.05 is set to 0 |
 | Unity CLI declarations | How `[CliCommand]` is declared (`com.unity.pipeline` is at experimental version 0.7 and this could not be obtained from public documentation) |
@@ -348,16 +357,25 @@ To be settled in stage 1.
 
 ## 9. Feasibility Record (Stage 1)
 
-Stage 1's results are recorded here with numbers before stage 2 begins. **Not yet performed** as of 2026-09-20.
+Stage 1's results are recorded here with numbers before stage 2 begins. **(a) was performed on 2026-09-20 and passed.** (b) through (f) need Unity or the real controller and are not yet performed; they are confirmed from stage 3 onward. The deliverable, the full numbers, and the reproduction steps are in [`../../simulator/unity/native/README.md`](../../simulator/unity/native/README.md).
 
 | Item | What is measured or confirmed | Result | Verdict |
 |---|---|---|---|
-| (a-1) Fiber scheduler | Whether the `rtos_smoke` trace matches the current one | Not yet performed | — |
-| (a-2) Approach 2 speed (Chrome) | Real time per second of simulation (target: 0.3 s or less) | Not yet performed | — |
-| (a-3) Approach 1 speed (Chrome) | The same, with `-pthread` and COOP/COEP headers | Not yet performed | — |
-| (b) Synchronous call from `.jslib` | Whether a separate module's `sfu_step` can be called synchronously, and whether recreating it restarts the firmware | Not yet performed | — |
-| (c) PhysX stability | 400Hz at 37 g with inertia on the order of 1e-5; torque response within ±1%; no oscillation on landing | Not yet performed | — |
-| (d) WebGL standard I/O | That `prompt()` does not open | Not yet performed | — |
-| (e) Unity CLI | Whether `install -m webgl` / `build` / `test` work locally, and whether `unity command` arrives during play | Not yet performed | — |
-| (f) Gamepad | How the real controller appears through Chrome's Gamepad API (axis and button ordering) | Not yet performed | — |
-| Conclusion | The chosen threading approach (1 or 2) | Not yet performed | — |
+| (a-0) Emscripten build | Whether the unmodified firmware, the simulator, `devices/`, and `rtos/` compile | All 97 translation units compile under Emscripten 6.0.8-git, with nothing under `firmware/` edited. Only two workarounds were needed: the `stdout` reassignment in `tasks/cli_task.cpp` (musl makes `stdout` const, so `simulator/unity/native/compat_wasm/cstdio` is placed earlier on the include path — the same technique the existing `esp_idf_host/cstdio` uses for Windows), and the MuJoCo header in `plant.hpp` (guarded by `SILS_PLANT_EXTERNAL`) | **Pass** |
+| (a-1) Fiber scheduler | Whether the `rtos_smoke` trace matches the current one | The sha256 prefix of the entire `trace_dump` output is `48852b7d2bddad63` for all three builds — thread/native, fiber/native (ucontext), and fiber/wasm (Asyncify) — over 425 events | **Pass** |
+| (a-2) Approach 2 speed (Node.js) | Real time per second of simulation (target: 0.3 s or less) | All 14 tasks plus the verification plant (no MuJoCo; a simple 6-DOF integrator in C++) ran under Node.js v24 WebAssembly: 60 simulated seconds in 0.155 s of real time = **0.0026 s per simulated second**, roughly 100× the target's margin. `-O2`, whole-program Asyncify left in place, 412 KiB of wasm. Apple M2 Max | **Pass** |
+| (a-2') Approach 2 speed (Chrome) | The same, measured in the browser | The same `.js` and `.wasm` were loaded from a plain HTML page (`Module.arguments=['60']`), served from 127.0.0.1 by `python3 -m http.server`, and run in Chrome: 60 simulated seconds in 1.031 s of real time = **0.0172 s per simulated second**, roughly 17× the target's margin. No special HTTP headers such as COOP/COEP were set | **Pass** |
+| (a-3) Approach 1 speed | The same, with `-pthread` and COOP/COEP headers | Not yet performed: the thread-based `Scheduler` has no `run_until`, so the same entry point does not build. It will be measured in stage 2, once `scheduler_step.cpp` exists. With approach 2 beating the target by 17–100×, the comparison serves only to keep the fallback verified | Not yet performed |
+| (a-4) Hover achieved | Whether the vehicle takes off and hovers | The firmware progressed INIT → IDLE\_GROUND → ARMED\_GROUND → FLYING, peaked at 0.813 m, and settled to hold 0.576–0.577 m. Two Node.js runs produced identical output; Chrome produced the same values | **Pass** |
+| (a-5) Synchronicity of `run_until` | Whether it returns as a synchronous function despite Asyncify | Called over 12,000 times within a single `main`, terminating normally. The premise of calling it synchronously from `.jslib` — item (b) — therefore holds | **Pass** |
+| (a-6) Effect on existing files | That existing builds produce unchanged results | The only change is `simulator/sils/plant/plant.hpp`: 18 lines added, none removed (three `#ifndef SILS_PLANT_EXTERNAL` guards plus an explanatory comment). With the macro undefined the preprocessed token sequence is unchanged (verified with `clang++ -E -P`) | **Pass** |
+| (b) Synchronous call from `.jslib` | Whether a separate module's `sfu_step` can be called synchronously, and whether recreating it restarts the firmware | Not yet performed (needs the Unity project). The C++ side of the premise was confirmed in (a-5) | Not yet performed |
+| (c) PhysX stability | 400Hz at 37 g with inertia on the order of 1e-5; torque response within ±1%; no oscillation on landing | Not yet performed (needs Unity) | Not yet performed |
+| (d) WebGL standard I/O | That `prompt()` does not open | Not yet performed (needs a Unity WebGL build) | Not yet performed |
+| (e) Unity CLI | Whether `install -m webgl` / `build` / `test` work locally, and whether `unity command` arrives during play | Not yet performed (needs Unity) | Not yet performed |
+| (f) Gamepad | How the real controller appears through Chrome's Gamepad API (axis and button ordering) | Not yet performed (needs the real controller) | Not yet performed |
+| Conclusion | The chosen threading approach (1 or 2) | **Approach 2 is chosen**: the firmware becomes a separate wasm module driven by the fiber scheduler. It beats the speed target by about 100× under Node.js and 17× in Chrome, reproduces the trace bit-for-bit, and needs no special HTTP headers | **Decided** |
+
+### On the Node.js / Chrome Difference
+
+Chrome (0.0172 s per simulated second) is about 6.6× slower than Node.js (0.0026 s). **The cause has not been isolated.** The page used for the measurement emits roughly 200 lines of output one line at a time, via `console.log` and by appending to the DOM, and on a first load it starts running before WebAssembly's optimizing compilation has finished. Either may contribute, but this is conjecture and was not tested. Both figures are far under the target, so stage 1 did not pursue it; the measurement will be repeated with output suppressed in stage 3, when the real-time ratio of 1.0 is measured.

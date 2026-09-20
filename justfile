@@ -25,3 +25,8 @@ check:
 # この justfile が `just --fmt` の出力どおりの書式かを確かめる
 lint-just:
     just --fmt --check --unstable
+
+# Rebuild the stage 1(a) WebAssembly spike and fly it for N simulated seconds
+# 段階 1(a) の WebAssembly 技術検証を作り直し、N 秒ぶん飛ばす
+unity-native-spike seconds="30":
+    bash simulator/unity/native/spike/build_spike.sh {{ seconds }}

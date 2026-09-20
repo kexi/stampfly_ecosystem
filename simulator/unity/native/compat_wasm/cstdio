@@ -1,0 +1,63 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Kouhei Ito
+ * Part of StampFly Ecosystem (Unity/WebAssembly native core).
+ */
+
+/**
+ * @file cstdio
+ * @brief Emscripten (musl) shim for <cstdio> — makes stdout/stderr
+ *        reassignable, mirroring esp_idf_host/cstdio's Windows path.
+ *        Emscripten (musl) 用の <cstdio> シム — stdout/stderr を再代入可能に
+ *        する。esp_idf_host/cstdio の Windows 経路と同じ考え方。
+ *
+ * musl declares `extern FILE *const stdout;` — a const lvalue — so the
+ * UNMODIFIED firmware/vehicle/tasks/cli_task.cpp, which swaps stdout to a
+ * socket FILE* for its TCP-CLI-over-WiFi session (`stdout = client;`), fails
+ * to compile. Real ESP-IDF (newlib) makes stdout a genuine per-task
+ * reassignable FILE* variable, which that feature relies on.
+ *
+ * musl は `extern FILE *const stdout;`（const な左辺値）として宣言するため、
+ * TCP CLI セッションのあいだ stdout をソケットの FILE* に差し替える無改変の
+ * firmware/vehicle/tasks/cli_task.cpp（`stdout = client;`）がコンパイルできない。
+ * 実 ESP-IDF（newlib）では stdout はタスクごとに再代入可能な本物の FILE* 変数で、
+ * 同機能はそれに依存している。
+ *
+ * How: shadow stdout/stderr with real global variables (defined in
+ * wasm_stdio_shim.cpp), exactly as the Windows shim does. This directory is
+ * placed BEFORE esp_idf_host/ on the include path, and this header chains to
+ * it with #include_next, so the existing shim's behaviour is preserved and no
+ * existing file is edited.
+ *
+ * どう実現しているか: stdout/stderr を実体のあるグローバル変数（定義は
+ * wasm_stdio_shim.cpp）で覆い隠す。Windows シムと全く同じ手口。このディレクトリを
+ * include パス上で esp_idf_host/ より前に置き、本ヘッダは #include_next で
+ * そちらへ連鎖するので、既存シムの挙動は保たれ、既存ファイルは1つも編集しない。
+ *
+ * Scope — compiles, does not replicate newlib's semantics: printf()/puts()
+ * are wired by the CRT to the real fd and never consult this variable, so the
+ * redirect stays cosmetic. Accepted for the same reason as the Windows shim:
+ * lwip/sockets.h is an inert stub here, so no TCP client can reach that code.
+ * fprintf(stdout, ...) elsewhere is unaffected (same pointer either way).
+ *
+ * 適用範囲 — コンパイルは通すが newlib の意味論は再現しない: printf()/puts() は
+ * CRT が実 fd に直結しており、この変数を参照しない。よってリダイレクトは見た目
+ * だけになる。Windows シムと同じ理由で許容する: ここでは lwip/sockets.h が
+ * inert な代替実装で、TCP クライアントが当該コードに到達し得ない。他所の
+ * fprintf(stdout, ...) は影響を受けない（どちらの経路でも同じポインタ）。
+ */
+
+#pragma once
+
+// Chain to esp_idf_host/cstdio (which itself #include_next's the real one).
+// esp_idf_host/cstdio へ連鎖する（同ヘッダがさらに本物を #include_next する）。
+#include_next <cstdio>
+
+#ifdef __EMSCRIPTEN__
+#undef stdout
+#undef stderr
+extern "C" FILE* g_sils_wasm_stdout;
+extern "C" FILE* g_sils_wasm_stderr;
+#define stdout g_sils_wasm_stdout
+#define stderr g_sils_wasm_stderr
+#endif

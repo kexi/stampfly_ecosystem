@@ -39,7 +39,21 @@
 #include <cmath>
 #include <vector>
 
+// SILS_PLANT_EXTERNAL: build this header against an alternative Plant
+// implementation (simulator/unity/native) that does not link MuJoCo. Only the
+// four MuJoCo-typed declarations below are guarded; everything else — the
+// Config struct, the public API and all the physical constants — is shared
+// verbatim with the MuJoCo build. When the macro is UNDEFINED the preprocessed
+// token sequence is byte-identical to before this guard was added.
+//
+// SILS_PLANT_EXTERNAL: MuJoCo をリンクしない別の Plant 実装
+// （simulator/unity/native）に対して本ヘッダをビルドするための切り替え。
+// 囲うのは下記4か所の MuJoCo 型の宣言だけで、Config 構造体・公開 API・物理定数は
+// MuJoCo 版とそのまま共有する。マクロ未定義時のプリプロセス後トークン列は、この
+// 囲みを入れる前と1バイトも変わらない。
+#ifndef SILS_PLANT_EXTERNAL
 #include <mujoco/mujoco.h>
+#endif
 
 #include "sf_math.hpp"
 #include "frames.hpp"
@@ -474,8 +488,10 @@ public:
     sf::FlowData flow() const;  ///< PMW3901 dx/dy [counts] over the last step
     sf::MagData  mag()  const;  ///< body magnetic field [µT] (default ref, OFF by default)
 
+#ifndef SILS_PLANT_EXTERNAL
     const mjModel* model() const { return m_; }  ///< for the optional viewer / ビューア用
     mjData*        data()        { return d_; }   ///< for the optional viewer / ビューア用
+#endif
 
 private:
     /// Ground-effect lift multiplier at body height z [m] (ENU): 1 + ge_gain·exp(−z/ge_height).
@@ -530,10 +546,12 @@ private:
 
     /// Pointer to a named sensor's data inside d_->sensordata.
     /// 名前付きセンサの d_->sensordata 内の先頭ポインタ。
+#ifndef SILS_PLANT_EXTERNAL
     const double* sensor(int sid) const { return d_->sensordata + m_->sensor_adr[sid]; }
 
     mjModel* m_ = nullptr;
     mjData*  d_ = nullptr;
+#endif
     Config cfg_;
     SensorNoise noise_;  ///< IMU noise model (seeded; advanced each step). §13 P5
 

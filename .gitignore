@@ -145,6 +145,12 @@ analysis/scripts/verify_hikoki64/
 # ====================
 **/.cache/
 
+# Unity native-core build directories (the `**/build/` rule above only matches
+# a directory named exactly `build`, not `build-spike` / `build-trace` / ...).
+# Unity 版ネイティブコアのビルド用ディレクトリ（上の `**/build/` は `build` という
+# 名前そのものにしか当たらず、`build-spike`・`build-trace` 等には当たらない）。
+simulator/unity/native/build-*/
+
 # ====================
 # Beamer auto-generated listings
 # ====================

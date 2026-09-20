@@ -361,6 +361,7 @@ simulator/
 ├── sils/       # Software-in-the-Loop 本体（決定論的・ESP-IDF ホストビルド）
 ├── tests/      # シミュレータ横断のテスト
 ├── tools/      # シミュレータ間比較などの補助
+├── unity/      # Unity 版（WebGL、実装中）— 現状は native/ に段階 1 の技術検証のみ
 └── vpython/    # VPython 版（軽量・ブラウザ 3D 表示）
 ```
 
@@ -368,6 +369,10 @@ simulator/
   SILS 立ち上げ期（2026-06 の再構築 E0〜E8・P1〜P10）の経緯は同文書に要約し、原文 `simulator/sils/RESET_PLAN.md`
   と `docs/plans/simulator-migration.md` は 2026-09-13 に削除（タグ `archive/2026-09-13`）
 - protocol を介した I/O により、実機との一貫性を保つ
+- `unity/` は 4 つ目のシミュレータ（ブラウザで動く Unity 版）を作る場所で、計画は `docs/plans/unity-simulator.md`。
+  既存の 3 つ（SILS・VPython 版・Genesis 版）を置き換えず、リアルタイム操縦・カメラ/前向き ToF の模擬・
+  障害物のある 3D 環境を受け持つ。**現状は `native/` に段階 1 の技術検証（無改変ファームウェアの
+  WebAssembly 化）があるだけで、Unity プロジェクト本体はまだ無い**
 
 ---
 

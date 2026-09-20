@@ -511,4 +511,4 @@ When developing this codebase, follow this order:
 
 All architectural decisions are documented in `PROJECT_PLAN.md`. It is the canonical description of the repository structure: consult it before making structural changes, and **update it in the same commit** whenever a directory, responsibility, or naming convention changes (PROJECT_PLAN §15). Sub-READMEs (`docs/README.md`, `tools/README.md`, ...) summarize it and must not describe a different structure.
 シミュレーション方針（3層構造・Model Fidelity 期の SILS 忠実度目標・改修バックログ）は `docs/architecture/simulation-policy.md` を正とする。
-Unity 版シミュレータ（WebGL、4 つ目として併設する計画。状態: 実装中）は `docs/plans/unity-simulator.md` を参照する。`simulator/unity/` と `sf unity` は未実装で、実装する段のコミットで PROJECT_PLAN §10・§9 と上記のコマンド一覧に追記する。完了したらこの計画文書は削除する（PROJECT_PLAN §15 規則 7）。
+Unity 版シミュレータ（WebGL、4 つ目として併設する計画。状態: 実装中）は `docs/plans/unity-simulator.md` を参照する。`simulator/unity/` は 2026-09-20 に段階 1 の技術検証（`native/`、無改変ファームウェアの WebAssembly 化）だけが入った状態で、Unity プロジェクト本体と `sf unity` はまだ無い。実装する段階のコミットで PROJECT_PLAN §10・§9 と上記のコマンド一覧に追記する。完了したらこの計画文書は削除する（PROJECT_PLAN §15 規則 7）。
