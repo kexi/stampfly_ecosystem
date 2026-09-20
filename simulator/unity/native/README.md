@@ -69,17 +69,41 @@ Clang と Emscripten がその選択を別々に行えば下位ビットが分�
 標準エラー出力へ出す。実時間の測定値は繰り返さないため、標準出力に混ぜると一致の判定が壊れる
 からである。
 
-### 飛行が起動時のヒープの配置に依存する（既知の未解決の不具合）
+### 飛行は起動時のヒープの配置に依存しない（かつては依存した。原因は fiber のスタックの整列）
 
-**`sfu_boot` の前にヒープへ触れると、飛行の結果が変わる。** 起動の前に 48 バイトを 1 回確保する
-だけで、ホバリングの成立が「Impact detected: 8.0G」による緊急 DISARM に反転する。ヒープを
-16 バイトずらすだけで反転し、確保した領域の中身は無関係である。本件は別の担当が調査中である。
+**`sfu_boot` の前にヒープを確保してよい。飛行の結果は変わらない。**
 
-そのため、ここにある 3 つのホスト（2 つの C++ の最小動作確認と `sfu_module_check.mjs`）は
-いずれも、**`sfu_boot` が返るまでヒープに触れない**。コマンド行の解析は `argv` を指す
-`const char*` だけを持ち（`sfu_smoke_options.hpp`）、`run_id` の文字列とログのファイルは起動の
-後に作る。`sfu_module_check.mjs` の `_malloc` はすべて起動の前に、量も順序も決め打ちで行う。
-この規律を崩すと確認が成功と失敗に分かれるので、原因が取り除かれるまで守ること。
+かつては変わった。起動の前に 48 バイトを 1 回確保するだけで、ホバリングの成立が
+「Impact detected: 8.0G」による緊急 DISARM に反転し、ヒープを 16 バイトずらすだけで反転した。
+Unity の `.jslib` は起動の前に確保せざるを得ないので、Unity 経由では毎回失敗していた。
+
+**原因はヒープの確保そのものではなく、fiber 版スケジューラのタスクスタックの整列であった。**
+スケジューラは各タスクのスタックを `std::malloc` で確保していたが、`malloc` が保証するのは
+`max_align_t` まで（wasm32 では 8 バイト）である。一方 C ABI は呼び出し境界で 16 バイト整列の
+スタックポインタを要求し、コンパイラは 16 バイト整列のローカルを実行時の切り上げではなく
+スタックポインタの**マスク**で配置する。よって 8 mod 16 で始まるスタックでは、そのスロットが
+下方向へずれて別のローカルに重なり、2 つが静かに壊し合った。スタックが境界に乗るかは
+その時のヒープのずれだけで決まるため、ディレクトリ名の長さや起動前の 1 回の確保で反転した。
+**コミット `e4ed60cd` が `std::aligned_alloc(16, …)` に直した。**
+
+そのため「起動までヒープに触れない」という以前の規律はもう要らない。代わりに、退行を規律では
+なく試験で捕まえる。`just unity-native-test` が毎回、次の 4 つを確かめる。
+
+| 確かめるもの | 手立て |
+|---|---|
+| 2 つの C++ の最小動作確認（ネイティブ） | `--preallocate 48` を付けた実行と付けない実行の標準出力を `diff` |
+| 同じ 2 つ（wasm） | 同じく `diff`。整列の不具合が実際に居たのはこちら |
+| 段階 1(a) のモジュール | `spike/heap_layout_check.mjs` ― 起動前のずれ 32 通りが一致すること |
+| 出荷する橋渡しのモジュール | `bridge/sfu_heap_layout_check.mjs` ― 起動前のずれ 24 通りが一致すること |
+
+後ろの 2 つは、16 バイトの窓を 1 バイトずつ歩いてから、48・64・128・256・512・1024・2048・4096
+を抜き取りで見る。「全て一致したが一度も飛んでいない」実行は自分自身と自明に一致して退行を
+隠すので、最大高度と飛行状態も判定に入れて不合格にする。`aligned_alloc` を `malloc` へ戻すと
+橋渡し版は 24 通り中 11 通りが分かれ、分かれた側は最終高度 0.013 m（接地）・状態 1 になる ―
+この試験が不具合を実際に検出することは、そうして確かめてある。
+
+`sfu_smoke_options.hpp` の `const char*`（`std::string` ではなく `argv` を指す）は残してある。
+これはもはや正しさの要件ではなく、解析より長生きするコマンド行を読むには単に安いからである。
 
 ### 成果物の大きさ
 
@@ -197,7 +221,9 @@ RC の注入を仮想時間で行うことが、刻みが RC 周期より長く�
 | `bridge/sfu_rc_script.hpp` | 2 つの最小動作確認が共有する台本の操縦入力 |
 | `bridge/sfu_bridge_smoke.cpp` | Unity 無しの最小動作確認（プラントが剛体を持つ） |
 | `bridge/sfu_external_smoke.cpp` | 外部供給の最小動作確認（C++ が Unity の代役） |
+| `bridge/sfu_flight.mjs` | 2 つの JS の確認が共有する構造体の配置と飛行（台本・物理・判定） |
 | `bridge/sfu_module_check.mjs` | wasm モジュールを JS から飛ばす確認（JS が Unity の代役） |
+| `bridge/sfu_heap_layout_check.mjs` | 同じモジュールを、起動前のヒープのずれ 24 通りで飛ばして一致を求める |
 | `bridge/sfu_module_main.cpp` | 出荷するモジュールがリンクする翻訳単位。論理は持たない |
 | `bridge/sfu_exports.txt` | dylib が公開する記号の一覧 |
 | `CMakeLists.txt` | 独立したプロジェクト。MuJoCo を取得しない |
@@ -239,6 +265,10 @@ just unity-native-test 30
    `sfu_struct_size` と突き合わせてから 30 秒飛ばす
 6. JSON Lines のログを書き、`jq` が全行を読めることを確かめる
 7. `actuator_parity_test` — ビルド済みの SILS に在るときだけ
+8. 2 つの C++ の確認を `--preallocate 48` でも実行し、付けない実行と `diff` で突き合わせる
+   （ネイティブと wasm の両方）
+9. `spike/heap_layout_check.mjs` と `bridge/sfu_heap_layout_check.mjs` — 起動前のヒープのずれを
+   走査して飛行が一致することを求める。段階 1(a) のモジュールは `build_module_spike.sh` が作る
 
 `sfu_bridge_smoke` は飛行のほかに、ABI の約束も確かめる: 2 回目の `sfu_boot` が拒まれること、
 N 刻み後の `now_us` がちょうど N×2500 µs であること、範囲外の `dt_us` が丸められず拒まれること、
@@ -374,7 +404,7 @@ Chrome の実測は同じ `.js`／`.wasm` を素の HTML ページから読み�
 | `wrench_dt_s` は診断用 | 返る `force_local`・`torque_local`・`wind_force_world` は**区間平均の力**である。力を自分の物理刻みで積分するのはホストなので、`AddRelativeForce` 等へはそのまま渡す ― `wrench_dt_s` を掛けたり割ったりしない。`wrench_dt_s` はその平均が覆う区間の長さで、2.5 ms 固定ではない（プラントが副刻みの端数を繰り越すため、最初の刻みは 2.25 ms になりうる）。ホストの刻みと大きく食い違っていれば何かがおかしい、と分かるための診断の値である |
 | エディタ用 dylib の読み込み直し | 再生のたびに読み込み直す仕組みは Unity プロジェクトと一緒に作る。段階 2 では dylib までとした |
 | 接触モデル | `sfu_external_smoke.cpp` の床は z=0 のばね・ダンパで、PhysX の接触ソルバではない。空中の軌跡は近いが、接地の瞬間から分かれる |
-| スタックの大きさ | タスクごとに 1 MiB（14 タスクで 14 MiB）。ファームの `config::STACK_*` は 32bit 向けの値なので従っていない |
+| スタックの大きさと整列 | タスクごとに 1 MiB（14 タスクで 14 MiB）。ファームの `config::STACK_*` は 32bit 向けの値なので従っていない。**スタックは 16 バイト境界に整列させなければならない。** C ABI が呼び出し境界で 16 バイト整列のスタックポインタを要求し、コンパイラは 16 バイト整列のローカルをスタックポインタのマスクで配置するためである。`malloc` が保証するのは wasm32 では 8 バイトまでなので、`scheduler_fiber.cpp` は `std::aligned_alloc(16, …)` で確保する（`e4ed60cd`。整列を外すと飛行がヒープの位置で 2 通りに分かれる） |
 | `plant.cpp` との重複 | `actuator_model.hpp` は `plant.cpp` からの写しであり、現時点では同じ式が 2 組ある。食い違わないことを守るのが `actuator_parity_test` の役目で、CI に入れることが望ましい |
 
 ---
@@ -451,19 +481,43 @@ measurement as it was taken, and there is no reason to rebuild a record after th
 All three checks also **print identical stdout across two runs**. Only the speed figure goes to
 stderr: a wall-clock measurement never repeats, and mixing it into stdout would break that check.
 
-### The Flight Depends on the Heap Layout at Boot (a known open fault)
+### The Flight Does Not Depend on the Heap Layout at Boot (it once did — fiber stack alignment)
 
-**Touching the heap before `sfu_boot` changes the flight.** One 48-byte allocation ahead of the
-boot turns the hover into an emergency DISARM on "Impact detected: 8.0G"; a 16-byte shift is
-enough to flip it, and the contents of what was allocated are irrelevant. Someone else is
-investigating it.
+**Allocating before `sfu_boot` is fine; the flight comes out the same.**
 
-So all three hosts here — the two C++ checks and `sfu_module_check.mjs` — **leave the heap alone
-until `sfu_boot` returns**. Option parsing holds only `const char*` into `argv`
-(`sfu_smoke_options.hpp`); the `run_id` string and the log file are built after the boot; and
-`sfu_module_check.mjs` does all of its `_malloc` before the boot, in a fixed amount and order.
-Breaking that discipline makes the checks split into passing and failing runs, so keep to it
-until the cause is removed.
+It once did not. A single 48-byte allocation ahead of the boot turned the hover into an emergency
+DISARM on "Impact detected: 8.0G", and a 16-byte shift was enough to flip it. Unity's `.jslib` has
+no choice but to allocate before the boot, so through Unity the flight failed every time.
+
+**The cause was not the allocation but the alignment of the fiber scheduler's task stacks.** The
+scheduler took each task's stack from `std::malloc`, which guarantees only `max_align_t` — 8 bytes
+under wasm32 — while the C ABI requires a 16-byte-aligned stack pointer at a call boundary and the
+compiler places 16-byte-aligned locals by MASKING the stack pointer rather than rounding it up. On
+a stack starting 8-mod-16 that slot moved downwards onto another local, and the two silently
+corrupted each other. Whether a stack landed on the boundary depended only on the heap offset at
+that moment, hence the sensitivity to a directory name's length or to one allocation before the
+boot. **Commit `e4ed60cd` fixed it with `std::aligned_alloc(16, ...)`.**
+
+The old "leave the heap alone until the boot" discipline is therefore gone. A regression is caught
+by a check instead: `just unity-native-test` confirms all four of these on every run.
+
+| What is checked | How |
+|---|---|
+| The two C++ checks, native | `diff` of stdout with `--preallocate 48` against stdout without it |
+| The same two, wasm | The same `diff`. This is where the alignment fault actually lived |
+| The stage 1(a) module | `spike/heap_layout_check.mjs` — 32 pre-boot shifts must agree |
+| The shipped bridge module | `bridge/sfu_heap_layout_check.mjs` — 24 pre-boot shifts must agree |
+
+The last two walk a 16-byte window one byte at a time, then sample 48, 64, 128, 256, 512, 1024,
+2048 and 4096. A run that never left the ground would agree with itself trivially and hide a
+regression, so the peak altitude and the flight state are part of the verdict too. Reverting
+`aligned_alloc` to `malloc` makes the bridge check report 11 of 24 differing, the differing side
+ending at 0.013 m (on the ground) in state 1 — that is how the check was confirmed to detect the
+fault it guards against.
+
+`sfu_smoke_options.hpp` still holds `const char*` into `argv` rather than `std::string`. That is no
+longer a correctness requirement, just the cheaper way to read a command line that outlives the
+parse.
 
 ### Artefact Sizes
 
@@ -585,7 +639,9 @@ flies with the latter.
 | `bridge/sfu_rc_script.hpp` | The scripted stick input both smoke checks share |
 | `bridge/sfu_bridge_smoke.cpp` | The minimum-operation check without Unity (the plant owns the body) |
 | `bridge/sfu_external_smoke.cpp` | The externally supplied check (C++ stands in for Unity) |
+| `bridge/sfu_flight.mjs` | The struct layout and the flight (script, physics, verdict) both JS checks share |
 | `bridge/sfu_module_check.mjs` | Flies the wasm module from JS (JS stands in for Unity) |
+| `bridge/sfu_heap_layout_check.mjs` | Flies the same module behind 24 pre-boot heap shifts and requires them to agree |
 | `bridge/sfu_module_main.cpp` | The translation unit the shipped module links; holds no logic |
 | `bridge/sfu_exports.txt` | The symbols the dylib exposes |
 | `CMakeLists.txt` | A project of its own; does not fetch MuJoCo |
@@ -627,6 +683,10 @@ What `unity-native-test` runs:
    against `sfu_struct_size`, and flies 30 seconds
 6. Writes a JSON Lines log and confirms `jq` can read every line of it
 7. `actuator_parity_test`, only when a built SILS has one
+8. Both C++ checks again with `--preallocate 48`, `diff`ed against the runs without it, under
+   native and under wasm
+9. `spike/heap_layout_check.mjs` and `bridge/sfu_heap_layout_check.mjs` — scanning pre-boot heap
+   shifts and requiring the flights to agree. `build_module_spike.sh` builds the stage 1(a) module
 
 `sfu_bridge_smoke` also checks the ABI's promises: a second `sfu_boot` is refused, `now_us` after
 N ticks is exactly N×2500 µs, an out-of-range `dt_us` is refused rather than clamped, and after
@@ -753,5 +813,5 @@ Difference" records what is known.
 | `wrench_dt_s` is for diagnosis | `force_local`, `torque_local` and `wind_force_world` are interval-AVERAGED forces. The host integrates them over its own physics step, so they go straight into `AddRelativeForce` and friends — do not multiply or divide by `wrench_dt_s`. That field is the length of the interval the average covers, which is not a fixed 2.5 ms (the plant carries its sub-step remainder over, so the first tick can be 2.25 ms). It is there so a host can notice when it has drifted far from its own tick |
 | Reloading the editor dylib | Reloading it between play sessions comes with the Unity project; stage 2 stops at the dylib |
 | Contact model | The floor in `sfu_external_smoke.cpp` is a spring-damper at z=0, not PhysX's contact solver. Trajectories are close in the air and part ways on impact |
-| Stack sizes | 1 MiB per task (14 MiB for 14 tasks). The firmware's `config::STACK_*` values are 32-bit figures and are deliberately not honoured |
+| Stack sizes and alignment | 1 MiB per task (14 MiB for 14 tasks). The firmware's `config::STACK_*` values are 32-bit figures and are deliberately not honoured. **A task stack must be 16-byte aligned:** the C ABI requires a 16-byte-aligned stack pointer at a call boundary, and the compiler places 16-byte-aligned locals by masking the stack pointer. `malloc` guarantees only 8 bytes under wasm32, so `scheduler_fiber.cpp` allocates with `std::aligned_alloc(16, ...)` (`e4ed60cd`; without the alignment the flight splits in two according to where the heap sits) |
 | Duplication with `plant.cpp` | `actuator_model.hpp` was copied out of `plant.cpp`, so the same formulas exist in two places for now. Keeping them from drifting apart is `actuator_parity_test`'s job, and it belongs in CI |

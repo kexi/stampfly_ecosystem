@@ -56,6 +56,24 @@ unity-native-test seconds="30": unity-native-build
     ./simulator/unity/native/build-native/sfu_external_smoke {{ seconds }} 2>/dev/null > simulator/unity/native/build-native/external_smoke.run2.txt
     diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-native/external_smoke.run2.txt
     @echo "[unity-native-test] native: frames_unity_test OK; both smoke checks hover and repeat identically"
+    # The same two flights with the heap shifted before `sfu_boot`. The flight
+    # must not depend on where the heap sits: it once did, because the fiber
+    # scheduler took its task stacks from `malloc` (8-byte aligned under wasm32)
+    # while the compiler places 16-byte-aligned locals by masking the stack
+    # pointer — fixed in e4ed60cd by `aligned_alloc(16, ...)`. 48 bytes is what
+    # Unity's `.jslib` allocates before the boot, which is how this reached the
+    # Unity build.
+    # 同じ 2 つの飛行を、`sfu_boot` の前にヒープをずらして行う。飛行はヒープの位置に
+    # 依存してはならない。かつては依存した。fiber 版スケジューラがタスクスタックを
+    # `malloc`（wasm32 では 8 バイト整列）で取る一方、コンパイラは 16 バイト整列の
+    # ローカルをスタックポインタのマスクで配置していたためで、e4ed60cd の
+    # `aligned_alloc(16, ...)` で直っている。48 バイトは Unity の `.jslib` が起動前に
+    # 確保する量で、これが Unity 版まで届いた経路である。
+    ./simulator/unity/native/build-native/sfu_bridge_smoke {{ seconds }} --preallocate 48 2>/dev/null > simulator/unity/native/build-native/bridge_smoke.prealloc.txt
+    diff simulator/unity/native/build-native/bridge_smoke.run1.txt simulator/unity/native/build-native/bridge_smoke.prealloc.txt
+    ./simulator/unity/native/build-native/sfu_external_smoke {{ seconds }} --preallocate 48 2>/dev/null > simulator/unity/native/build-native/external_smoke.prealloc.txt
+    diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-native/external_smoke.prealloc.txt
+    @echo "[unity-native-test] native: allocating before sfu_boot does not change the flight"
     node simulator/unity/native/build-wasm/frames_unity_test.js
     # The same two flights under wasm, kept so they can be compared with the
     # native ones BYTE FOR BYTE. Both toolchains compile with -ffp-contract=off,
@@ -68,6 +86,15 @@ unity-native-test seconds="30": unity-native-build
     node simulator/unity/native/build-wasm/sfu_external_smoke.js {{ seconds }} 2>/dev/null > simulator/unity/native/build-wasm/external_smoke.txt
     diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-wasm/external_smoke.txt
     @echo "[unity-native-test] native and wasm produce byte-identical output"
+    # And under wasm, where the alignment fault actually lived: the shifted heap
+    # must still produce the native output, byte for byte.
+    # そして、整列の不具合が実際に居た wasm でも。ずらしたヒープで、なおネイティブの
+    # 出力とバイト単位で一致しなければならない。
+    node simulator/unity/native/build-wasm/sfu_bridge_smoke.js {{ seconds }} --preallocate 48 2>/dev/null > simulator/unity/native/build-wasm/bridge_smoke.prealloc.txt
+    diff simulator/unity/native/build-native/bridge_smoke.run1.txt simulator/unity/native/build-wasm/bridge_smoke.prealloc.txt
+    node simulator/unity/native/build-wasm/sfu_external_smoke.js {{ seconds }} --preallocate 48 2>/dev/null > simulator/unity/native/build-wasm/external_smoke.prealloc.txt
+    diff simulator/unity/native/build-native/external_smoke.run1.txt simulator/unity/native/build-wasm/external_smoke.prealloc.txt
+    @echo "[unity-native-test] wasm: allocating before sfu_boot does not change the flight"
     node simulator/unity/native/bridge/sfu_module_check.mjs \
         simulator/unity/native/build-wasm/sfu_firmware.js {{ seconds }} \
         --log-jsonl simulator/unity/native/build-wasm/logs/module_check.jsonl
@@ -89,3 +116,20 @@ unity-native-test seconds="30": unity-native-build
     else \
         echo "[unity-native-test] actuator_parity_test skipped (no built SILS in simulator/sils/build*/)"; \
     fi
+    # The two heap-layout scans, last because each builds and flies a module
+    # dozens of times. Both walk a 16-byte window one byte at a time and then
+    # sample larger shifts, requiring every flight to agree: the stage 1(a) spike
+    # module, where the alignment fault was found, and the shipped bridge module
+    # Unity loads. Fourteen simulated seconds is past the gust and long enough
+    # for the failsafe the fault tripped to show.
+    # 2 つのヒープ配置の走査。モジュールを何十回も作って飛ばすので最後に置く。
+    # どちらも 16 バイトの窓を 1 バイトずつ歩いてからより大きなずれを抜き取りで見て、
+    # 全ての飛行が一致することを求める。対象は、整列の不具合が見つかった段階 1(a) の
+    # 技術検証のモジュールと、Unity が読み込む出荷用の橋渡しのモジュールである。
+    # シミュレーション 14 秒は突風を過ぎており、不具合が誤作動させたフェイルセーフが
+    # 現れるのに十分な長さである。
+    bash simulator/unity/native/spike/build_module_spike.sh
+    node simulator/unity/native/spike/heap_layout_check.mjs \
+        simulator/unity/native/build-module-spike/sfu_firmware.js 14
+    node simulator/unity/native/bridge/sfu_heap_layout_check.mjs \
+        simulator/unity/native/build-wasm/sfu_firmware.js 14

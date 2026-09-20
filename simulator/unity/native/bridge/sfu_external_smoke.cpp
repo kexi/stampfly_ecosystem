@@ -60,6 +60,7 @@
  *
  * Usage / 使い方:
  *   sfu_external_smoke [simulated seconds, default 30] [--log-jsonl <path>]
+ *                      [--run-id <id>] [--preallocate <bytes>]
  *
  * @design docs/plans/unity-simulator.md §3 1 刻みの処理, §5 段階 2
  *         AGENTS.md「新しく書くコードのログの決まり」
@@ -470,9 +471,17 @@ int main(int argc, char** argv)
     if (!options.ok) {
         std::fprintf(stderr,
                      "usage: sfu_external_smoke [seconds] [--log-jsonl <path>] "
-                     "[--run-id <id>]\n");
+                     "[--run-id <id>] [--preallocate <bytes>]\n");
         return 1;
     }
+
+    // `--preallocate <bytes>` shifts the heap before the boot. The flight must
+    // come out identical with it and without it; `just unity-native-test` runs
+    // both and diffs them. See sfu_smoke_options.hpp for what this once broke.
+    // `--preallocate <bytes>` は起動の前にヒープをずらす。付けても付けなくても
+    // 飛行は同一でなければならない。`just unity-native-test` が両方を実行して
+    // 突き合わせる。これが何を壊していたかは sfu_smoke_options.hpp を参照。
+    sfu::shift_heap_before_boot(options.preallocate_bytes);
 
     SfuConfig config{};
     config.struct_size      = sizeof(SfuConfig);

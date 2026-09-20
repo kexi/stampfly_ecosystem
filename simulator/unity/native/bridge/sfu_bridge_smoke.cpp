@@ -27,7 +27,8 @@
  * 違いとして現れる。
  *
  * Usage / 使い方:
- *   sfu_bridge_smoke [simulated seconds, default 30]
+ *   sfu_bridge_smoke [simulated seconds, default 30] [--log-jsonl <path>]
+ *                    [--run-id <id>] [--preallocate <bytes>]
  *
  * @design docs/plans/unity-simulator.md §5 段階 2, §7 検証方法 2
  */
@@ -225,7 +226,7 @@ int main(int argc, char** argv)
     if (!options.ok) {
         std::fprintf(stderr,
                      "usage: sfu_bridge_smoke [seconds] [--log-jsonl <path>] "
-                     "[--run-id <id>]\n");
+                     "[--run-id <id>] [--preallocate <bytes>]\n");
         return 1;
     }
 
@@ -234,6 +235,14 @@ int main(int argc, char** argv)
                      sfu_abi_version(), SFU_ABI_VERSION);
         return 1;
     }
+
+    // `--preallocate <bytes>` shifts the heap before the boot. The flight must
+    // come out identical with it and without it; `just unity-native-test` runs
+    // both and diffs them. See sfu_smoke_options.hpp for what this once broke.
+    // `--preallocate <bytes>` は起動の前にヒープをずらす。付けても付けなくても
+    // 飛行は同一でなければならない。`just unity-native-test` が両方を実行して
+    // 突き合わせる。これが何を壊していたかは sfu_smoke_options.hpp を参照。
+    sfu::shift_heap_before_boot(options.preallocate_bytes);
 
     SfuConfig config{};
     config.struct_size      = sizeof(SfuConfig);
