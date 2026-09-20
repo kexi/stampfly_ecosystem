@@ -167,9 +167,18 @@ ALT t=  7.00 alt=  0.323 ... state=IDLE_GROUND  armed=0
 ```
 
 同じパスで繰り返せば結果は毎回同じで、12 回の実行が完全に一致する。つまり実行ごとの
-ゆらぎではなく、**起動時のメモリ配置で決まる分岐**である。原因は特定していない
-（未初期化のメモリの読み出し、fiber のスタックの配置、Asyncify の巻き戻しのいずれか、
-と推測しているが**確かめていない**）。
+ゆらぎではなく、**起動時のメモリ配置で決まる分岐**である。
+
+**原因と修正（2026-09-20 に解決）**: fiber 型スケジューラ（`simulator/sils/rtos/scheduler_fiber.cpp`）が
+タスクのスタックを `malloc` で確保していた。wasm32 の `malloc` が保証する整列は 8 バイトだが、
+C の呼び出し規約はスタックが 16 バイト境界にあることを前提にしており、コンパイラは 16 バイト整列の
+局所変数の位置をスタックポインタのマスクで求める。スタックが 8 バイトずれて始まると、その位置が
+別の局所変数と重なり、互いを壊し合う。スタックが境界に乗るかどうかはその時のヒープのずれだけで
+決まるので、ディレクトリ名の長さや起動前の 1 回の確保で飛び方が変わっていた。
+確定の根拠: 起動前の `_malloc(N)` を走査すると周期 16 バイトの縞になる／スタックを 0x00・0xAA・0xFF で
+埋めても分岐は変わらない（未初期化の読み出しではない）／成功側と失敗側でタスクのスタックの
+アドレスの 16 での余りが全タスクで反転していた。修正は `aligned_alloc(16, …)` への置き換え（3 か所）。
+再発は `heap_layout_check.mjs`（ヒープを 32 通りずらして全て一致することを要求）が検出する。
 
 段階 1(a) の記録にある「Node.js で 2 回実行して出力が完全一致」は、**同じパスでの
 2 回**であり、この分岐は見えていなかった。段階 2 で原因を特定するまで、
@@ -381,9 +390,22 @@ ALT t=  7.00 alt=  0.323 ... state=IDLE_GROUND  armed=0
 
 Repeating at one path always gives the same answer; twelve runs agreed exactly. So
 this is not run-to-run jitter but **a branch decided by the memory layout at
-start-up**. The cause has not been identified (reading uninitialized memory, the
-fiber stacks' placement, or Asyncify's rewind are the suspects, but **none of this
-was confirmed**).
+start-up**.
+
+**Cause and fix (resolved 2026-09-20)**: the fiber scheduler
+(`simulator/sils/rtos/scheduler_fiber.cpp`) allocated task stacks with `malloc`. On
+wasm32 `malloc` guarantees 8-byte alignment only, while the C calling convention
+assumes a 16-byte aligned stack and the compiler locates 16-byte aligned locals by
+masking the stack pointer. On a stack that starts 8 bytes off, that slot overlaps
+another local and the two corrupt each other. Whether a stack lands on the boundary
+depends only on the heap offset at that moment, so the directory name length or one
+allocation before boot changed the flight. Evidence: scanning `_malloc(N)` before
+boot gives stripes with a period of 16 bytes; filling the stacks with 0x00, 0xAA or
+0xFF does not change the split (so it is not an uninitialised read); and the stack
+addresses modulo 16 were inverted for every task between the passing and the failing
+side. The fix replaces three `malloc` calls with `aligned_alloc(16, ...)`.
+`heap_layout_check.mjs` guards against a regression by requiring identical results
+across 32 heap offsets.
 
 Stage 1(a)'s record that "two Node.js runs produced identical output" compared **two
 runs at the same path**, where this branch is invisible. Until stage 2 identifies the

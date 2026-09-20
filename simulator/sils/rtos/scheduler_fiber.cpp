@@ -86,6 +86,51 @@ constexpr size_t kTaskStackSize = 1u << 20;   // 1 MiB
 // 専用バッファを fiber ごとに必要とする。ネイティブビルドでは使わない（確保もしない）。
 constexpr size_t kAsyncifyStackSize = 1u << 16;   // 64 KiB
 
+// Alignment every fiber stack (and every Asyncify spill buffer) is placed on.
+// The C ABI of both targets requires the stack pointer to be 16-byte aligned at
+// a call boundary, and the compiler exploits that: it computes the address of an
+// over-aligned local (anything alignas(16) — max_align_t, long double, a SIMD
+// vector, and the 16-byte-aligned spill slots clang emits inside the ESKF's
+// float math) by MASKING the stack pointer rather than by rounding it up at run
+// time. On a stack that does not start 16-byte aligned, that mask moves the slot
+// DOWNWARDS onto memory another local already occupies, so two unrelated
+// variables alias and silently corrupt each other.
+//
+// std::malloc guarantees only max_align_t — 8 bytes under wasm32 and under
+// ILP32 generally — so a bare malloc'd stack lands on a 16-byte boundary only
+// half the time, decided by whatever the heap offset happens to be. That is why
+// the flight outcome used to depend on the length of the directory name (argv
+// changes the pre-main allocations) or on a single _malloc() before boot.
+//
+// 各 fiber スタック（と Asyncify の退避バッファ）を置く整列境界。両ターゲットの
+// C ABI は呼び出し境界でスタックポインタが 16 バイト整列であることを要求し、
+// コンパイラはそれを利用する: 16 バイト超整列のローカル（alignas(16) のもの —
+// max_align_t・long double・SIMD ベクタ、および ESKF の浮動小数演算で clang が
+// 吐く 16 バイト整列の退避スロット）のアドレスを、実行時の切り上げではなく
+// スタックポインタの「マスク」で求める。16 バイト整列でないスタックでは、この
+// マスクがスロットを下方向へずらし、既に別のローカルが使っている領域に重ねる。
+// 結果として無関係な 2 つの変数が別名となり、静かに壊し合う。
+//
+// std::malloc が保証するのは max_align_t まで（wasm32 や ILP32 では 8 バイト）で、
+// 素の malloc で取ったスタックが 16 バイト境界に乗るかはヒープのその時のずれ次第、
+// つまり半々になる。飛行結果がディレクトリ名の長さ（argv が main 前の確保を変える）や
+// 起動前の 1 回の _malloc() で変わっていたのは、これが理由である。
+constexpr size_t kStackAlign = 16;
+
+// Allocate `size` bytes aligned to kStackAlign, or return nullptr. Uses
+// std::aligned_alloc, which requires the size to be a multiple of the
+// alignment; both sizes here are powers of two far above 16, so they already
+// are, and the round-up keeps that true if either is ever changed.
+// kStackAlign 整列で `size` バイトを確保する。失敗時は nullptr。std::aligned_alloc は
+// 大きさが整列の倍数であることを要求する。ここの 2 つの大きさはどちらも 16 を
+// 遥かに超える 2 の冪なので既に満たしているが、将来どちらかを変えても保たれるよう
+// 切り上げておく。
+void* alloc_fiber_stack(size_t size)
+{
+    const size_t rounded = (size + kStackAlign - 1u) & ~(kStackAlign - 1u);
+    return std::aligned_alloc(kStackAlign, rounded);
+}
+
 // The task whose fiber is currently executing (the fiber-local "self"). The
 // thread version keeps this in thread_local storage; with one flow of control
 // a single global is exactly equivalent and cheaper.
@@ -167,7 +212,7 @@ TaskHandle_t Scheduler::create(TaskFunction_t fn, void* param,
     // fiber のスタックはここで確保する。fiber 自体はスケジューラが最初にトークンを
     // 与えたときに初めて入る（スレッド版のスレッドが本体に入る前に待機するのと同じ）。
     task->stack_size = kTaskStackSize;
-    task->stack = std::malloc(task->stack_size);
+    task->stack = alloc_fiber_stack(task->stack_size);
     if (task->stack == nullptr) {
         std::fprintf(stderr, "[scheduler_fiber] FATAL: out of memory for '%s' stack\n",
                      task->name.c_str());
@@ -176,7 +221,7 @@ TaskHandle_t Scheduler::create(TaskFunction_t fn, void* param,
 
 #ifdef __EMSCRIPTEN__
     task->asyncify_stack_size = kAsyncifyStackSize;
-    task->asyncify_stack = std::malloc(task->asyncify_stack_size);
+    task->asyncify_stack = alloc_fiber_stack(task->asyncify_stack_size);
     if (task->asyncify_stack == nullptr) {
         std::fprintf(stderr, "[scheduler_fiber] FATAL: out of memory for '%s' asyncify stack\n",
                      task->name.c_str());
@@ -245,7 +290,7 @@ void Scheduler::grant(Task* task)
     // Asyncify の巻き戻しが `unreachable` で異常終了する。実際にループを回す
     // スタック上で行うため、コンストラクタではなくここで遅延して実施する。
     if (sched_asyncify_stack_ == nullptr) {
-        sched_asyncify_stack_ = std::malloc(kAsyncifyStackSize);
+        sched_asyncify_stack_ = alloc_fiber_stack(kAsyncifyStackSize);
         if (sched_asyncify_stack_ == nullptr) {
             std::fprintf(stderr, "[scheduler_fiber] FATAL: out of memory for scheduler asyncify stack\n");
             std::abort();
