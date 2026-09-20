@@ -220,6 +220,96 @@ simulator/unity/
 | EditMode 試験 | まだ 1 件も無い。`unity test --mode EditMode` は通るが空で終わる |
 | 刻みの比較 | 400 Hz と 1600 Hz の差 4.68 mm は固定刻みの積分に必ず伴う半刻みの遅れで、精度を上げたいなら刻みを細かくするほか無い。MuJoCo 版は 4000 Hz で積分しており、空中の軌跡を突き合わせるときはこの差を見込む |
 
+## 7. 空間の読み込みと生成（`StampFly.World`）
+
+### このアセンブリについて
+
+空間ファイル（`*.world.json`）を読み、部屋・床・障害物を場面に生成する。形式の基準は
+[`Schemas/README.md`](Schemas/README.md) で、飛行やファームウェアからは独立している。
+
+```
+Assets/StampFly/
+├── Runtime/World/                    StampFly.World アセンブリ
+│   ├── WorldFile.cs                  JsonUtility で読むデータクラス一式
+│   ├── WorldFormat.cs                形式が定める定数（目印・版・既定値・10 種の名前）
+│   ├── WorldFileReader.cs            読み込みと、目印・版・座標系の確認
+│   ├── WorldWriter.cs                ENU のまま JSON へ書き戻す
+│   ├── WorldFrames.cs                ENU ⇔ Unity の変換（C# の座標の仕事はここだけ）
+│   ├── ObstacleFactory.cs            障害物 10 種の生成
+│   ├── WedgeMesh.cs                  ramp のくさびの手続き生成
+│   ├── RoomBuilder.cs                部屋・壁・天井・照明
+│   ├── FloorTexture.cs               床の模様 5 種の手続き生成（WebGL2 で動く）
+│   ├── WorldMaterials.cs             色ごとに使い回す URP Lit のマテリアル
+│   ├── ObstacleInfo.cs               面の素性（id・種類・flow_quality）
+│   ├── WorldCatalog.cs               同梱 6 空間を TextAsset で持つ ScriptableObject
+│   ├── WorldLoader.cs                読み込み・生成・片付け（MonoBehaviour）
+│   └── StructuredLog.cs              ログの出し口（`IStructuredLog`）と既定の実装
+├── Editor/WorldTools/                WorldCatalog.asset を作り直すメニュー
+└── Tests/EditMode/                   読み込み・変換・往復・一覧の試験
+```
+
+### 段階 3・5 への引き継ぎ
+
+| 事項 | 使い方 |
+|------|--------|
+| 出発点 | `WorldLoader.SpawnPosition`（Unity の座標）と `SpawnRotation`（`spawn.yaw_deg` の 90 度のずれを含む）。変換済みなので、そのまま `VehicleBody` に渡せる |
+| フロー品質 | レイの当たり先から `hit.collider.GetComponent<ObstacleInfo>().FlowQuality`。床・壁・天井を含め、この一式が作る全てのコライダが 1 つ持つので、空間に当たった結果が答えを持たずに返ることはない |
+| 読み込み | `WorldLoader.LoadByName("gate_course")`（`WorldCatalog` から）または `Load(json)`。どちらも成否を返し、断った理由をログに出す |
+| 片付け | `WorldLoader.Clear()`。`Load` は先に片付けるので、続けて両方を呼ぶ必要は無い |
+| 刻みとの関係 | この企画は PhysX を `simulationMode = Script` で回すため、生成の直後に `Physics.SyncTransforms()` を呼んでいる。これが無いと最初の `Physics.Simulate` までコライダの外形が古く、レイも当たらない |
+| ログ | `WorldLoader.Log` に `IStructuredLog` を注入すると、`world.loaded` ／ `world.rejected` ／ `world.cleared` の行の行き先を差し替えられる。既定は Unity のコンソールへ JSON 1 行。`run_id` を持つページ側のログ担当ができたら、ここへ差す |
+
+### 一覧（`WorldCatalog.asset`）の作り直し
+
+同梱の空間を足す・名前を変える・消したら、一覧を作り直す。`StreamingAssets` ではなく
+TextAsset の参照で持つので、作り直さないと WebGL のビルドから抜け落ちる
+（`WorldCatalogTest` が手元でそれを捕まえる）。
+
+```bash
+# エディタのメニュー: StampFly > World > Rebuild Catalog
+# 端末から:
+/Applications/Unity/Hub/Editor/6000.6.2f1/Unity.app/Contents/MacOS/Unity \
+  -batchmode -quit -nographics -projectPath . \
+  -executeMethod StampFly.Editor.WorldTools.WorldCatalogBuilder.Rebuild
+```
+
+置き場を `Editor/Build/` ではなく `Editor/WorldTools/` にしてあるのは、§2 の
+`Editor/Builders/` と同じ理由（`.gitignore` の `build/` が大文字小文字を区別しない）である。
+
+### 仕様（`Schemas/README.md`）との食い違い
+
+実装しながら数値で確かめた結果、仕様の §6.2 と §6.2.1 に誤りが見つかった。**実装は測定に
+従っており、仕様の記述には従っていない。** 詳細は `WorldFrames.cs` のコメントに書いてある。
+
+| 箇所 | 仕様の記述 | 測定した事実 |
+|------|-----------|-------------|
+| §6.2 | 「`Quaternion.AngleAxis` の角に負号を付けてはならない」 | 逆で、**負号が要る**。`AngleAxis(90, Vector3.up)` は Unity の forward を right へ送る（＝ENU の北を東へ）。ENU で上から見れば時計回りなので yaw は −90 であり、+90 ではない。負号を付けると `R = Rz·Ry·Rx` との誤差が 0.0、付けないと 2.0（完全な鏡像）になる |
+| §6.2.1 | `SpawnYawToUnity` は `AngleAxis(yawDeg - 90, up)` | `AngleAxis(90 - yawDeg, up)` が正しい。仕様の式では `yaw_deg = 0` が**西**を向く（§6.2.1 自身の検算の表は東と書いている）。yaw が 90 と −90 では両者が一致し、同梱 6 空間の出発点はすべてそこなので、この誤りは同梱の空間では表に出ない |
+
+`ring` の外形についても 1 点補足する。検査（`tools/unity_world/validate.py`）は輪を半径
+`内径/2 + thickness` の円で囲むが、その円に多角形を**外接**させると角が境界からはみ出す。
+そこで棒を外円の弦の長さに切って**内接**させてある。こうすると軸平行な外形が分割数に
+よらず検査と一致し、穴も塞がらない（同梱の 3 つの輪で確認済み）。
+
+### 試験
+
+```bash
+unity test . --mode EditMode --output test-results.xml --non-interactive   # 63 件
+unity test . --mode PlayMode --output test-results.xml --non-interactive   # 38 件
+```
+
+EditMode（63 件）は、同梱 6 空間が読めること、壊れた JSON・違う `format`・違う `version`・
+違う `frame`・未知の種類・肉厚の無い中空が理由付きで断られること、省略時の既定（`light`・
+`segments`・障害物の `flow_quality`）が効き**床の `flow_quality` には効かない**こと、
+`WorldFrames` が §6 の数値と一致し逆変換できること、読み → 書き → 読みで内容が一致する
+こと、一覧が 6 空間を持つことを見る。
+
+PlayMode（38 件。うち 10 件がこの節のもの、28 件が §3 の PhysX の検証）は、6 空間それぞれで
+障害物の数が JSON と一致すること、**種類ごとの外形が `tools/unity_world/validate.py` の
+幾何の解釈と一致すること**（62 個すべて、10 種すべてを通る）、gate・ring・tunnel の開口を
+レイが抜け枠には当たること、`pad` と床から `flow_quality` が引けること、前の空間を片付けて
+から次を読むと古い障害物が残らないことを見る。
+
 ---
 
 <a id="english"></a>
@@ -450,3 +540,100 @@ not used.
 | Compression | WebGL defaults to Brotli (`.br`). GitHub Pages cannot set `Content-Encoding`, so Decompression Fallback must be enabled as the plan's §4 says. This check measured the default |
 | EditMode tests | There are none yet. `unity test --mode EditMode` succeeds but runs nothing |
 | Step-rate gap | The 4.68 mm between 400 Hz and 1600 Hz is the half-step lag a fixed-step integrator necessarily has; only a finer step reduces it. The MuJoCo version integrates at 4000 Hz, so expect this gap when comparing airborne trajectories |
+
+## 7. Loading and Building Worlds (`StampFly.World`)
+
+### About This Assembly
+
+Reads a world file (`*.world.json`) and builds its room, floor and obstacles into the
+scene. The format's specification is [`Schemas/README.md`](Schemas/README.md); this part is
+independent of flight and of the firmware.
+
+```
+Assets/StampFly/
+├── Runtime/World/                    the StampFly.World assembly
+│   ├── WorldFile.cs                  the data classes JsonUtility reads
+│   ├── WorldFormat.cs                the constants the format fixes (marker, version, defaults, the ten kinds)
+│   ├── WorldFileReader.cs            loading, and the marker / version / frame checks
+│   ├── WorldWriter.cs                writing back out, still in ENU
+│   ├── WorldFrames.cs                ENU <-> Unity (all the frame work C# does)
+│   ├── ObstacleFactory.cs            the ten obstacle kinds
+│   ├── WedgeMesh.cs                  the generated wedge a ramp is made of
+│   ├── RoomBuilder.cs                room, walls, ceiling, lighting
+│   ├── FloorTexture.cs               the five floor patterns, generated (WebGL2-safe)
+│   ├── WorldMaterials.cs             URP Lit materials, shared per colour
+│   ├── ObstacleInfo.cs               what a surface is (id, type, flow_quality)
+│   ├── WorldCatalog.cs               the six shipped worlds, held as TextAssets
+│   ├── WorldLoader.cs                load, build and clear (MonoBehaviour)
+│   └── StructuredLog.cs              the log sink (`IStructuredLog`) and its default
+├── Editor/WorldTools/                the menu that rebuilds WorldCatalog.asset
+└── Tests/EditMode/                   loading, conversion, round trip and catalog tests
+```
+
+### Hand-off to Stages 3 and 5
+
+| Item | How to use it |
+|------|---------------|
+| Spawn pose | `WorldLoader.SpawnPosition` (Unity coordinates) and `SpawnRotation` (carrying `spawn.yaw_deg`'s 90 degree offset). Both are already converted and can go straight to `VehicleBody` |
+| Flow quality | From a raycast hit, `hit.collider.GetComponent<ObstacleInfo>().FlowQuality`. Every collider this package creates carries one — floor, walls and ceiling included — so a hit on the world never comes back without an answer |
+| Loading | `WorldLoader.LoadByName("gate_course")` (from the `WorldCatalog`) or `Load(json)`. Both return whether it succeeded and log the reason for a refusal |
+| Clearing | `WorldLoader.Clear()`. `Load` clears first, so the two are never both needed in a row |
+| Relation to stepping | The project runs PhysX with `simulationMode = Script`, so the loader calls `Physics.SyncTransforms()` right after building. Without it a collider's bounds are stale and a raycast misses until the first `Physics.Simulate` |
+| Logging | Assigning an `IStructuredLog` to `WorldLoader.Log` redirects the `world.loaded` / `world.rejected` / `world.cleared` lines. The default writes one JSON line to the Unity console; the page-side logger that carries `run_id` plugs in here once it exists |
+
+### Rebuilding the Catalog (`WorldCatalog.asset`)
+
+Rebuild the catalog after adding, renaming or removing a shipped world. It holds TextAsset
+references rather than `StreamingAssets`, so a world left out of the catalog is silently
+missing from a WebGL build (`WorldCatalogTest` catches that locally).
+
+```bash
+# Editor menu: StampFly > World > Rebuild Catalog
+# From a terminal:
+/Applications/Unity/Hub/Editor/6000.6.2f1/Unity.app/Contents/MacOS/Unity \
+  -batchmode -quit -nographics -projectPath . \
+  -executeMethod StampFly.Editor.WorldTools.WorldCatalogBuilder.Rebuild
+```
+
+The folder is `Editor/WorldTools/` rather than `Editor/Build/` for the same reason as
+`Editor/Builders/` in section 2: the `.gitignore` rule `build/` is matched
+case-insensitively.
+
+### Where the Specification (`Schemas/README.md`) Is Wrong
+
+Checking the numbers while implementing turned up two errors in the specification's §6.2
+and §6.2.1. **The implementation follows the measurement, not the specification's wording.**
+The details are in the comments in `WorldFrames.cs`.
+
+| Place | What the specification says | What was measured |
+|-------|------------------------------|-------------------|
+| §6.2 | "Do not negate the angle when using `Quaternion.AngleAxis`" | The opposite: the negation **is** required. `AngleAxis(90, Vector3.up)` sends Unity forward to right, i.e. ENU north to east — clockwise seen from above in ENU, so a yaw of -90, not +90. With the negation the error against `R = Rz·Ry·Rx` is 0.0; without it, 2.0, an exact mirror |
+| §6.2.1 | `SpawnYawToUnity` is `AngleAxis(yawDeg - 90, up)` | `AngleAxis(90 - yawDeg, up)` is correct. Under the specification's form `yaw_deg = 0` faces **west**, while §6.2.1's own check table says east. The two forms agree at yaw 90 and -90, which is every shipped world's spawn, so no shipped world reveals the error |
+
+One note on a `ring`'s extent as well. The checker (`tools/unity_world/validate.py`) bounds
+a ring by the circle of radius `innerDiameter/2 + thickness`, but circumscribing a polygon
+about that circle pushes its corners past the bound. The bars are therefore cut to the chord
+of the outer circle so the polygon is **inscribed** in it. The axis-aligned extent then
+matches the checker for any segment count and the hole stays clear (verified on all three
+shipped rings).
+
+### Tests
+
+```bash
+unity test . --mode EditMode --output test-results.xml --non-interactive   # 63 tests
+unity test . --mode PlayMode --output test-results.xml --non-interactive   # 38 tests
+```
+
+EditMode (63) checks that the six shipped worlds load; that malformed JSON, a wrong
+`format`, a wrong `version`, a wrong `frame`, an unknown kind and a hollow kind without a
+thickness are each refused with a reason; that the defaults for `light`, `segments` and an
+obstacle's `flow_quality` apply while **the floor's `flow_quality` never takes one**; that
+`WorldFrames` agrees with §6's numbers and inverts; that a read-write-read round trip
+preserves the content; and that the catalog holds all six worlds.
+
+PlayMode (38: ten from this section plus section 3's 28 PhysX checks) verifies, for each of
+the six worlds, that the obstacle count matches the file; that **each kind's extent matches
+the geometry `tools/unity_world/validate.py` assumes** (all 62 obstacles, covering all ten
+kinds); that a ray passes through a gate's, a ring's and a tunnel's opening and stops at
+their frames; that `flow_quality` can be read from a `pad` and from the floor; and that
+loading another world leaves nothing of the previous one.

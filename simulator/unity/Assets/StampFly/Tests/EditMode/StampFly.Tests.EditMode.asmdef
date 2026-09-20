@@ -1,13 +1,14 @@
 {
-    "name": "StampFly.Tests.PlayMode",
-    "rootNamespace": "StampFly.Tests.PlayMode",
+    "name": "StampFly.Tests.EditMode",
+    "rootNamespace": "StampFly.Tests.EditMode",
     "references": [
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
-        "StampFly.Sim",
         "StampFly.World"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": true,
