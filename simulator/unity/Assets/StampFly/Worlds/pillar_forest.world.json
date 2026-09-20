@@ -1,0 +1,862 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "pillar_forest",
+  "description": {
+    "ja": "柱の林。前向き ToF での検知と回避を練習する。柱の間隔は機体が余裕で通れる 0.54 m で、staggered 配置により通り道が複数ある。",
+    "en": "A forest of pillars for forward-ToF detection and avoidance. The 0.54 m gaps pass the vehicle comfortably, and the staggered rows leave several routes through."
+  },
+  "room": {
+    "size": [
+      6.0,
+      6.0,
+      2.6
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "grid",
+    "pitch": 0.35,
+    "colors": [
+      "#cfd8dc",
+      "#78909c"
+    ],
+    "flow_quality": 0.85
+  },
+  "light": "indoor",
+  "spawn": {
+    "position": [
+      0.0,
+      -2.7,
+      0.05
+    ],
+    "yaw_deg": 90.0
+  },
+  "obstacles": [
+    {
+      "id": "pillar_01",
+      "type": "pillar",
+      "position": [
+        -2.1,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_02",
+      "type": "pillar",
+      "position": [
+        -1.4,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_03",
+      "type": "pillar",
+      "position": [
+        -0.7,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_04",
+      "type": "pillar",
+      "position": [
+        0.0,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_05",
+      "type": "pillar",
+      "position": [
+        0.7,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_06",
+      "type": "pillar",
+      "position": [
+        1.4,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_07",
+      "type": "pillar",
+      "position": [
+        2.1,
+        -2.1,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_08",
+      "type": "pillar",
+      "position": [
+        -1.75,
+        -1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_09",
+      "type": "pillar",
+      "position": [
+        -1.05,
+        -1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_10",
+      "type": "pillar",
+      "position": [
+        -0.35,
+        -1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_11",
+      "type": "pillar",
+      "position": [
+        0.35,
+        -1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_12",
+      "type": "pillar",
+      "position": [
+        1.05,
+        -1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_13",
+      "type": "pillar",
+      "position": [
+        1.75,
+        -1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_14",
+      "type": "pillar",
+      "position": [
+        -2.1,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_15",
+      "type": "pillar",
+      "position": [
+        -1.4,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_16",
+      "type": "pillar",
+      "position": [
+        -0.7,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_17",
+      "type": "pillar",
+      "position": [
+        0.0,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_18",
+      "type": "pillar",
+      "position": [
+        0.7,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_19",
+      "type": "pillar",
+      "position": [
+        1.4,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_20",
+      "type": "pillar",
+      "position": [
+        2.1,
+        -0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_21",
+      "type": "pillar",
+      "position": [
+        -1.75,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_22",
+      "type": "pillar",
+      "position": [
+        -1.05,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_23",
+      "type": "pillar",
+      "position": [
+        -0.35,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_24",
+      "type": "pillar",
+      "position": [
+        0.35,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_25",
+      "type": "pillar",
+      "position": [
+        1.05,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_26",
+      "type": "pillar",
+      "position": [
+        1.75,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_27",
+      "type": "pillar",
+      "position": [
+        -2.1,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_28",
+      "type": "pillar",
+      "position": [
+        -1.4,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_29",
+      "type": "pillar",
+      "position": [
+        -0.7,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_30",
+      "type": "pillar",
+      "position": [
+        0.0,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_31",
+      "type": "pillar",
+      "position": [
+        0.7,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_32",
+      "type": "pillar",
+      "position": [
+        1.4,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_33",
+      "type": "pillar",
+      "position": [
+        2.1,
+        0.7,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_34",
+      "type": "pillar",
+      "position": [
+        -1.75,
+        1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_35",
+      "type": "pillar",
+      "position": [
+        -1.05,
+        1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_36",
+      "type": "pillar",
+      "position": [
+        -0.35,
+        1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_37",
+      "type": "pillar",
+      "position": [
+        0.35,
+        1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_38",
+      "type": "pillar",
+      "position": [
+        1.05,
+        1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#795548",
+      "flow_quality": 0.6
+    },
+    {
+      "id": "pillar_39",
+      "type": "pillar",
+      "position": [
+        1.75,
+        1.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.16,
+        0.16,
+        2.2
+      ],
+      "color": "#8d6e63",
+      "flow_quality": 0.6
+    }
+  ]
+}

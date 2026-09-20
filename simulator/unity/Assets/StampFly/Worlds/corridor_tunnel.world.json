@@ -1,0 +1,149 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "corridor_tunnel",
+  "description": {
+    "ja": "狭い廊下とトンネル。幅 0.70 m の L 字の廊下を北へ、次に東へ進み、最後に高さ 0.75 m のトンネルを抜ける。壁が近いところでの位置保持を試す。",
+    "en": "A narrow corridor and a tunnel. An L-shaped 0.70 m corridor runs north then east and ends in a 0.75 m tall tunnel, exercising position hold close to walls."
+  },
+  "room": {
+    "size": [
+      7.0,
+      6.0,
+      2.4
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "stripes",
+    "pitch": 0.25,
+    "colors": [
+      "#cfd8dc",
+      "#607d8b"
+    ],
+    "flow_quality": 0.8
+  },
+  "light": "dim",
+  "spawn": {
+    "position": [
+      0.0,
+      -1.6,
+      0.05
+    ],
+    "yaw_deg": 90.0
+  },
+  "obstacles": [
+    {
+      "id": "corridor_a_west",
+      "type": "wall",
+      "position": [
+        -0.4,
+        -0.3,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "size": [
+        3.0,
+        0.1,
+        2.0
+      ],
+      "color": "#b0bec5",
+      "flow_quality": 0.5
+    },
+    {
+      "id": "corridor_a_east",
+      "type": "wall",
+      "position": [
+        0.4,
+        -0.3,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "size": [
+        3.0,
+        0.1,
+        2.0
+      ],
+      "color": "#b0bec5",
+      "flow_quality": 0.5
+    },
+    {
+      "id": "corridor_b_south",
+      "type": "wall",
+      "position": [
+        1.55,
+        1.25,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "size": [
+        2.3,
+        0.1,
+        2.0
+      ],
+      "color": "#b0bec5",
+      "flow_quality": 0.5
+    },
+    {
+      "id": "corridor_b_north",
+      "type": "wall",
+      "position": [
+        1.15,
+        1.95,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "size": [
+        3.1,
+        0.1,
+        2.0
+      ],
+      "color": "#b0bec5",
+      "flow_quality": 0.5
+    },
+    {
+      "id": "tunnel_exit",
+      "type": "tunnel",
+      "position": [
+        2.7,
+        1.6,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        -90.0
+      ],
+      "size": [
+        0.62,
+        0.7,
+        0.75
+      ],
+      "thickness": 0.06,
+      "color": "#5d4037",
+      "flow_quality": 0.35
+    }
+  ]
+}

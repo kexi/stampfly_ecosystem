@@ -1,0 +1,199 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "gate_course",
+  "description": {
+    "ja": "ゲートと輪を順にくぐる周回コース。gate_1 から gate_6 へ反時計回りに進む。番号順と緑→青の色の並びでくぐる順番が分かる。start_pad が発着点。",
+    "en": "A circuit of gates and rings flown counter-clockwise from gate_1 to gate_6. The numbering and the green-to-blue colour ramp show the order; start_pad marks the start and finish."
+  },
+  "room": {
+    "size": [
+      8.0,
+      8.0,
+      3.0
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "checker",
+    "pitch": 0.5,
+    "colors": [
+      "#eceff1",
+      "#90a4ae"
+    ],
+    "flow_quality": 0.9
+  },
+  "light": "day",
+  "spawn": {
+    "position": [
+      0.0,
+      -3.2,
+      0.05
+    ],
+    "yaw_deg": 90.0
+  },
+  "obstacles": [
+    {
+      "id": "gate_1",
+      "type": "gate",
+      "position": [
+        0.0,
+        -2.4,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "size": [
+        0.9,
+        0.1,
+        1.1
+      ],
+      "thickness": 0.06,
+      "color": "#43a047",
+      "flow_quality": 0.7
+    },
+    {
+      "id": "gate_2",
+      "type": "ring",
+      "position": [
+        2.4,
+        -1.2,
+        1.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        -45.0
+      ],
+      "size": [
+        0.85,
+        0.85,
+        0.85
+      ],
+      "thickness": 0.06,
+      "color": "#7cb342",
+      "flow_quality": 0.7,
+      "segments": 24
+    },
+    {
+      "id": "gate_3",
+      "type": "gate",
+      "position": [
+        2.4,
+        1.2,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "size": [
+        0.9,
+        0.1,
+        1.1
+      ],
+      "thickness": 0.06,
+      "color": "#c0ca33",
+      "flow_quality": 0.7
+    },
+    {
+      "id": "gate_4",
+      "type": "ring",
+      "position": [
+        0.0,
+        2.4,
+        1.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "size": [
+        0.85,
+        0.85,
+        0.85
+      ],
+      "thickness": 0.06,
+      "color": "#ffb300",
+      "flow_quality": 0.7,
+      "segments": 24
+    },
+    {
+      "id": "gate_5",
+      "type": "gate",
+      "position": [
+        -2.4,
+        1.2,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        90.0
+      ],
+      "size": [
+        0.9,
+        0.1,
+        1.1
+      ],
+      "thickness": 0.06,
+      "color": "#fb8c00",
+      "flow_quality": 0.7
+    },
+    {
+      "id": "gate_6",
+      "type": "ring",
+      "position": [
+        -2.4,
+        -1.2,
+        1.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        45.0
+      ],
+      "size": [
+        0.85,
+        0.85,
+        0.85
+      ],
+      "thickness": 0.06,
+      "color": "#1e88e5",
+      "flow_quality": 0.7,
+      "segments": 24
+    },
+    {
+      "id": "start_pad",
+      "type": "pad",
+      "position": [
+        0.0,
+        -3.2,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.6,
+        0.4,
+        0.01
+      ],
+      "color": "#ffffff",
+      "flow_quality": 0.95
+    }
+  ]
+}

@@ -395,7 +395,35 @@ R = Rz(ψ) × Ry(θ) × Rx(φ)
 | Genesis | +X | +Z | +Y | -Z |
 | WebGL | -X | +Y | +Z | -Y |
 
-## 9. IMU 軸変換（BMI270 → 機体座標系）
+## 9. 空間ファイル: ENU
+
+Unity 版シミュレータが読み込む空間ファイル（`*.world.json`、障害物を置いた飛行空間）は **ENU**（x=東、y=北、z=上、右手系）で書く。単位は m と度である。
+
+| 項目 | 値 |
+|------|-----|
+| 座標系 | ENU（x=東、y=北、z=上）、右手系 |
+| 床 | z = 0 の平面 |
+| 単位 | 長さ m、角度 度 |
+| 仕様 | [`../../simulator/unity/Schemas/world.schema.json`](../../simulator/unity/Schemas/world.schema.json) |
+| 解説 | [`../../simulator/unity/Schemas/README.md`](../../simulator/unity/Schemas/README.md) |
+
+**Unity の左手系（Y 上）はファイルに書かない。** 理由は次の 3 つである。
+
+1. MuJoCo 版（`simulator/sils/`）の世界も ENU であり、Genesis 版も Z 上なので、同じ空間ファイルを将来そのまま読める
+2. 左手系は極性ベクトルと軸性ベクトルで符号の扱いが変わる（`simulator/sils/docs/coordinate_frames.md` §7.3）。この厄介さを Unity の中だけに留める
+3. 「x が東、y が北、z が上」は地図と同じ並びで、数値を見ただけで配置を思い描ける
+
+Unity へ読み込むときの変換は、y と z を入れ替えるだけでよい（`U = M·W`、`det(U) = −1`）。
+
+```
+  Unity.x = ENU.x,   Unity.y = ENU.z,   Unity.z = ENU.y
+```
+
+ここで `W` は ENU→NED（§3 の逆向き）、`M` は NED→Unity（`coordinate_frames.md` §7.2、`frames_unity.hpp` が実装）である。`frames_unity.hpp` は **NED/FRD と Unity** の対応であって空間ファイルの ENU とは別の写像なので、混同しないこと。回転の符号と `spawn.yaw_deg` の −90 度のずれは `Schemas/README.md` §6.2・§6.2.1 にある。
+
+空間ファイルの検査は `python3 tools/unity_world/validate.py <file>`（`sf unity world validate`）で行う。
+
+## 10. IMU 軸変換（BMI270 → 機体座標系）
 
 ### BMI270 の物理軸配置
 
@@ -830,7 +858,35 @@ R = Rz(ψ) × Ry(θ) × Rx(φ)
 | Genesis | +X | +Z | +Y | -Z |
 | WebGL | -X | +Y | +Z | -Y |
 
-## 9. IMU Axis Mapping (BMI270 → Body Frame)
+## 9. World Files: ENU
+
+The world files read by the Unity simulator (`*.world.json`, a flight space with obstacles) are written in **ENU** (x east, y north, z up, right-handed), in metres and degrees.
+
+| Item | Value |
+|------|-------|
+| Frame | ENU (x east, y north, z up), right-handed |
+| Floor | the plane z = 0 |
+| Units | metres for length, degrees for angle |
+| Specification | [`../../simulator/unity/Schemas/world.schema.json`](../../simulator/unity/Schemas/world.schema.json) |
+| Explanation | [`../../simulator/unity/Schemas/README.md`](../../simulator/unity/Schemas/README.md) |
+
+**Unity's left-handed Y-up frame is never written into the file**, for three reasons:
+
+1. The MuJoCo world in `simulator/sils/` is also ENU and Genesis is Z-up, so the same world files can be read later without change
+2. Under a left-handed map, polar and axial vectors take different signs (`simulator/sils/docs/coordinate_frames.md` §7.3); that difficulty stays inside Unity
+3. "x east, y north, z up" matches a map, so the numbers alone convey the layout
+
+Converting into Unity is just a swap of y and z (`U = M . W`, `det(U) = -1`):
+
+```
+  Unity.x = ENU.x,   Unity.y = ENU.z,   Unity.z = ENU.y
+```
+
+Here `W` is ENU→NED (the inverse direction of §3) and `M` is NED→Unity (`coordinate_frames.md` §7.2, implemented by `frames_unity.hpp`). Note that `frames_unity.hpp` maps **NED/FRD to Unity**, which is a different map from the world file's ENU — do not conflate the two. Rotation signs and the -90 degree offset for `spawn.yaw_deg` are covered in `Schemas/README.md` §6.2 and §6.2.1.
+
+World files are checked with `python3 tools/unity_world/validate.py <file>` (`sf unity world validate`).
+
+## 10. IMU Axis Mapping (BMI270 → Body Frame)
 
 ### BMI270 Physical Axis Orientation
 

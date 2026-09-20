@@ -315,6 +315,7 @@ tools/
 ├── calibration/       # sf cal
 ├── log_analyzer/      # sf log（wifi / convert / analyze / viz / list / info）。UDP 取得 udp_capture.py を含む
 ├── params_audit/      # sf params check / generate
+├── unity_world/       # sf unity world validate（Unity 版の空間ファイル *.world.json の検査）
 ├── sysid/             # sf sysid（同定・自動調整）
 ├── flasher_gui/       # sf flasher（GUI 書き込み）。書き込み処理の本体は lib/sfcli/commands/flash.py
 ├── installer_gui/     # StampFly Setup（GUI インストーラ）

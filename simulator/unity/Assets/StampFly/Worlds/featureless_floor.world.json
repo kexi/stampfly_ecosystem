@@ -1,0 +1,127 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "featureless_floor",
+  "description": {
+    "ja": "模様の少ない床の部屋。床の flow_quality は 0.05 でオプティカルフローがほとんど効かず、位置保持が流れる。模様のある pad の上だけ flow_quality が高く、そこでは位置保持が効くことを見せられる。",
+    "en": "A room with a low-texture floor: flow_quality 0.05 leaves the optical-flow sensor almost nothing to track and position hold drifts. The textured pads are islands of high flow_quality where position hold works again."
+  },
+  "room": {
+    "size": [
+      6.0,
+      6.0,
+      2.6
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "plain",
+    "pitch": 1.0,
+    "colors": [
+      "#cfcfc4",
+      "#cfcfc4"
+    ],
+    "flow_quality": 0.05
+  },
+  "light": "dim",
+  "spawn": {
+    "position": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "yaw_deg": 90.0
+  },
+  "obstacles": [
+    {
+      "id": "pad_center",
+      "type": "pad",
+      "position": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.0,
+        1.0,
+        0.008
+      ],
+      "color": "#37474f",
+      "flow_quality": 0.95
+    },
+    {
+      "id": "pad_north",
+      "type": "pad",
+      "position": [
+        0.0,
+        1.8,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.8,
+        0.8,
+        0.008
+      ],
+      "color": "#455a64",
+      "flow_quality": 0.9
+    },
+    {
+      "id": "pad_east",
+      "type": "pad",
+      "position": [
+        1.8,
+        0.0,
+        0.0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.8,
+        0.8,
+        0.008
+      ],
+      "color": "#455a64",
+      "flow_quality": 0.9
+    },
+    {
+      "id": "marker_box",
+      "type": "box",
+      "position": [
+        -1.8,
+        1.8,
+        0.0
+      ],
+      "rotation_deg": [
+        0.0,
+        0.0,
+        30.0
+      ],
+      "size": [
+        0.3,
+        0.3,
+        0.5
+      ],
+      "color": "#ff7043",
+      "flow_quality": 0.8
+    }
+  ]
+}

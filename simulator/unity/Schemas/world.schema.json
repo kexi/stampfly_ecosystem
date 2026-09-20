@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kexi/stampfly-ecosystem/simulator/unity/Schemas/world.schema.json",
+  "title": "StampFly world file / StampFly 空間ファイル",
+  "description": "A flight space with obstacles for the Unity simulator. Frame is ENU (x=east, y=north, z=up, right-handed); lengths in metres, angles in degrees. Obstacle records are FLAT (no per-type nesting, no dictionaries, no variable types) so Unity's JsonUtility can read them. / Unity 版シミュレータの障害物付き飛行空間。座標系は ENU（x=東・y=北・z=上、右手系）、長さは m、角度は度。障害物は種類ごとの入れ子を持たない平らな構造で、Unity の JsonUtility から読める。",
+  "type": "object",
+  "required": ["format", "version", "units", "frame", "name", "room", "floor", "spawn", "obstacles"],
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "description": "Format marker. Must be exactly \"stampfly-world\". / 形式の目印。",
+      "const": "stampfly-world"
+    },
+    "version": {
+      "description": "Format version. Only 1 exists today. / 形式の版。現在は 1 のみ。",
+      "type": "integer",
+      "const": 1
+    },
+    "units": {
+      "description": "Units used by every number in this file. Fixed; present so other tools need not assume. / 本ファイルの全数値の単位。固定だが、他の道具が推測しなくて済むよう明示する。",
+      "type": "object",
+      "required": ["length", "angle"],
+      "additionalProperties": false,
+      "properties": {
+        "length": { "const": "m" },
+        "angle": { "const": "deg" }
+      }
+    },
+    "frame": {
+      "description": "Coordinate frame. ENU only: x=east, y=north, z=up, right-handed. Unity's left-handed Y-up frame never appears in this file. / 座標系。ENU のみ（x=東・y=北・z=上、右手系）。Unity の左手系 Y 上はファイルに出さない。",
+      "const": "ENU"
+    },
+    "name": {
+      "description": "Stable identifier of the world. Lower-case letters, digits and underscore; matches the file stem for shipped worlds. / 空間の識別子。英小文字・数字・下線のみ。同梱の空間ではファイル名の幹と一致させる。",
+      "type": "string",
+      "pattern": "^[a-z0-9_]{1,64}$"
+    },
+    "description": {
+      "description": "One-line purpose of the world, in Japanese and English. / 空間のねらいを 1 行で、日本語と英語の両方で。",
+      "type": "object",
+      "required": ["ja", "en"],
+      "additionalProperties": false,
+      "properties": {
+        "ja": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "en": { "type": "string", "minLength": 1, "maxLength": 300 }
+      }
+    },
+    "room": {
+      "description": "The rectangular room. Its floor is the plane z=0 and its footprint is centred on the origin: x in [-size[0]/2, +size[0]/2], y in [-size[1]/2, +size[1]/2], z in [0, size[2]]. / 直方体の部屋。床は z=0 の平面で、水平方向は原点中心。",
+      "type": "object",
+      "required": ["size", "walls", "ceiling"],
+      "additionalProperties": false,
+      "properties": {
+        "size": {
+          "description": "Interior extent [x_east, y_north, z_up] in metres. / 内寸 [東, 北, 上]（m）。",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 }
+        },
+        "walls": {
+          "description": "Whether the four side walls are solid (collide and reflect ToF). / 側面 4 枚の壁を作るか（衝突し、ToF に映る）。",
+          "type": "boolean"
+        },
+        "ceiling": {
+          "description": "Whether the ceiling is solid. / 天井を作るか。",
+          "type": "boolean"
+        }
+      }
+    },
+    "floor": {
+      "description": "Appearance of the room floor, and how well optical flow can track it. / 床の見た目と、オプティカルフローの追従しやすさ。",
+      "type": "object",
+      "required": ["pattern", "pitch", "colors", "flow_quality"],
+      "additionalProperties": false,
+      "properties": {
+        "pattern": {
+          "description": "Surface pattern. / 面の模様。",
+          "enum": ["checker", "grid", "plain", "noise", "stripes"]
+        },
+        "pitch": {
+          "description": "Pattern repeat length in metres. Ignored for \"plain\" but still required. / 模様の繰り返し長さ（m）。plain では無視されるが記載は必須。",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 10
+        },
+        "colors": {
+          "description": "Two colors of the pattern, \"#rrggbb\". For \"plain\" only the first is used. / 模様の 2 色。plain では 1 色目のみ使う。",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" }
+        },
+        "flow_quality": {
+          "description": "Richness of the texture as seen by the optical-flow sensor: 0 = featureless (velocity cannot be measured), 1 = plenty of features. / オプティカルフローのセンサから見た模様の豊かさ。0 = 模様が無く速度が測れない、1 = 十分。",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "light": {
+      "description": "Lighting preset. / 照明の既定。",
+      "enum": ["day", "indoor", "dim"],
+      "default": "indoor"
+    },
+    "spawn": {
+      "description": "Where the vehicle is placed at reset. / リセット時に機体を置く場所。",
+      "type": "object",
+      "required": ["position", "yaw_deg"],
+      "additionalProperties": false,
+      "properties": {
+        "position": {
+          "description": "Position of the vehicle centre of gravity [x_east, y_north, z_up] in metres. / 機体重心の位置 [東, 北, 上]（m）。",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number" }
+        },
+        "yaw_deg": {
+          "description": "Heading, degrees counter-clockwise from +x (east) seen from above. 0 = facing east, 90 = facing north. / 機首方位。上から見て +x（東）から反時計回りの度数。0 = 東向き、90 = 北向き。",
+          "type": "number",
+          "minimum": -360,
+          "maximum": 360
+        }
+      }
+    },
+    "obstacles": {
+      "description": "Obstacles in the room. May be empty. / 部屋の中の障害物。空でもよい。",
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/obstacle" }
+    }
+  },
+  "$defs": {
+    "obstacle": {
+      "type": "object",
+      "required": ["id", "type", "position", "rotation_deg", "size", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "description": "Identifier, unique within the file. / ファイル内で重複しない識別子。",
+          "type": "string",
+          "pattern": "^[a-z0-9_]{1,64}$"
+        },
+        "type": {
+          "description": "Obstacle kind. Decides what the three numbers of \"size\" mean and where the origin sits — see Schemas/README.md §3. / 障害物の種類。size の 3 つの数の意味と原点の位置を決める（Schemas/README.md §3）。",
+          "enum": ["box", "pillar", "wall", "gate", "ring", "tunnel", "table", "step", "ramp", "pad"]
+        },
+        "position": {
+          "description": "Position of the type's origin [x_east, y_north, z_up] in metres. / その種類の原点の位置 [東, 北, 上]（m）。",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number" }
+        },
+        "rotation_deg": {
+          "description": "Intrinsic Tait-Bryan angles [roll, pitch, yaw] in degrees, applied in the fixed order yaw (about +z) then pitch (about the new +y) then roll (about the new +x), all counter-clockwise seen from the positive axis. / 内因性の [roll, pitch, yaw]（度）。yaw（+z 回り）→ pitch（新しい +y 回り）→ roll（新しい +x 回り）の順で適用し、いずれも正軸から見て反時計回り。",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number", "minimum": -360, "maximum": 360 }
+        },
+        "size": {
+          "description": "Three lengths in metres whose meaning depends on \"type\". / 3 つの長さ（m）。意味は type ごとに決まる。",
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "type": "number", "exclusiveMinimum": 0, "maximum": 100 }
+        },
+        "thickness": {
+          "description": "Frame or tube wall thickness in metres. Required for gate, ring and tunnel; must be absent for every other type. / 枠・管の肉厚（m）。gate・ring・tunnel では必須、他の種類では書かない。",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 5
+        },
+        "segments": {
+          "description": "Number of straight segments approximating a circular ring. Optional for ring; must be absent for every other type. / 円形を近似する分割数。ring でのみ任意、他の種類では書かない。",
+          "type": "integer",
+          "minimum": 6,
+          "maximum": 128,
+          "default": 24
+        },
+        "color": {
+          "description": "Surface color \"#rrggbb\". / 面の色。",
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$"
+        },
+        "flow_quality": {
+          "description": "Texture richness of this obstacle's upward-facing surface for the optical-flow sensor, 0..1. Defaults to 0.8 when absent. / この障害物の上面の、オプティカルフローから見た模様の豊かさ（0..1）。省略時は 0.8。",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.8
+        }
+      },
+      "allOf": [
+        {
+          "description": "gate, ring and tunnel are hollow and need a frame thickness. / gate・ring・tunnel は中空なので肉厚が要る。",
+          "if": { "properties": { "type": { "enum": ["gate", "ring", "tunnel"] } }, "required": ["type"] },
+          "then": { "required": ["thickness"] },
+          "else": { "not": { "required": ["thickness"] } }
+        },
+        {
+          "description": "Only ring is round, so only ring may set a segment count. / 丸いのは ring だけなので、分割数を書けるのも ring だけ。",
+          "if": { "properties": { "type": { "const": "ring" } }, "required": ["type"] },
+          "then": true,
+          "else": { "not": { "required": ["segments"] } }
+        }
+      ]
+    }
+  }
+}

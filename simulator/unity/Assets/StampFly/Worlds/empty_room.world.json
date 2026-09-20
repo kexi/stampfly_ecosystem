@@ -1,0 +1,21 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": { "length": "m", "angle": "deg" },
+  "frame": "ENU",
+  "name": "empty_room",
+  "description": {
+    "ja": "何もない部屋。基本の操縦とホバリングを確かめるための、もっとも素直な空間。",
+    "en": "An empty room: the plainest world, for basic piloting and hovering."
+  },
+  "room": { "size": [6.0, 6.0, 3.0], "walls": true, "ceiling": true },
+  "floor": {
+    "pattern": "checker",
+    "pitch": 0.5,
+    "colors": ["#d8d8d0", "#9aa0a6"],
+    "flow_quality": 0.9
+  },
+  "light": "indoor",
+  "spawn": { "position": [0.0, 0.0, 0.05], "yaw_deg": 90.0 },
+  "obstacles": []
+}
