@@ -503,6 +503,48 @@ When developing this codebase, follow this order:
 - **Analysis/Tools**: Python (Jupyter notebooks, scripts)
 - **Protocol Spec**: YAML or Protocol Buffers
 
+## Logs（ログの出力先と書き方の決まり）
+
+不具合や挙動を調べるときは、まずこの節で出力先を特定する。形式の詳細はリンク先が基準で、ここには転記しない。
+
+### どこに何が出るか
+
+| 出す側 | 出力先 | 中身と形式 | 見方 |
+|--------|--------|-----------|------|
+| 実機の 400Hz WiFi ログ（`sf log wifi`）、VPython 版・Genesis 版（`sf sim headless`） | `logs/flight_<日時>.sflog.zip`／`logs/sim_<backend>_<日時>.sflog.zip` | StampFly フライトログ一式（zip の中にストリームごとの CSV と `meta.json`）。仕様は `docs/reference/flight-log-format.md`（`protocol/spec/flight_log.yaml` からの生成物） | `sf log list`／`sf log info`／`sf log viz`。引数を省くと `logs/` の最新を使う（`docs/commands/sf-log.md`） |
+| SILS のシナリオ実行（`sf sils scenario`／`regression`／`sysid-gate`／`gui`） | `simulator/sils/viz/out_scn_<シナリオ名>/` | `console.log`（標準出力＋標準エラー）、`console.out`、`console.err`、`results.json`（合否と各検査）、`events.jsonl`（シナリオが注入した事象、JSON Lines、鍵は `t_us`・`ch`・`n`／`bytes` または `note`）、`sils_<シナリオ名>_<日時>.sflog.zip`（真値 `truth.csv` を含む）、`params_override.txt`（`--param` 指定時） | `jq .pass results.json`、`grep "\[WARN\]" console.err`、`sf log info <zip>` |
+| SILS のキーボード操縦（`sf sils fly`） | `simulator/sils/viz/out_fly/` | `sils_fly_<日時>.sflog.zip`。ファームの標準出力・標準エラーは**保存されない**（異常終了時に直近 20 行を画面に出すだけ） | `sf log info` |
+| SILS の再確認試験の集計 | `--json-out <path>` を渡したときだけ（CI は `simulator/sils/viz/sils_regression_results.json`） | JSON（`total`・`pass`・`known_fail`・`fail`・`scenarios[]`） | `jq -r '.scenarios[] \| select(.status=="FAIL") \| .name' <path>` |
+| ファームウェアの `ESP_LOGx`（SILS 上） | 上の `console.err`（標準エラー） | テキスト。`[INFO] <tag>: <本文>`／`[WARN] …`／`[ERR]  …`（`ERR]` の後は空白 2 つ）。**`ESP_LOGD`／`ESP_LOGV` はホストでは何も出ない**（`simulator/sils/compat/esp_log.h`） | `grep "<tag>:" console.log` |
+| ファームウェアの `ESP_LOGx`（実機） | シリアル（`sf monitor`）。**ファイルには保存されない** | テキスト | 保存したいときは端末側で記録する |
+| 50Hz テレメトリ（`sf telemetry`） | 既定では画面だけ。`--csv <file>` を渡したときだけファイル | CSV | — |
+| 解析スクリプト（`analysis/scripts/`、`sf log analyze`） | `analysis/reports/<系統>/`、またはフライトログ一式の隣（`<名前>_analysis.png`） | PNG・テキスト | — |
+| CI | 失敗時だけ保存: `sils-regression-bundles`（`out_scn_*/` 全体）、`<os>-e2e-build-logs`（CMake の診断） | — | `gh run download <run-id>`、ステップのログは `gh run view --log` |
+
+### 探しても無いもの
+
+- `sf` 自身はログファイルを書かない（Python の `logging` を使っていない）。`sf blocks`・`sf telemetry --web`・`sf sils gui` のローカルサーバはアクセスログを出さない。
+- 既存の SILS・フライトログには、実行 ID・トレース ID に当たる仕組みが無い。実行を見分ける手がかりは、ディレクトリ名、ファイル名の日時、`meta.json` の `tool.git_hash`、`results.json` の `noise`・`seed`。
+- `out_scn_<シナリオ名>/` は同じシナリオを再実行すると**上書きされる**（履歴が残らない）。比べたい結果は実行前に別の場所へ写す。
+- `simulator/sils/viz/out_p1`〜`out_p6/` の `trajectory.csv` は旧形式の記録で、今の実行では書かれない。新しく参照しない。
+
+### git で管理されないもの
+
+`logs/*`、`*.log`、`simulator/sils/viz/out_scn_*/`、`simulator/sils/viz/out_fly/`、`analysis/reports/*`（`rate_sysid_reference/` を除く）、`simulator/unity/Logs/`。`simulator/sils/viz/sils_regression_results.json` は無視の対象に入っていないので、手元で同じパスへ書くと `git status` に出る。
+
+### 新しく書くコードのログの決まり（2026-09-20 制定）
+
+PC 側で動く新しいコード（Unity 版シミュレータ、`sf` の新しいコマンド、ローカルサーバ）は、次の形でログを出す。目的は、1 回の実行と 1 つの命令を `grep` と `jq` だけで端から端まで追えるようにすること。
+
+- **形式**: JSON Lines（UTF-8、1 事象 1 行）。人が読む整形や色付けをファイルに入れない。
+- **必ず入れる鍵（名前を変えない）**: `ts`（UTC、RFC 3339、ミリ秒）、`level`（`debug`／`info`／`warn`／`error`）、`src`（出どころ。`fw`・`bridge`・`sim`・`world`・`ui`・`cmd`・`server`・`cli`・`build`・`test`）、`event`（`sim.step_overrun` のような点区切りの名前）、`run_id`、`msg`。
+- **相関の鍵（あるときだけ）**: `boot_id`（ファームウェアの電源投入ごと）、`cmd_id`（1 つの命令ごと）、`sim_us`（仮想時刻）、`tick`、`frame`。事象ごとの値は `data` の下に置く。
+- **`run_id`**: 実行 1 回（ページの読み込み 1 回、CLI・テストの起動 1 回）に 1 つ。先頭を UTC の日時にして、名前順が時刻順になるようにする。入口で発行し、呼び出す先の全てに渡す。
+- **`cmd_id`**: 命令を受けた入口で発行し、中継するサーバ・ページ・処理・結果の全ての行に同じ値を付ける。処理の途中で出たファームウェアのログにも付ける。
+- **ファームウェアのログ**: ファームウェアは書き換えない。`ESP_LOGx` を受ける側（`esp_log.h` の差し替え）が、レベル・タグ・本文・仮想時刻を文字列にする前の形で受け取り、`src: "fw"` と `tag` を付けた行にする。後から文字列を解析して構造に戻すことはしない。
+- **量**: 制御の刻みごとの行は出さない。高レートの信号はフライトログ一式（`.sflog.zip`）に書き、その記録に `run_id` を入れて突き合わせられるようにする。
+- **出力先を足したら、上の「どこに何が出るか」の表に同じコミットで行を足す。** Unity 版シミュレータの出力先は未実装で、実装するコミットで追記する（設計は `docs/plans/unity-simulator.md`）。
+
 ## 非公開文書の扱い
 
 学会原稿・申請書（科研費等）・個人の研究計画は、この公開リポジトリには置かない（履歴にも残さない、2026-09-05 に履歴から除去済み）。それらは手元の別の非公開リポジトリで管理する。この公開リポジトリ側から非公開リポジトリへのリンクやパスを書かない。クラウド版セッションは作業ブランチを origin に push するため、非公開文書の作業をこのリポジトリで開いてはならない。`.gitignore` の `docs/_private/`・`papers/`・`grants/` は置き間違え防止用である。手元では `git config core.hooksPath .githooks` を一度実行すると、`.githooks/pre-commit` がこれらのパスや申請書関連の語を含むコミットを拒否する。
