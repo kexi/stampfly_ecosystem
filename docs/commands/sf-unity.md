@@ -156,6 +156,65 @@ ARM するので、`rc.set` でビットを立て続ける代わりにこれを�
 
 真値は `Rigidbody` から、推定はファームから取る。片方を二度読んで食い違いを隠さないためである。
 
+### 追跡カメラが登録する命令
+
+| 命令 | 引数 | 返るもの |
+|------|------|---------|
+| `camera.zoom` | `distance`（m、0 より大きい）／`step`（正で寄る、負で引く）／`reset`（true で既定へ） | 下表（`camera.state` と同じ） |
+| `camera.state` | — | 下表 |
+
+寄せるのはカメラを動かすことで行い、視野角（FOV）は変えない。視野角を狭めると遠近感が平らになり、
+機体と壁の間の距離がその距離らしく見えなくなる。目で飛ばす人はそこから接近の速さを判断するので、
+寄せるたびに変わるレンズはそれを奪う。距離と高さには同じ倍率が掛かるので、見下ろす角はどの倍率でも
+変わらない。
+
+範囲は 0.15 m〜3.0 m で、既定は 0.28 m（1280x720 の画面に機体が幅 200 px ほどで映る。幅は軸方向の 0.0816 m で数える。
+対角の 0.12 m ではない）。
+範囲外の距離は断らずに範囲の中へ収め、答えに実際に取った値を載せる。ズームを端から端まで振る台本が
+欲しいのは両端の絵であって、2 つの失敗ではないからである。`distance`・`step`・`reset` のどれも渡され
+なければ失敗する（渡されなかったときにいまの状態を答えると、カメラを動かしたように見えてしまう）。
+
+```bash
+sf unity cmd camera.zoom --json '{"distance": 0.2}'   # 0.2 m まで寄せる
+sf unity cmd camera.zoom --json '{"step": 2}'          # 2 段寄せる（1 段 = 1.15 倍）
+sf unity cmd camera.zoom --json '{"reset": true}'      # 既定の 0.28 m へ戻す
+sf unity cmd camera.state                              # いまの距離・高さ・倍率・範囲
+```
+
+#### `camera.state` が返すもの
+
+| 鍵 | 内容 |
+|----|------|
+| `distance_m` ／ `height_m` | カメラが座るよう**求められている**機体の後ろの距離と上の高さ [m] |
+| `multiplier` | 既定と比べた倍率（既定で 1、寄れば 1 未満） |
+| `current_distance_m` ／ `current_height_m` | カメラが**いまいる**距離と高さ [m] |
+| `minimum_distance_m` ／ `maximum_distance_m` | 動ける範囲 [m]（0.15／3.0） |
+| `step_ratio` | 1 段で距離に掛かる値（1.15） |
+| `default_distance_m` | `reset` が戻る距離 [m]（0.28） |
+
+求めた距離と実際の距離の両方を返すのは、カメラが 0.1 秒ほどかけてずれを詰めるためである。
+`camera.zoom` の直後に読むと `current_distance_m` はまだ途中の値で、これを知らない検査は正常な
+途中の値を誤りとして見てしまう。
+
+### 画面の操作（キーとマウス）
+
+ページを開いた Chrome の中で効く。表示板の下段にも同じ案内が出る。
+
+| 入力 | 働き |
+|------|------|
+| マウスホイール 前 ／ 後 | 寄る ／ 引く（1 刻み = 1 段。1 フレームに 4 段まで） |
+| F ／ G | 1 段 寄る ／ 引く |
+| C | 既定の距離（0.28 m）へ戻す |
+
+操縦とシミュレーションのキー（W A S D、Space、Z、`,` `.`、R、H、`-` `+`、P、N、`[` `]`、B、
+Backspace）は `simulator/unity/README.md` の「操縦」の節にある。F・G・C を選んだのは、近くの他の
+文字が既に使われているからである。
+
+ホイールの値の単位は環境によって違う（Chrome では 1 刻みにつき 1、デスクトップのプレイヤーでは 120）。
+値の大きさからどちらかを判定するので、どちらでも 1 刻み = 1 段になる。
+
+一時停止中（P、または `sim.pause`）でも寄せられる。機体をよく見たいのはまさにそのときである。
+
 ### 失敗のしかた
 
 | 状況 | 終了コード | 表示 |
@@ -588,6 +647,67 @@ wherever the last `rc.set` put it. `armed=false` presses it the other way, which
 
 The truth comes from the `Rigidbody` and the estimate from the firmware, so a disagreement between
 the two shows up rather than being hidden by reading one of them twice.
+
+### The Commands the Chase Camera Registers
+
+| Command | Arguments | Returns |
+|---------|-----------|---------|
+| `camera.zoom` | `distance` (m, greater than zero) / `step` (positive closer, negative further out) / `reset` (true for the default) | The table below (the same as `camera.state`) |
+| `camera.state` | — | The table below |
+
+Zooming moves the camera; it never narrows the field of view. A narrower lens flattens perspective,
+so the gap between the vehicle and a wall stops looking like the distance it is — and somebody
+flying by eye judges closing speed from exactly that. The distance and the height take the same
+multiplier, so the angle the camera looks down at is the same at every zoom.
+
+The range is 0.15 m to 3.0 m and the default is 0.28 m (which shows the airframe about 200 px wide
+on a 1280x720 picture; the width is counted across an axis, 0.0816 m, not on the 0.12 m diagonal). A distance outside the range is brought inside it rather than
+refused, and the answer carries the value actually taken: a script sweeping the zoom from end to
+end wants a picture at both ends, not two failures. Passing none of `distance`, `step` or `reset`
+fails, because answering the current state would look as though the camera had moved.
+
+```bash
+sf unity cmd camera.zoom --json '{"distance": 0.2}'   # in to 0.2 m
+sf unity cmd camera.zoom --json '{"step": 2}'          # two steps in (one step = 1.15x)
+sf unity cmd camera.zoom --json '{"reset": true}'      # back to the default 0.28 m
+sf unity cmd camera.state                              # distance, height, multiplier, range
+```
+
+#### What `camera.state` Returns
+
+| Key | Contents |
+|-----|----------|
+| `distance_m` / `height_m` | Where the camera is **asked** to sit: behind and above the vehicle [m] |
+| `multiplier` | Against the default (1 at the default, below 1 when closer) |
+| `current_distance_m` / `current_height_m` | Where the camera **actually is** [m] |
+| `minimum_distance_m` / `maximum_distance_m` | The range it may move in [m] (0.15 / 3.0) |
+| `step_ratio` | What one step multiplies the distance by (1.15) |
+| `default_distance_m` | Where `reset` goes [m] (0.28) |
+
+Both the asked-for and the actual distance are returned because the camera closes the gap over
+about a tenth of a second. Read straight after a `camera.zoom`, `current_distance_m` is still on
+its way, and a check that does not know this would judge a healthy value to be wrong.
+
+### On-Screen Controls (Keys and Mouse)
+
+These work inside the Chrome tab showing the page. The same hints appear on the bottom line of the
+readout.
+
+| Input | Effect |
+|-------|--------|
+| Wheel forward / back | Closer / further out (one notch = one step, up to four steps a frame) |
+| F / G | One step closer / further out |
+| C | Back to the default distance (0.28 m) |
+
+The piloting and simulation keys (W A S D, Space, Z, `,` `.`, R, H, `-` `+`, P, N, `[` `]`, B,
+Backspace) are listed in `simulator/unity/README.md`. F, G and C were chosen because every other
+letter near them is already taken.
+
+The unit a wheel reading arrives in depends on the platform (1 per notch in Chrome, 120 in a desktop
+player). Which one it is is decided from the reading's own size, so one notch is one step either way.
+
+Zooming works while the simulation is paused (P, or `sim.pause`) — which is exactly when somebody
+wants a closer look at the airframe.
 
 ### How It Fails
 

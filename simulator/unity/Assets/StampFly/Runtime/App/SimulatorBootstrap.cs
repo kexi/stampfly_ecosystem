@@ -169,12 +169,37 @@ namespace StampFly.App
 
             var camera = holder.AddComponent<Camera>();
             camera.clearFlags = CameraClearFlags.Skybox;
+
+            // The near clip plane stays where it was through the zoom. At the
+            // closest the zoom may sit (0.15 m behind, 0.07 m above) the nearest
+            // propeller tip is about 0.10 m away, so 0.02 m still clips nothing.
+            // Zooming is done by moving the camera, never by narrowing the field
+            // of view: a narrower lens flattens perspective, and a pilot judges
+            // closing speed on a wall from exactly that (see ChaseZoom).
+            // ニアクリップ面はズームを通して従来のままである。ズームが寄れる限界
+            // （後ろ 0.15 m、上 0.07 m）でも、最も近いプロペラの先端までは 0.10 m
+            // ほどあるので、0.02 m は何も切らない。寄せるのはカメラを動かすことで
+            // 行い、視野角を狭めることでは決して行わない。狭いレンズは遠近感を
+            // 平らにし、壁への接近の速さを操縦者はまさにそこから判断する
+            // （ChaseZoom を見よ）。
             camera.nearClipPlane = 0.02f;
             camera.farClipPlane = 60.0f;
             camera.fieldOfView = 55.0f;
 
             var follow = holder.AddComponent<FollowCamera>();
             follow.target = vehicle;
+            follow.SnapToZoom();
+
+            holder.AddComponent<ChaseCameraControls>();
+
+            // `camera.zoom` and `camera.state` belong beside the camera, under
+            // the same symbols as the relay, so a distributed build -- where
+            // `StampFly.Remote` is absent entirely -- still compiles.
+            // `camera.zoom` と `camera.state` はカメラの隣のもので、中継と同じ記号で
+            // 囲んである。`StampFly.Remote` が丸ごと無い配布用ビルドでも翻訳が通る。
+#if UNITY_EDITOR || DEVELOPMENT_BUILD || STAMPFLY_REMOTE
+            holder.AddComponent<CameraRemoteCommands>();
+#endif
         }
 
         /// <summary>The on-screen readout. / 画面の表示。</summary>

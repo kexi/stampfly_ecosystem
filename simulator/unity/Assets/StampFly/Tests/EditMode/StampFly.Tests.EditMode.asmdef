@@ -12,6 +12,7 @@
         "StampFly.Remote",
         "StampFly.App",
         "StampFly.Vehicle",
+        "StampFly.Ui",
         "StampFly.Editor.MeshTools"
     ],
     "includePlatforms": [

@@ -550,10 +550,13 @@ Assets/StampFly/
 │   └── BinaryStlReader.cs            バイナリ STL を素の三角形として読む（保存法線は使わない）
 ├── Runtime/Ui/                       StampFly.Ui
 │   ├── SimHud.cs                     UI Toolkit の表示（実時間比・1 刻みの所要時間・fps）
-│   └── FollowCamera.cs               追従カメラ
+│   ├── FollowCamera.cs               追従カメラ
+│   ├── ChaseZoom.cs                  寄せ具合の算術（Unity の型を持たない）
+│   └── ChaseCameraControls.cs        ホイール ／ F ／ G ／ C
 ├── Runtime/App/                      StampFly.App（上の全部を繋ぐ最上位）
 │   ├── SimulatorBootstrap.cs         場面を実行時に組み立てる
-│   └── SimRemoteCommands.cs          `sim.*` ／ `rc.*` の登録（開発用ビルドだけ）
+│   ├── SimRemoteCommands.cs          `sim.*` ／ `rc.*` の登録（開発用ビルドだけ）
+│   └── CameraRemoteCommands.cs       `camera.*` の登録（同上）
 ├── Plugins/WebGL/SfuFirmware.jslib   別の wasm モジュールとの継ぎ目
 ├── Scenes/Main.unity                 物体 1 つ（`SimulatorBootstrap`）だけを持つ
 └── Assets/WebGLTemplates/StampFly/   配信するページ（`?raf=worker` を持つ）
@@ -658,6 +661,38 @@ Unity 抜きでも確かめてある（`dlopen` → boot → 400 刻み → `dlc
 離したキーの軸は中央へ戻る。スロットルの意味はモードで変わるが C# 側は読み替えない。
 ACRO と STABILIZE では推力の指令、ALT_HOLD では中央が「この高さを保つ」である。
 どちらかを決めるのはファームで、実機の送信機のときと同じである。
+
+### 追跡カメラの寄せ具合（`ChaseZoom` ／ `ChaseCameraControls`）
+
+| 入力 | 働き |
+|---|---|
+| マウスホイール 前 / 後 | 寄る / 引く（1 刻み = 1 段。1 フレームに 4 段まで） |
+| F / G | 1 段 寄る / 引く |
+| C | 既定の距離へ戻す |
+
+| 量 | 値 | 理由 |
+|---|---|---|
+| 既定の距離 | 0.28 m | 1280x720 の画面に機体が幅 200 px ほどで映り、白いフレーム・4 本の脚・オレンジの M5StampS3 がそれぞれ見分けられる。幅は**軸方向の** 0.0816 m で数える（衝突箱の footprint。±0.023 m のロータに半径 0.015 m のプロペラが届く幅）。よく挙がる 0.12 m は対角のロータ間で、それで決めると幅 130 px にしかならず脚が見分けられない（ブラウザで実測して分かった） |
+| 既定の高さ | 0.128 m | 距離 × (0.55 / 1.2)。ズームが無かった頃の見下ろす角 |
+| 範囲 | 0.15〜3.0 m | 近い端では機体が 1280 幅の 376 px を占め、脚 1 本を読み取れる。遠い端は機体が幅 20 px を下回る手前 |
+| 1 段 | 1.15 倍 | 一定の**比**にする。0.15 m で 0.1 m の刻みは機体までのほとんどの距離になり、3.0 m では見て分からない。既定から近い端まで約 4 段、遠い端まで約 17 段、範囲の全体で 21 段。先に粗い比（1.25）を試すと 3 刻み未満で近い端に達し、寄ったのではなく飛んだように読めた |
+
+**視野角（FOV、55°）は変えない。** 狭めると遠近感が平らになり、機体と壁の間の距離がその距離らしく
+見えなくなる。目で飛ばす人はそこから接近の速さを判断するので、寄せるたびに変わるレンズはそれを奪う。
+距離と高さに同じ倍率を掛けるので、見下ろす角はどの倍率でも変わらない。
+
+ニアクリップ面（0.02 m）は従来のままで足りる。最も寄った位置（後ろ 0.15 m、上 0.069 m）でも、
+最も近いプロペラの先端までは 0.10 m ほどある。ブラウザで実際に撮って、欠けが無いことを確かめた。
+
+**ホイールの単位は環境によって違う。** Chrome で測ると Unity の WebGL のマウスは 1 刻みにつき
+`Mouse.current.scroll.y` に **1** を報告する（ブラウザの `deltaY` = −120 に対して **+1**。符号も反転する）。
+デスクトップのプレイヤーは Windows の 120 を報告する。`ChaseCameraControls` は翻訳時の環境判定ではなく
+**値の大きさ**でどちらの単位かを決めるので、1 つのビルドがブラウザとエディタで同じように振る舞う。
+
+`ChaseZoom` は Unity の型もフレームも持たない。刻みの大きさと限界を、場面もカメラも機体も無しに
+EditMode の試験（`Tests/EditMode/ChaseZoomTest.cs`）で確かめられるようにするためである。
+`FollowCamera` は求められた距離へ `Time.unscaledDeltaTime` で寄っていくので、一時停止中も寄せられる。
+端末からは `camera.zoom` ／ `camera.state`（`docs/commands/sf-unity.md`）で動かせる。
 
 ### ビルド
 
@@ -764,6 +799,14 @@ jq -c 'select(.event=="log.rejected")' $LOG
 場面に置き、`rc.set`（本実装が登録済み）で台本のスティックを流す。**人が前面のタブで
 キーボードを叩く分には、そのまま動く。**
 
+CDP（Chrome DevTools Protocol）の `Input.dispatchKeyEvent` ／ `dispatchMouseEvent` でも
+同じである（2026-09-21 に確かめた）。背面のタブでは、既存の P（一時停止）を含めどのキーも
+Unity へ届かない。タブが実際に前面にある短い間だけは届き、そのときは F ／ G ／ C とホイールが
+設計どおりに働くのを確認した（ホイールは 1 刻み = 1 段、前へ回すと寄る）が、**前面かどうかで
+結果が変わるので自動の確認には使えない。** キーとホイールの確認は
+`Tests/PlayMode/ChaseCameraControlsTest.cs` が仮想の装置を Input System へ積んで行う。
+`camera.zoom` ／ `camera.state` は入力の経路を通らないので、ブラウザでも確実に確かめられる。
+
 `?raf=worker` の差し替えは 16 ms の固定周期であり、背面のタブでは実際には 10 fps 程度に
 なる。表示板に `BEHIND` が出るのはそのためで、1 刻みの所要時間（41.7 µs）とは別の話である。
 
@@ -779,6 +822,10 @@ unity test . --mode PlayMode --output test-results.xml --non-interactive
 | `Tests/EditMode/SfuAbiLayoutTest.cs` | 5 つの構造体の大きさ、4 つの欄の位置、ABI の版、食い違うモジュールが名前付きで拒まれること |
 | `Tests/EditMode/RcScaleTest.cs` | 振れ幅 → 12 bit の生 ADC、頭打ち、中央、キーボードが無いときの中央、`Reset` が ARM を落とすこと、フラグのビットが ControlPacket と同じこと |
 | `Tests/EditMode/SimClockTest.cs` | 60fps で 6 刻み、端数の繰り越し、1 フレームの上限、一時停止中に仮想時刻が進まないこと、コマ送り、倍率、停止の溜まりを捨てること、実測の速さ |
+| `Tests/EditMode/ChaseZoomTest.cs` | 1 段が一定の比であること、複数段が 1 段ずつと一致すること、両端で止まること、範囲外の距離を収めること、既定へ戻ること、高さと距離の比が保たれること、0 段と数でない値が何も動かさないこと |
+| `Tests/EditMode/ChaseWheelTest.cs` | ホイールの値 → 段の変換。ブラウザの単位（1 刻み = 1）とデスクトップの単位（120）の両方で 1 刻みが 1 段になること、符号、1 刻みに足りない値が何も動かさないこと、1 フレームの上限、単位を見分ける境目が両方から離れていること |
+| `Tests/PlayMode/ChaseCameraControlsTest.cs` | **仮想のキーボードとマウスで** F ／ G ／ C とホイールが実際にズームへ届くこと、押し続けても 1 回しか働かないこと、ホイールの符号（前で寄る）、1 フレームの上限、`Time.timeScale` が 0（一時停止）でも寄せられること。ブラウザではキーの事象が Unity へ届かないので（下記「自動操作では確かめられないこと」）、入力の確認はここで行う |
+| `Tests/PlayMode/CameraRemoteCommandsTest.cs` | `camera.zoom` ／ `camera.state` が登録され `help` に並ぶこと、返る鍵の全て、求めた距離へカメラが実際に寄ること、範囲外が収められて報告されること、引数が無ければ断ること、部品が消えると登録が外れること |
 | `Tests/PlayMode/FirmwareFlightTest.cs` | **実物のファームで ARM → 離陸 → ALT_HOLD で保持 → 着地**、ALT_HOLD に達すること、N 刻みの時計がちょうど N×2500 µs であること、床に置いた機体が水平を保つこと |
 | `Tests/PlayMode/FirmwarePowerCycleTest.cs` | **2 回目の電源投入が INIT から通ること**、電源投入ごとに別の複写を開くこと、同じファームの 2 回目の起動が拒まれること |
 

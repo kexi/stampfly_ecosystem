@@ -50,6 +50,25 @@ namespace StampFly.Ui
         {
             VisualElement root = GetComponent<UIDocument>().rootVisualElement;
             root.Clear();
+
+            // The root is made to fill the panel before anything absolute is put
+            // in it. An element positioned by `bottom` is placed against its
+            // parent's resolved height, and a root left to size itself to its
+            // contents has none to place against -- which is why the key hints
+            // were being laid out below the visible area and never appeared on
+            // screen. The top-left readout was unaffected because it is placed by
+            // `top`, so it was the hints alone that went missing.
+            // 絶対位置のものを入れる前に、根の要素を画面いっぱいにする。`bottom` で
+            // 置く要素は親の確定した高さに対して置かれ、中身に合わせて自分の大きさを
+            // 決める根にはその高さが無い。キーの案内が見える範囲の下に配置され、
+            // 画面に出てこなかったのはこれによる。左上の表示は `top` で置くので影響を
+            // 受けず、消えていたのは案内だけだった。
+            root.style.position = Position.Absolute;
+            root.style.left = 0;
+            root.style.top = 0;
+            root.style.right = 0;
+            root.style.bottom = 0;
+
             root.Add(BuildPanel());
             root.Add(BuildHelp());
         }
@@ -95,15 +114,24 @@ namespace StampFly.Ui
                 "W/S pitch   A/D roll   ,/. yaw   Space/Z throttle   " +
                 "R arm   H alt-hold   -/+ deflection\n" +
                 "P pause   N step   [ / ] speed   B power cycle   " +
-                "Backspace return to spawn";
+                "Backspace return to spawn\n" +
+                "wheel or F/G zoom   C default view";
             help.style.position = Position.Absolute;
             help.style.left = 12;
-            help.style.bottom = 10;
+
+            // Clear of the bottom edge by more than one line. Measured at 1280x773
+            // the third line left about 10 px under it, so a fourth line -- or a
+            // shorter window -- would have run the hints off the screen.
+            // 画面の下端から 1 行ぶんより多く離す。1280x773 で測ると 3 行目の下に
+            // 10 px ほどしか残っておらず、4 行目が増えるか窓が低くなれば、案内が
+            // 画面の外へ出てしまうところだった。
+            help.style.bottom = 24;
+
             help.style.backgroundColor = new Color(0.05f, 0.06f, 0.08f, 0.62f);
             help.style.paddingLeft = 8;
             help.style.paddingRight = 8;
-            help.style.paddingTop = 4;
-            help.style.paddingBottom = 4;
+            help.style.paddingTop = 5;
+            help.style.paddingBottom = 5;
             return help;
         }
 

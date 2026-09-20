@@ -2,6 +2,7 @@
     "name": "StampFly.Ui",
     "rootNamespace": "StampFly.Ui",
     "references": [
+        "Unity.InputSystem",
         "StampFly.Native",
         "StampFly.Sim",
         "StampFly.Input"
