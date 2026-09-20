@@ -6,6 +6,7 @@
  * https://github.com/M5Fly-kanazawa/stampfly_ecosystem
  */
 
+using StampFly.Core;
 using StampFly.Sim;
 using UnityEngine;
 
@@ -230,29 +231,35 @@ namespace StampFly.Vehicle
             }
         }
 
-        /// <summary>An opaque URP material in one colour. / 1 色の不透明な URP のマテリアル。</summary>
+        /// <summary>
+        /// An opaque URP material in one colour, copied from the template
+        /// <see cref="ShadedMaterials"/> holds. Looking the shader up by name
+        /// here is what used to leave the vehicle magenta in a player build:
+        /// nothing referred to URP Lit, so no build carried it.
+        /// 1 色の不透明な URP のマテリアル。<see cref="ShadedMaterials"/> が持つ
+        /// 複製元から複製する。ここでシェーダを名前で引くやり方が、プレイヤーの
+        /// ビルドで機体をマゼンタにしていた。URP Lit を参照するものが無く、どの
+        /// ビルドもそれを持たなかったためである。
+        /// </summary>
         private static void Paint(GameObject target, Color colour)
         {
-            var material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-            material.color = colour;
-            target.GetComponent<MeshRenderer>().sharedMaterial = material;
+            target.GetComponent<MeshRenderer>().sharedMaterial =
+                ShadedMaterials.NewOpaque(colour);
         }
 
         /// <summary>
         /// A translucent URP material, so a spinning propeller reads as a disc
-        /// without hiding what is under it.
+        /// without hiding what is under it. Being transparent is settled in the
+        /// template asset, not here: a keyword enabled at runtime asks for a
+        /// shader variant the build never compiled.
         /// 半透明の URP のマテリアル。回るプロペラが、下にあるものを隠さずに円盤と
-        /// して見えるようにするため。
+        /// して見えるようにするため。透明であることはここではなく複製元の資産の側で
+        /// 決めてある。実行時に立てたキーワードは、ビルドが翻訳しなかったシェーダ
+        /// 変種を求めることになるからである。
         /// </summary>
         private static Material TranslucentMaterial(Color colour)
         {
-            var material = new Material(Shader.Find("Universal Render Pipeline/Lit"));
-            material.SetFloat("_Surface", 1.0f);   // 1 = transparent
-            material.SetFloat("_Blend", 0.0f);     // 0 = alpha
-            material.renderQueue = (int)UnityEngine.Rendering.RenderQueue.Transparent;
-            material.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
-            material.color = colour;
-            return material;
+            return ShadedMaterials.NewTranslucent(colour);
         }
     }
 }

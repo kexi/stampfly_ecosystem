@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using StampFly.Core;
 using UnityEngine;
 
 namespace StampFly.World
@@ -16,21 +17,14 @@ namespace StampFly.World
     /// 同じ色の障害物が 39 個ある空間があるので、障害物ごとではなく色ごとに 1 つ
     /// 持つことで描画呼び出しと確保を抑える。実行時に作ったマテリアルは Unity が
     /// 自動では片付けないため、この入れ物を持つ側が空間と一緒に捨てる。
+    ///
+    /// Each one is a copy of the shared template <see cref="ShadedMaterials"/>
+    /// hands out, which is the only thing that puts URP Lit into a player build.
+    /// どれも <see cref="ShadedMaterials"/> が配る共有の複製元の複製である。
+    /// プレイヤーのビルドに URP Lit を入れるのはその複製元だけである。
     /// </summary>
     public sealed class WorldMaterials : IDisposable
     {
-        // URP's standard lit shader. The name is what Shader.Find takes, and it
-        // is the shader the project's renderer already ships.
-        // URP の標準の Lit シェーダ。Shader.Find に渡す名前で、この企画の描画側が
-        // 既に持っているものである。
-        private const string LitShaderName = "Universal Render Pipeline/Lit";
-
-        // Fallback for an editor or a player without URP available, so a
-        // missing shader never leaves an obstacle invisible.
-        // URP が使えない場合の代わり。シェーダが無いせいで障害物が見えなくなる
-        // ことを防ぐ。
-        private const string FallbackShaderName = "Sprites/Default";
-
         // Obstacles are matte: a plastic-looking highlight would compete with
         // the floor pattern that the flow sensor's story depends on.
         // 障害物はつや消しにする。プラスチックのような光沢は、フローの説明が頼る
@@ -38,14 +32,12 @@ namespace StampFly.World
         private const float ObstacleSmoothness = 0.15f;
         private const float ObstacleMetallic = 0.0f;
 
-        private static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         private static readonly int BaseMapId = Shader.PropertyToID("_BaseMap");
         private static readonly int SmoothnessId = Shader.PropertyToID("_Smoothness");
         private static readonly int MetallicId = Shader.PropertyToID("_Metallic");
 
         private readonly Dictionary<string, Material> byColor = new Dictionary<string, Material>();
         private readonly List<UnityEngine.Object> owned = new List<UnityEngine.Object>();
-        private Shader litShader;
 
         /// <summary>
         /// A shared opaque material of the given "#rrggbb" colour.
@@ -59,9 +51,8 @@ namespace StampFly.World
                 return existing;
             }
 
-            Material created = Create();
+            Material created = Create(ParseColor(key));
             created.name = $"World {key}";
-            created.SetColor(BaseColorId, ParseColor(key));
             byColor.Add(key, created);
             return created;
         }
@@ -74,9 +65,12 @@ namespace StampFly.World
         /// </summary>
         public Material Textured(Texture2D texture, Vector2 tiling)
         {
-            Material created = Create();
+            // White, because the base colour multiplies the texture: any other
+            // colour would tint the floor pattern the world file describes.
+            // 白にする。基本の色はテクスチャに掛かるので、他の色にすると空間
+            // ファイルが述べる床の模様に色が付いてしまう。
+            Material created = Create(Color.white);
             created.name = "World floor";
-            created.SetColor(BaseColorId, Color.white);
             created.SetTexture(BaseMapId, texture);
             created.mainTextureScale = tiling;
             owned.Add(texture);
@@ -129,14 +123,18 @@ namespace StampFly.World
             return Color.magenta;
         }
 
-        private Material Create()
+        /// <summary>
+        /// A fresh opaque material in one colour, made from the shared template
+        /// rather than from a shader looked up by name: the name lookup is what
+        /// left a player build with no URP Lit at all (see
+        /// <see cref="ShadedMaterials"/>).
+        /// 1 色の新しい不透明マテリアル。名前で引いたシェーダからではなく、共有の
+        /// 複製元から作る。名前で引くやり方が、プレイヤーのビルドに URP Lit を 1 つ
+        /// も残さなかった原因である（<see cref="ShadedMaterials"/> を見よ）。
+        /// </summary>
+        private Material Create(Color colour)
         {
-            if (litShader == null)
-            {
-                litShader = Shader.Find(LitShaderName) ?? Shader.Find(FallbackShaderName);
-            }
-
-            Material created = new Material(litShader);
+            Material created = ShadedMaterials.NewOpaque(colour);
             if (created.HasProperty(SmoothnessId))
             {
                 created.SetFloat(SmoothnessId, ObstacleSmoothness);

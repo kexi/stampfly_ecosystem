@@ -1,12 +1,12 @@
 {
-    "name": "StampFly.Vehicle",
-    "rootNamespace": "StampFly.Vehicle",
+    "name": "StampFly.Editor.MaterialTools",
+    "rootNamespace": "StampFly.Editor.MaterialTools",
     "references": [
-        "StampFly.Core",
-        "StampFly.Native",
-        "StampFly.Sim"
+        "StampFly.Core"
     ],
-    "includePlatforms": [],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,
