@@ -1,0 +1,61 @@
+# Git hook definitions run by lefthook (https://lefthook.dev).
+# lefthook が実行する git フックの定義。
+#
+# Relationship with .githooks/ (important) / .githooks/ との関係（重要）
+# ---------------------------------------------------------------------
+# .githooks/ is enabled with `git config core.hooksPath .githooks`, and while
+# that setting is in place git looks ONLY there and never runs .git/hooks/,
+# where `lefthook install` writes. The two cannot both be active through git.
+# .githooks/ は `git config core.hooksPath .githooks` で有効になるが、この設定が
+# ある間 git はそこだけを見て、`lefthook install` が書き込む .git/hooks/ は一切
+# 実行しない。git 経由で両方を同時に有効にすることはできない。
+#
+# Resolution: lefthook owns the hook path, and calls .githooks/pre-commit as one
+# of its own commands (private-document-guard below). The private-document guard
+# therefore keeps running, unchanged, with the same script as before.
+# 解決方法: フックの経路は lefthook が持ち、.githooks/pre-commit を lefthook の
+# コマンドの 1 つとして呼ぶ（下の private-document-guard）。非公開文書の混入を
+# 防ぐ検査は、同じスクリプトのまま今までどおり働く。
+#
+# Why not run `lefthook install` automatically: it rewrites the user's git
+# configuration (.git/hooks/ and, with -r, core.hooksPath). Enabling it stays a
+# deliberate act by the person working on the repository.
+# Why not（`lefthook install` を自動で実行しない理由）: 利用者の git 設定
+# （.git/hooks/、-r を付ければ core.hooksPath）を書き換えるため。有効化は
+# リポジトリで作業する人が自分で行う操作として残す。
+#
+# Enable (run once, and unset core.hooksPath so .git/hooks/ is used again):
+# 有効化（一度だけ実行し、core.hooksPath を外して .git/hooks/ を使う状態に戻す）:
+#   git config --unset core.hooksPath
+#   lefthook install
+# .githooks/pre-push (the SILS milestone tag check) is not covered here; keep
+# using core.hooksPath if you rely on it, and run `just check` by hand instead.
+# .githooks/pre-push（SILS のマイルストーンタグの検査）はここでは扱わない。
+# それを使うなら core.hooksPath のままにし、検査は `just check` を手で実行する。
+
+pre-commit:
+  parallel: true
+  commands:
+    # Refuse private documents (conference manuscripts, grant applications) —
+    # the existing .githooks/pre-commit script, called unchanged.
+    # 非公開文書（学会原稿・申請書）の混入を拒否する。既存の
+    # .githooks/pre-commit をそのまま呼ぶ。
+    private-document-guard:
+      run: .githooks/pre-commit
+
+    # Scan the staged changes for secrets (keys, tokens, credentials).
+    # ステージされた変更に秘密情報（鍵・トークン・認証情報）が無いかを検査する。
+    gitleaks:
+      run: gitleaks protect --staged --redact --verbose
+
+    # Verify the justfile formatting when the justfile itself is staged.
+    # justfile 自身がステージされたとき、その書式を確かめる。
+    just-fmt:
+      glob: "justfile"
+      run: just --fmt --check --unstable
+
+    # Verify the Nix formatting when flake.nix is staged.
+    # flake.nix がステージされたとき、Nix の整形を確かめる。
+    nix-fmt:
+      glob: "flake.nix"
+      run: nix fmt -- --ci

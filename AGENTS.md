@@ -85,6 +85,18 @@ sf setup genesis
 sf sim run genesis
 ```
 
+### Nix 開発シェル（Unity 版シミュレータのネイティブ部分用）
+リポジトリ直下の `flake.nix` が、ネイティブ部分（C/C++/WebAssembly）のビルド道具を用意する。`direnv allow` を一度実行すれば `.envrc` が自動で有効にし、direnv を使わない場合は `nix develop` で入る:
+```bash
+direnv allow     # 一度だけ。以後このディレクトリで自動的に有効になる
+nix develop      # direnv を使わない場合
+just             # レシピの一覧を表示する（just fmt / just check / just lint-just）
+```
+
+入っている道具は cmake・ninja・just・lefthook・shellcheck・gitleaks・emscripten・nodejs。**コンパイラは入っていない**（macOS では Xcode の clang を使う）。
+
+**`setup_env.sh` との関係**: この開発シェルは ESP-IDF と sf CLI を**含まない**。ファームウェアのビルド・書き込み・診断は従来どおり `source setup_env.sh` で有効にした sf CLI で行う。`.envrc` は `setup_env.sh` を読み込まないので、両方が要るときは `nix develop`（または direnv）に入った上で `source setup_env.sh` を実行する。
+
 ## Writing Conventions
 
 ### 言葉遣い（用語辞書）
@@ -499,3 +511,4 @@ When developing this codebase, follow this order:
 
 All architectural decisions are documented in `PROJECT_PLAN.md`. It is the canonical description of the repository structure: consult it before making structural changes, and **update it in the same commit** whenever a directory, responsibility, or naming convention changes (PROJECT_PLAN §15). Sub-READMEs (`docs/README.md`, `tools/README.md`, ...) summarize it and must not describe a different structure.
 シミュレーション方針（3層構造・Model Fidelity 期の SILS 忠実度目標・改修バックログ）は `docs/architecture/simulation-policy.md` を正とする。
+Unity 版シミュレータ（WebGL、4 つ目として併設する計画。状態: 実装中）は `docs/plans/unity-simulator.md` を参照する。`simulator/unity/` と `sf unity` は未実装で、実装する段のコミットで PROJECT_PLAN §10・§9 と上記のコマンド一覧に追記する。完了したらこの計画文書は削除する（PROJECT_PLAN §15 規則 7）。

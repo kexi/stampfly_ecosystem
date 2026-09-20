@@ -165,3 +165,11 @@ simulator/sils/viz/out_fly/
 
 # Claude Code worktrees (作業用チェックアウト実体 / working checkouts)
 .claude/worktrees/
+
+# ====================
+# direnv / Nix development shell
+# direnv・Nix 開発シェル
+# ====================
+# Cache written by `direnv allow` on .envrc (regenerated automatically)
+# .envrc に対して `direnv allow` が書くキャッシュ（自動で作り直される）
+.direnv/

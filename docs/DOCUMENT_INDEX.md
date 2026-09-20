@@ -105,6 +105,7 @@
 | [plans/gui-installer-plan.md](plans/gui-installer-plan.md) | GUI インストーラ（StampFly Setup）実装計画 |
 | [plans/pairing-methods-plan.md](plans/pairing-methods-plan.md) | 講習会でのペアリング取り違え対策（方式比較） |
 | [plans/powerhub-beacon-station-plan.md](plans/powerhub-beacon-station-plan.md) | PowerHub を TDMA ビーコン専用局にする計画 |
+| [plans/unity-simulator.md](plans/unity-simulator.md) | Unity 版シミュレータ（WebGL）を 4 つ目として併設する計画（状態: 実装中） |
 
 ## 3. ファームウェアドキュメント
 
@@ -314,6 +315,7 @@ POS_HOLD 位置制御の実機検証を機に `firmware/vehicle_new` が `firmwa
 | [plans/gui-installer-plan.md](plans/gui-installer-plan.md) | GUI installer (StampFly Setup) implementation plan |
 | [plans/pairing-methods-plan.md](plans/pairing-methods-plan.md) | Countermeasures for classroom pairing mix-ups (method comparison) |
 | [plans/powerhub-beacon-station-plan.md](plans/powerhub-beacon-station-plan.md) | Plan to turn M5Stack PowerHub into a TDMA beacon station |
+| [plans/unity-simulator.md](plans/unity-simulator.md) | Plan to add a Unity-based simulator (WebGL) as a fourth one (status: in progress) |
 
 ## 3. Firmware Documentation
 

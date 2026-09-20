@@ -148,6 +148,7 @@ Code Identity のおかげで、実機同定に使ったのと同一の同定パ
 | `simulator/README.md` | VPython 版・Genesis 版の使い方 |
 | `simulator/sils/README.md` | SILS ベンチの使い方（ターゲット・シナリオ・GUI） |
 | `simulator/sils/RESET_PLAN.md`（2026-09-13 削除、タグ `archive/2026-09-13`） | 削除済み。SILS ベンチの構造・立ち上げ経緯は本書 §10 に要約 |
+| `../plans/unity-simulator.md`（状態: 実装中） | Unity 版シミュレータ（WebGL）を 4 つ目として併設する計画（要件・段階と合格基準・技術検証の記録）。中身が入った段階で本書 §2 の表を 4 列に広げる |
 | `firmware/vehicle/docs/development_roadmap.md` | 開発工程全体（Phase 0〜6） |
 | `firmware/vehicle/docs/control_theory_overview.md` | 制御設計の規律・同定の教訓 |
 | `firmware/vehicle/docs/noise_and_vibration_model.md` | センサノイズモデル（N0〜N2、N3/N4 計画） |
@@ -315,6 +316,7 @@ Policy: a realistic division of labor is to run training with Genesis (or MJX) a
 | `simulator/README.md` | How to use the VPython and Genesis versions |
 | `simulator/sils/README.md` | How to use the SILS bench (targets, scenarios, GUI) |
 | `simulator/sils/RESET_PLAN.md` (deleted 2026-09-13, tag `archive/2026-09-13`) | Deleted. The SILS bench's structure and startup history are summarized in §10 of this document |
+| `../plans/unity-simulator.md` (status: in progress) | The plan for adding a Unity-based simulator (WebGL) as a fourth one alongside the others (requirements, stages and pass criteria, feasibility record). §2's table here widens to four columns once its contents land |
 | `firmware/vehicle/docs/development_roadmap.md` | The overall development process (Phase 0–6) |
 | `firmware/vehicle/docs/control_theory_overview.md` | Control-design discipline and lessons from identification |
 | `firmware/vehicle/docs/noise_and_vibration_model.md` | Sensor noise model (N0–N2, N3/N4 planned) |

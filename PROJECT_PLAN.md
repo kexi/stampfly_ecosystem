@@ -66,6 +66,8 @@ stampfly-ecosystem/
 ├── .github/           # CI（§14）
 ├── .githooks/         # 非公開文書の混入を防ぐ pre-commit・節目の pre-push
 ├── install.sh / install.bat / setup_env.sh / setup_env.bat   # 導入と環境の入口（§12）
+├── flake.nix / flake.lock / .envrc      # Nix の開発シェル（ネイティブビルド道具。§12）
+├── justfile / lefthook.yml              # タスクランナーと pre-commit の検査（§12・§14）
 └── pyproject.toml / requirements.txt / requirements-docs.txt # Python パッケージ定義
 ```
 
@@ -386,6 +388,17 @@ simulator/
 - `setup_env.sh` / `setup_env.bat` は開発環境を有効化する（ESP-IDF の `export` と sf CLI）
 - `scripts/` にはインストーラの実装とそのテストを置く。それ以外の補助スクリプトは §8 の規則に従う
 
+### リポジトリ直下の開発環境ファイル（2026-09-20 新設）
+
+| ファイル | 役割 |
+|---|---|
+| `flake.nix` / `flake.lock` | Nix の開発シェル（`nix develop`）の定義。Unity 版シミュレータのネイティブ部分（C/C++/WebAssembly）のビルド道具（cmake・ninja・just・lefthook・shellcheck・gitleaks・emscripten・nodejs）を用意する。コンパイラは入れず、macOS では Xcode の clang を使う。`treefmt-nix` で `nix fmt` の整形定義を持ち、その検査を `nix flake check` に含める |
+| `.envrc` | direnv がこのディレクトリで `flake.nix` の開発シェルを有効にするための 1 行（`use flake`） |
+| `justfile` | `nix develop` の中で動くタスク（`just fmt`・`just check`・`just lint-just`）。ファームウェアのビルドは従来どおり sf CLI が担う |
+| `lefthook.yml` | pre-commit の検査の定義（§14） |
+
+**`setup_env.sh` との関係**: この開発シェルは ESP-IDF と sf CLI を含まない。ファームウェアのビルド・書き込み・診断は従来どおり `source setup_env.sh` で有効にした sf CLI が担い、`.envrc` は `setup_env.sh` を読み込まない。2 つの環境は独立しており、Nix を使わない利用者の手順は変わらない。詳細は `docs/plans/unity-simulator.md`。
+
 ---
 
 ## 13. 外部資産（ベンダリング）の規則
@@ -409,7 +422,20 @@ simulator/
 | `release.yml` | ファームウェア・フラッシャ・インストーラのリリースビルド |
 | `deploy-pages.yml` | ランディングと docs サイトの配信 |
 
-静的解析（lint・型検査）は導入していない。整合性の担保は上記の生成物鮮度検査と再確認試験で行う。
+ソースコードの静的解析（C++・Python の lint・型検査）は導入していない。整合性の担保は上記の生成物鮮度検査と再確認試験で行う。
+
+### pre-commit の検査（lefthook、2026-09-20 新設）
+
+`lefthook.yml` が手元のコミット前に次の 4 つを走らせる。いずれもソースコードの静的解析ではなく、秘密情報の混入と設定ファイルの書式の検査である。CI には載せていない。
+
+| 検査 | 内容 |
+|---|---|
+| `private-document-guard` | 既存の `.githooks/pre-commit`（非公開文書の混入を拒否する）をそのまま呼ぶ |
+| `gitleaks` | ステージされた変更に秘密情報（鍵・トークン・認証情報）が無いかを検査する |
+| `just-fmt` | `justfile` がステージされたとき、その書式を `just --fmt --check` で確かめる |
+| `nix-fmt` | `flake.nix` がステージされたとき、`nix fmt` の整形を確かめる |
+
+**`.githooks/` との関係**: `git config core.hooksPath .githooks` が設定されている間、git は `.githooks/` だけを見て、`lefthook install` が書き込む `.git/hooks/` を実行しない。両方を git 経由で同時に有効にはできないため、lefthook 側がフックの経路を持ち、`.githooks/pre-commit` を自分のコマンドの 1 つとして呼ぶ構成にした。有効化（`git config --unset core.hooksPath` と `lefthook install`）は各自が自分で行う操作とし、リポジトリ側からは実行しない。`.githooks/pre-push`（SILS のマイルストーンタグの検査）は lefthook では扱わない。
 
 ---
 
@@ -433,6 +459,10 @@ simulator/
 Workshop（L0）の API・レッスンの現行設計への更新（§4）、`sf app`・`sf lesson` の全階層対応（§1・§9）、
 ROS2 連携の再設計・再実装（旧ブリッジ `ros/` は `vehicle_old` 専用だったため 2026-09-13 に削除。
 `docs/plans/ros2-integration.md`）、整理対象の候補（`docs/plans/repository-cleanup-candidates.md`）。
+
+現在「実装中」の事項: Unity 版シミュレータ（WebGL）を 4 つ目のシミュレータとして併設する作業
+（`docs/plans/unity-simulator.md`。既存の SILS・VPython 版・Genesis 版は残す。`simulator/unity/` と
+`sf unity` は中身と同じコミットで §10・§9 に追記する）。
 
 ---
 
