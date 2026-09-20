@@ -40,8 +40,13 @@ namespace StampFly.Vehicle
         /// <summary>Blades on one propeller. / プロペラ 1 つの羽根の数。</summary>
         public const int BladeCount = 3;
 
-        /// <summary>The propeller's radius [m]; the real part is 14.99 mm. / プロペラの半径 [m]。実機は 14.99 mm。</summary>
-        public const float RadiusMeters = 0.01499f;
+        /// <summary>
+        /// The propeller's radius [m]. Generated from
+        /// control/models/stampfly_physical.yaml; not a number to edit here.
+        /// プロペラの半径 [m]。control/models/stampfly_physical.yaml から生成
+        /// される値で、ここで書き換える数値ではない。
+        /// </summary>
+        public const float RadiusMeters = StampFly.Sim.GeneratedParams.PropellerRadiusMeters;
 
         /// <summary>The hub's radius as a fraction of the propeller's. / ハブの半径。プロペラの半径に対する割合。</summary>
         public const float HubRadiusFraction = 0.22f;

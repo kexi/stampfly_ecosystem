@@ -56,7 +56,9 @@
 
 ## 3. 共通の物理パラメータ
 
-質量・慣性・推力係数 $C_T$・反トルク係数 $C_Q$ などの機体物理パラメータの基準ファイルは `control/models/stampfly_physical.yaml` である。ファームウェア（`generated_params` 系ヘッダ）・SILS プラント・VPython 版・Genesis 版・`docs/architecture/stampfly-parameters.md` はここから生成または転記し、`sf params check` が転記の食い違いを検出する。値の実測履歴と採用根拠は `stampfly-parameters.md` に置く。
+質量・慣性・推力係数 $C_T$・反トルク係数 $C_Q$ などの機体物理パラメータの基準ファイルは `control/models/stampfly_physical.yaml` である。ファームウェア（`generated_params` 系ヘッダ）・SILS プラント・VPython 版・Genesis 版・Unity 版（`simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs`）・`docs/architecture/stampfly-parameters.md` はここから生成または転記し、`sf params check` が転記の食い違いを検出する。値の実測履歴と採用根拠は `stampfly-parameters.md` に置く。
+
+Unity 版が生成するのは同版が使う量だけである（質量・慣性・ロータ位置・衝突箱・プロペラ半径・重力）。ロータの力を計算するのはファームウェアを載せた C++ 側なので、モータの ODE・推力係数は Unity 側へ出さない。慣性と衝突箱は、基準ファイルの機体 FLU（x 前・y 左・z 上）から Unity の左手系（x 右・y 上・z 前）へ軸を割り当てた形で生成する（Ixx→z・Iyy→x・Izz→y、半長→全長）。
 
 注意: `sf params check` は転記の一致しか見ない。「ファームの静的モータ曲線と SILS プラントの ODE が別のモータを表していた」（2026-08-22 判明）のような**モデル構造の不一致**は検出できないため、§5 の合否判定で数値的に確認する。
 
@@ -224,7 +226,9 @@ The following two used to be called "Tier 1" and "Tier 2," but they are design a
 
 ## 3. Shared Physical Parameters
 
-The single source of truth for the vehicle's physical parameters — mass, inertia, thrust coefficient $C_T$, counter-torque coefficient $C_Q$, and so on — is `control/models/stampfly_physical.yaml`. The firmware (the `generated_params` family of headers), the SILS plant, the VPython version, the Genesis version, and `docs/architecture/stampfly-parameters.md` are generated from it or hand-copied from it, and `sf params check` detects discrepancies in the hand-copied values. The measurement history of the values and the rationale for adopting them are kept in `stampfly-parameters.md`.
+The single source of truth for the vehicle's physical parameters — mass, inertia, thrust coefficient $C_T$, counter-torque coefficient $C_Q$, and so on — is `control/models/stampfly_physical.yaml`. The firmware (the `generated_params` family of headers), the SILS plant, the VPython version, the Genesis version, the Unity version (`simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs`), and `docs/architecture/stampfly-parameters.md` are generated from it or hand-copied from it, and `sf params check` detects discrepancies in the hand-copied values. The measurement history of the values and the rationale for adopting them are kept in `stampfly-parameters.md`.
+
+The Unity version generates only the quantities that version uses: mass, inertia, rotor positions, the collision box, the propeller radius and gravity. The rotor forces are computed by the C++ side that runs the firmware, so the motor ODE and the thrust coefficient are not emitted into the Unity constants. Inertia and the collision box are generated with the axes already mapped from the source file's body FLU frame (x forward, y left, z up) onto Unity's left-handed frame (x right, y up, z forward): Ixx to z, Iyy to x, Izz to y, and half extents doubled into full extents.
 
 Note: `sf params check` only checks that hand-copied values match; it cannot detect **a mismatch in model structure**, such as "the firmware's static motor curve and the SILS plant's ODE represented different motors" (discovered 2026-08-22). Such mismatches are confirmed numerically by the pass/fail check in §5.
 

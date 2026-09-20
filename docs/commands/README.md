@@ -42,7 +42,7 @@ sf <command> [subcommand] [options]
 | `sf unity` | Unity 版シミュレータ（WebGL、Chrome）の配信・端末からの操作・ログ・ビルド | [sf-unity.md](sf-unity.md) |
 | `sf cal` | センサキャリブレーション | [sf-cal.md](sf-cal.md) |
 | `sf sysid` | フライトログからのシステム同定 | [sf-sysid.md](sf-sysid.md) |
-| `sf params` | 物理パラメータ整合検査（C_T・C_Q・κ・慣性 等） | `sf params --help` |
+| `sf params` | 物理パラメータの生成（Python・C++・C#・文書の表）と整合検査（C_T・C_Q・κ・慣性 等） | [tools/params_audit/README.md](../../tools/params_audit/README.md) |
 | `sf trim` | ホバリングログから平衡姿勢トリムを同定 | `sf trim --help` |
 | `sf takeoff` | 指定高度まで離陸 | [flight-commands.md](flight-commands.md) |
 | `sf land` | 着陸 | [flight-commands.md](flight-commands.md) |
@@ -183,7 +183,7 @@ command with no dedicated page, run `sf <command> --help` for details.
 | `sf unity` | Unity simulator (WebGL, Chrome): serve, drive from a terminal, logs, build | [sf-unity.md](sf-unity.md) |
 | `sf cal` | Sensor calibration | [sf-cal.md](sf-cal.md) |
 | `sf sysid` | System identification from flight logs | [sf-sysid.md](sf-sysid.md) |
-| `sf params` | Physical parameter consistency audit (C_T, C_Q, kappa, inertia, ...) | `sf params --help` |
+| `sf params` | Generate the physical parameters (Python, C++, C#, the doc table) and audit their consistency (C_T, C_Q, kappa, inertia, ...) | [tools/params_audit/README.md](../../tools/params_audit/README.md) |
 | `sf trim` | Identify equilibrium attitude trim from hover logs | `sf trim --help` |
 | `sf takeoff` | Take off to specified altitude | [flight-commands.md](flight-commands.md) |
 | `sf land` | Land the vehicle | [flight-commands.md](flight-commands.md) |

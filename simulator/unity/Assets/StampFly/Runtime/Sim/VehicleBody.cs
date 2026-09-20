@@ -13,38 +13,25 @@ namespace StampFly.Sim
     /// <summary>
     /// Configures the vehicle's <see cref="Rigidbody"/> so PhysX integrates the same
     /// rigid body the MuJoCo model describes (simulator/sils/models/stampfly.xml).
-    /// Mass, inertia and the collision box come from that model; the axis mapping
-    /// turns its FLU body frame into Unity's left-handed frame.
+    /// Mass, inertia and the collision box all come from
+    /// <see cref="GeneratedParams"/>, which the repository generates from
+    /// control/models/stampfly_physical.yaml — the same file the MuJoCo model and
+    /// the SILS C++ plant are checked against, so the two simulators cannot drift
+    /// apart. The axis mapping from the FLU body frame into Unity's left-handed
+    /// frame is applied in that generated file, not here.
     ///
     /// Unity の <see cref="Rigidbody"/> を、MuJoCo モデル
     /// （simulator/sils/models/stampfly.xml）と同じ剛体になるように設定する。
-    /// 質量・慣性・衝突箱は同モデルの値で、軸の割り当てで FLU から Unity の
-    /// 左手系へ移す。
+    /// 質量・慣性・衝突箱はいずれも <see cref="GeneratedParams"/> から来る。同
+    /// クラスは control/models/stampfly_physical.yaml から生成され、MuJoCo モデル
+    /// と SILS の C++ プラントも同じファイルに対して照合されるため、2 つの
+    /// シミュレータが離れていくことがない。FLU から Unity の左手系への軸の割り当ては
+    /// ここではなく、その生成物の中で行う。
     /// </summary>
     [RequireComponent(typeof(Rigidbody))]
     [RequireComponent(typeof(BoxCollider))]
     public sealed class VehicleBody : MonoBehaviour
     {
-        // Mass of the real StampFly, in kg. / 実機 StampFly の質量（kg）。
-        public const float MassKilograms = 0.037f;
-
-        // Principal moments of inertia in the body FLU frame, in kg*m^2.
-        // 機体 FLU 座標系での主慣性モーメント（kg*m^2）。
-        public const float InertiaForwardAxis = 9.16e-6f;   // Ixx (FLU x = forward)
-        public const float InertiaLeftAxis = 13.3e-6f;      // Iyy (FLU y = left)
-        public const float InertiaUpAxis = 20.4e-6f;        // Izz (FLU z = up)
-
-        // Full extents of the collision box, in m. The MuJoCo geom stores half
-        // extents 0.0408 / 0.0408 / 0.0103 in FLU order.
-        // 衝突箱の全長（m）。MuJoCo は FLU 順の半長 0.0408 / 0.0408 / 0.0103 を持つ。
-        public const float BoxSizeRight = 0.0816f;  // Unity x, from FLU y (left)
-        public const float BoxSizeUp = 0.0206f;     // Unity y, from FLU z (up)
-        public const float BoxSizeForward = 0.0816f; // Unity z, from FLU x (forward)
-
-        // Half the box thickness: the centre height of a body resting on the floor.
-        // 箱の厚みの半分。床に載った機体の中心の高さ。
-        public const float RestingCentreHeight = 0.5f * BoxSizeUp;
-
         // No aerodynamic damping is applied by PhysX: drag belongs to the C++ plant.
         // PhysX 側では空気抵抗を掛けない。抵抗は C++ のプラントが担う。
         public const float NoDamping = 0.0f;
@@ -57,17 +44,34 @@ namespace StampFly.Sim
         // 途中で休止されると積分が止まるため、休止を無効にする。
         public const float NeverSleepThreshold = 0.0f;
 
+        // The vehicle's own physical quantities are not written here: they are
+        // named here only so a caller can keep asking the body for them, and
+        // every one forwards to the generated class. Changing a value means
+        // editing control/models/stampfly_physical.yaml and running
+        // `sf params generate`, never editing a number in this file.
+        // 機体そのものの物理量はここには書かない。呼び出し側が剛体に尋ね続け
+        // られるよう名前だけを置き、いずれも生成されたクラスへ委ねる。値を変える
+        // には control/models/stampfly_physical.yaml を編集して
+        // `sf params generate` を実行する。このファイルの数値を書き換えるのではない。
+
+        /// <summary>Mass of the real StampFly [kg]. / 実機 StampFly の質量 [kg]。</summary>
+        public const float MassKilograms = GeneratedParams.MassKilograms;
+
         /// <summary>
         /// The inertia tensor in Unity axis order (x right, y up, z forward),
         /// built from the FLU principal moments.
         /// Unity の軸順（x 右・y 上・z 前）に並べ替えた慣性テンソル。
         /// </summary>
-        public static Vector3 InertiaTensorUnityAxes =>
-            new Vector3(InertiaLeftAxis, InertiaUpAxis, InertiaForwardAxis);
+        public static Vector3 InertiaTensorUnityAxes => GeneratedParams.InertiaTensorUnityAxes;
 
         /// <summary>The collision box's full size in Unity axis order. / 衝突箱の全長。</summary>
-        public static Vector3 BoxSizeUnityAxes =>
-            new Vector3(BoxSizeRight, BoxSizeUp, BoxSizeForward);
+        public static Vector3 BoxSizeUnityAxes => GeneratedParams.BoxSizeUnityAxes;
+
+        /// <summary>
+        /// Half the box thickness: the centre height of a body resting on the floor.
+        /// 箱の厚みの半分。床に載った機体の中心の高さ。
+        /// </summary>
+        public const float RestingCentreHeight = GeneratedParams.RestingCentreHeightMeters;
 
         private void Awake()
         {

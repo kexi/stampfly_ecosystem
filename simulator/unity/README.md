@@ -730,6 +730,71 @@ unity test . --mode PlayMode --output test-results.xml --non-interactive
 PlayMode の飛行の試験は `libsfu_firmware.dylib` を要り、無ければ
 `nix develop -c just unity-native-build` を文に添えて見送られる（不合格にはしない）。
 
+## 10. 機体の物理パラメータ（`GeneratedParams`）
+
+### 出どころ
+
+機体の質量・慣性・ロータの位置・衝突箱・プロペラの半径・重力は、このプロジェクトの
+中では決まらない。リポジトリの基準ファイル `control/models/stampfly_physical.yaml`
+から `sf params generate` が
+`Assets/StampFly/Runtime/Sim/GeneratedParams.cs` を生成する。SILS の C++ プラント
+（`simulator/sils/plant/generated_params.hpp`）と MuJoCo モデル
+（`simulator/sils/models/stampfly.xml`）も同じファイルに紐づいているので、Unity 版と
+SILS は同じ剛体を積分する。
+
+```bash
+# 値を変えるとき
+# 1. control/models/stampfly_physical.yaml を編集
+sf params generate      # GeneratedParams.cs を含む全生成物を作り直す
+sf params check         # 生成の対象外の手書きコピーとの一致を確かめる
+```
+
+`GeneratedParams.cs` を手で編集してはならない。CI の `sf params generate --check` が
+基準ファイルとの乖離を検出して失敗する。
+
+### 持つ量・持たない量
+
+| 量 | 名前 |
+|---|---|
+| 質量 | `MassKilograms` |
+| 慣性（機体 FLU） | `InertiaForwardAxis`（Ixx）・`InertiaLeftAxis`（Iyy）・`InertiaUpAxis`（Izz） |
+| 慣性（Unity 軸） | `InertiaTensorUnityAxes` |
+| ロータの位置 | `RotorOffsetMeters`・`RotorHeightMeters` |
+| 衝突箱の全長 | `BoxSizeRight`・`BoxSizeUp`・`BoxSizeForward`・`BoxSizeUnityAxes` |
+| 床に載った中心の高さ | `RestingCentreHeightMeters` |
+| プロペラの半径 | `PropellerRadiusMeters` |
+| 重力加速度 | `GravityMetersPerSecondSquared` |
+
+**モータの ODE と推力係数は持たない。** ロータの力を計算するのはファームウェアを
+載せた C++ 側（`simulator/sils/plant/actuator_model.hpp`）で、Unity はその結果を
+受け取るだけだからである。ここへ出せば、誰も読まないコピーが増える。
+
+### 軸の割り当て
+
+基準ファイルは機体 FLU（x 前・y 左・z 上）で書かれ、Unity は左手系（x 右・y 上・z 前）
+である。割り当ては生成器の中で済ませてあるので、C# 側で入れ替える処理は無い。
+
+| 基準ファイル | Unity | 備考 |
+|---|---|---|
+| Ixx（前軸） | z | |
+| Iyy（左右軸） | x | |
+| Izz（上軸） | y | |
+| 衝突箱の半長 | 全長 | 生成時に 2 倍する（MuJoCo は半長、Unity の `BoxCollider.size` は全長） |
+
+### 読む側
+
+`VehicleBody`・`VehicleAppearance`・`PropellerMesh`・`AccelerometerModel` は、いずれも
+自分では数値を持たず `GeneratedParams` を参照する。`VehicleBody` が公開する
+`MassKilograms`・`InertiaTensorUnityAxes`・`BoxSizeUnityAxes`・`RestingCentreHeight` は
+呼び出し側のための別名で、中身は `GeneratedParams` である。
+
+### 試験
+
+| 置き場 | 見ること |
+|---|---|
+| `Tests/EditMode/VehicleBodyParamsTest.cs` | `VehicleBody.Apply` が生成された質量・慣性・衝突箱を実際に `Rigidbody` と `BoxCollider` へ書き込むこと、慣性が軸ごとに正しい成分へ届くこと、慣性と重心を PhysX に導かせないこと、減衰・角速度の頭打ち・休止が積分を止めないこと |
+| `tests/commands/test_params_generate.py`（Python 側） | 生成器が出す C# が基準ファイルの値を持つこと、軸の割り当てと半長→全長、モータの係数を出さないこと、`--check` が手編集を捕まえること |
+
 ---
 
 <a id="english"></a>
@@ -1062,3 +1127,73 @@ the geometry `tools/unity_world/validate.py` assumes** (all 62 obstacles, coveri
 kinds); that a ray passes through a gate's, a ring's and a tunnel's opening and stops at
 their frames; that `flow_quality` can be read from a `pad` and from the floor; and that
 loading another world leaves nothing of the previous one.
+
+## 10. The Vehicle's Physical Parameters (`GeneratedParams`)
+
+> Sections 8 and 9 of the Japanese text (logs and terminal control; the tick loop and
+> flight) have no English counterpart yet. The numbering follows the Japanese side so the
+> two stay in step.
+
+### Where They Come From
+
+The vehicle's mass, inertia, rotor positions, collision box, propeller radius and gravity
+are not decided inside this project. `sf params generate` generates
+`Assets/StampFly/Runtime/Sim/GeneratedParams.cs` from the repository's single source of
+truth, `control/models/stampfly_physical.yaml`. The SILS C++ plant
+(`simulator/sils/plant/generated_params.hpp`) and the MuJoCo model
+(`simulator/sils/models/stampfly.xml`) are tied to that same file, so the Unity version and
+the SILS integrate the same rigid body.
+
+```bash
+# To change a value
+# 1. edit control/models/stampfly_physical.yaml
+sf params generate      # rebuild every generated file, GeneratedParams.cs included
+sf params check         # confirm the hand-copied places that are not generated agree
+```
+
+Never hand-edit `GeneratedParams.cs`: CI's `sf params generate --check` fails as soon as it
+drifts from the source file.
+
+### What It Holds, and What It Does Not
+
+| Quantity | Name |
+|---|---|
+| Mass | `MassKilograms` |
+| Inertia (body FLU) | `InertiaForwardAxis` (Ixx), `InertiaLeftAxis` (Iyy), `InertiaUpAxis` (Izz) |
+| Inertia (Unity axes) | `InertiaTensorUnityAxes` |
+| Rotor positions | `RotorOffsetMeters`, `RotorHeightMeters` |
+| Collision box, full extents | `BoxSizeRight`, `BoxSizeUp`, `BoxSizeForward`, `BoxSizeUnityAxes` |
+| Resting centre height | `RestingCentreHeightMeters` |
+| Propeller radius | `PropellerRadiusMeters` |
+| Gravity | `GravityMetersPerSecondSquared` |
+
+**The motor ODE and the thrust coefficient are absent.** The rotor forces are computed by
+the C++ side that runs the firmware (`simulator/sils/plant/actuator_model.hpp`) and Unity
+only receives the result, so emitting them here would add a copy nothing reads.
+
+### The Axis Mapping
+
+The source file is written in the body FLU frame (x forward, y left, z up); Unity is
+left-handed (x right, y up, z forward). The mapping is applied inside the generator, so no
+C# code swaps anything.
+
+| Source file | Unity | Note |
+|---|---|---|
+| Ixx (forward axis) | z | |
+| Iyy (left axis) | x | |
+| Izz (up axis) | y | |
+| Collision box half extent | Full extent | Doubled at generation time (MuJoCo stores a half extent; Unity's `BoxCollider.size` is a full one) |
+
+### Who Reads Them
+
+`VehicleBody`, `VehicleAppearance`, `PropellerMesh` and `AccelerometerModel` hold no numbers
+of their own and read `GeneratedParams` instead. The `MassKilograms`,
+`InertiaTensorUnityAxes`, `BoxSizeUnityAxes` and `RestingCentreHeight` that `VehicleBody`
+exposes are aliases for its callers; their contents are `GeneratedParams`.
+
+### Tests
+
+| Location | What it checks |
+|---|---|
+| `Tests/EditMode/VehicleBodyParamsTest.cs` | That `VehicleBody.Apply` really writes the generated mass, inertia and collision box onto the `Rigidbody` and `BoxCollider`; that each inertia reaches the right component; that PhysX is not left to derive the inertia or the centre of mass; and that damping, an angular-rate clamp and sleeping never halt the integration |
+| `tests/commands/test_params_generate.py` (Python side) | That the generated C# carries the source file's values; the axis mapping and the half-to-full extent doubling; that the motor coefficients are not emitted; and that `--check` catches a hand edit |

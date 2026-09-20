@@ -26,11 +26,12 @@ namespace StampFly.Sim
         public const float StepSeconds = 0.0025f;
 
         // The default contact offset (0.01 m) is the same order as the vehicle's
-        // half thickness (0.0103 m), which would float the box off the floor by
-        // nearly its own thickness. A tenth of that keeps the offset well under
-        // the geometry it acts on.
-        // 既定の接触オフセット（0.01 m）は機体の半分の厚み（0.0103 m）と同じ桁で、
-        // 箱が厚み 1 つぶん近く浮く。10 分の 1 にして形状より十分小さくする。
+        // half thickness (GeneratedParams.RestingCentreHeightMeters), which would
+        // float the box off the floor by nearly its own thickness. A tenth of that
+        // keeps the offset well under the geometry it acts on.
+        // 既定の接触オフセット（0.01 m）は機体の半分の厚み
+        // （GeneratedParams.RestingCentreHeightMeters）と同じ桁で、箱が厚み 1 つ
+        // ぶん近く浮く。10 分の 1 にして形状より十分小さくする。
         public const float ContactOffsetMeters = 0.001f;
 
         // Below this relative speed a contact does not bounce. Raised above any

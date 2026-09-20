@@ -4,33 +4,41 @@ sf params generate — regenerate physical-parameter code from the SSOT YAML.
 sf params generate — SSOT YAML から物理パラメータのコードを再生成する。
 
 Reads control/models/stampfly_physical.yaml (the Single Source of Truth for
-StampFly's physical parameters) and machine-generates three artifacts:
+StampFly's physical parameters) and machine-generates four artifacts:
 
   1. tools/sysid/_generated_params.py         -- flat, stdlib-importable
      Python constants (consumed by tools/sysid/defaults.py and
      tools/params_audit/params_manifest.py).
   2. simulator/sils/plant/generated_params.hpp -- C++ constexpr constants
      (consumed by simulator/sils/plant/plant.hpp).
-  3. The <!-- AUTO-GENERATED:params --> marker table inside
+  3. simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs -- C#
+     constants (consumed by the Unity simulator's VehicleBody and the
+     vehicle's appearance). Only the quantities the Unity side uses; see
+     render_csharp()'s docstring for why the motor coefficients are absent.
+  4. The <!-- AUTO-GENERATED:params --> marker table inside
      docs/architecture/stampfly-parameters.md (both the JP and EN sections).
 
-`--check` renders the same three artifacts in memory and compares them
+`--check` renders the same four artifacts in memory and compares them
 against what is currently on disk WITHOUT writing anything — used to catch
 "edited the YAML but forgot to regenerate" (wired into CI, see
 .github/workflows/sils-regression.yml).
 
 control/models/stampfly_physical.yaml（StampFly 物理パラメータの基準となる文書）を
-読み込み、以下の3種類の生成物を機械生成する:
+読み込み、以下の4種類の生成物を機械生成する:
 
   1. tools/sysid/_generated_params.py         -- フラットな、標準ライブラリ
      だけで import 可能な Python 定数（tools/sysid/defaults.py と
      tools/params_audit/params_manifest.py が使用）。
   2. simulator/sils/plant/generated_params.hpp -- C++ constexpr 定数
      （simulator/sils/plant/plant.hpp が使用）。
-  3. docs/architecture/stampfly-parameters.md 内の
+  3. simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs -- C# 定数
+     （Unity 版シミュレータの VehicleBody と機体の見た目が使用）。Unity 側が
+     使う量だけを出す。モータの係数を出さない理由は render_csharp() の
+     docstring 参照。
+  4. docs/architecture/stampfly-parameters.md 内の
      <!-- AUTO-GENERATED:params --> マーカー表（日本語・英語セクション両方）。
 
-`--check` は同じ3生成物をメモリ上でレンダリングし、ディスク上の現在の内容と
+`--check` は同じ4生成物をメモリ上でレンダリングし、ディスク上の現在の内容と
 比較するだけで書き込みは行わない — 「YAMLを変えたのに再生成を忘れた」を
 検出する（CI に配線済み、.github/workflows/sils-regression.yml 参照）。
 
@@ -66,6 +74,7 @@ except ImportError:  # pragma: no cover - environment problem, not a code bug
 SSOT_REL = "control/models/stampfly_physical.yaml"
 GEN_PY_REL = "tools/sysid/_generated_params.py"
 GEN_HPP_REL = "simulator/sils/plant/generated_params.hpp"
+GEN_CS_REL = "simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs"
 DOCS_REL = "docs/architecture/stampfly-parameters.md"
 
 MARKER_BEGIN = "<!-- AUTO-GENERATED:params BEGIN -->"
@@ -159,6 +168,25 @@ def _cpp_float(value: float) -> str:
     """Same precision as _py_float, with the 'f' (float) suffix C++ needs.
     _py_float と同精度、C++ の float サフィックス 'f' 付き。"""
     return f"{_py_float(value)}f"
+
+
+def _cs_float(value: float) -> str:
+    """C# float literal. Same precision and suffix as _cpp_float, but repr()'s
+    exponent form ("9.16e-06") is rewritten to the form C# source normally
+    carries ("9.16e-6"): C# accepts both, and the shorter one is what the
+    hand-written constants this replaces used, so the generated file reads the
+    same as the code around it.
+    C# の float リテラル。精度とサフィックスは _cpp_float と同じだが、repr()
+    の指数表記（"9.16e-06"）を C# のソースで普通に書かれる形（"9.16e-6"）へ
+    直す。C# はどちらも受け取り、短い方が今回置き換える手書きの定数が使って
+    いた形なので、生成されるファイルが周りのコードと同じ見た目になる。
+    """
+    text = _py_float(value)
+    if "e" in text:
+        mantissa, exponent = text.split("e")
+        sign = "-" if exponent.startswith("-") else ""
+        text = f"{mantissa}e{sign}{int(exponent.lstrip('+-'))}"
+    return f"{text}f"
 
 
 def _doc_value(value: float) -> str:
@@ -349,7 +377,148 @@ def render_cpp(view: Dict[str, Any]) -> str:
 
 
 # =============================================================================
-# Renderer 3: docs/architecture/stampfly-parameters.md marker table
+# Renderer 3: simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs
+# =============================================================================
+def render_csharp(view: Dict[str, Any]) -> str:
+    """Render the Unity simulator's C# constants.
+    Unity 版シミュレータの C# 定数をレンダリングする。
+
+    Scope: ONLY the quantities the Unity side needs. The Unity simulator does
+    not model the motors -- the firmware's WebAssembly plant (the C++ side,
+    simulator/sils/plant/actuator_model.hpp) computes the rotor forces and
+    Unity receives them, so the motor ODE's coefficients (Ct/Cq/Jmp/Dm/Qf/
+    Rm/Km/kappa) are deliberately NOT emitted here. Emitting them would
+    publish a second copy of values nothing on this side reads.
+    範囲: Unity 側が使う量だけ。Unity 版はモータをモデル化しない -- ロータの
+    力を計算するのはファームの WebAssembly プラント側（C++、simulator/sils/
+    plant/actuator_model.hpp）で、Unity はそれを受け取るだけなので、モータ
+    ODE の係数（Ct/Cq/Jmp/Dm/Qf/Rm/Km/kappa）はここへ意図的に出さない。
+    出せば、こちら側の誰も読まない値の2つ目のコピーを増やすことになる。
+
+    Axis mapping / 軸の割り当て: the SSOT's inertia is in the body FLU frame
+    (x forward, y left, z up), matching simulator/sils/models/stampfly.xml.
+    Unity is left-handed (x right, y up, z forward), so the principal moments
+    move Ixx -> z, Iyy -> x, Izz -> y. Both forms are emitted: the FLU scalars
+    (so a reader can trace each number back to the SSOT and to the MuJoCo
+    model) and the assembled Unity-axis Vector3 (what Rigidbody.inertiaTensor
+    is actually assigned).
+    SSOT の慣性は機体 FLU（x 前・y 左・z 上）で、simulator/sils/models/
+    stampfly.xml と同じ。Unity は左手系（x 右・y 上・z 前）なので、主慣性
+    モーメントは Ixx→z、Iyy→x、Izz→y へ移る。両方の形を出す: FLU のスカラ
+    （各数値を SSOT と MuJoCo モデルまで辿れるようにするため）と、組み立て
+    済みの Unity 軸の Vector3（Rigidbody.inertiaTensor へ実際に入る値）。
+    """
+    c = view["constants"]
+
+    # The collision box's FULL extents, from the SSOT's HALF extents (which is
+    # the form MuJoCo's <geom size> uses). Unity's BoxCollider.size is a full
+    # extent, so the doubling happens here rather than in the C#.
+    # 衝突箱の「全長」を SSOT の「半長」（MuJoCo の <geom size> の形）から作る。
+    # Unity の BoxCollider.size は全長なので、2 倍はここで行い C# 側では行わない。
+    box_full_x = 2.0 * c["collision_half_y"]  # Unity x <- FLU y (left)
+    box_full_y = 2.0 * c["collision_half_z"]  # Unity y <- FLU z (up)
+    box_full_z = 2.0 * c["collision_half_x"]  # Unity z <- FLU x (forward)
+
+    out: List[str] = []
+    out.append(_header_block("/*", " */", line_prefix=" * ").rstrip())
+    out.append("")
+    out.append("using UnityEngine;")
+    out.append("")
+    out.append("namespace StampFly.Sim")
+    out.append("{")
+    out.append("    /// <summary>")
+    out.append("    /// The vehicle's physical parameters, generated from the repository's")
+    out.append("    /// single source of truth. Every number here also reaches the SILS C++")
+    out.append("    /// plant and the MuJoCo model from that same file, so the Unity")
+    out.append("    /// simulator and the SILS integrate the same rigid body.")
+    out.append("    ///")
+    out.append("    /// 機体の物理パラメータ。リポジトリの基準ファイルから生成する。ここに在る")
+    out.append("    /// 数値は同じファイルから SILS の C++ プラントと MuJoCo モデルにも渡るので、")
+    out.append("    /// Unity 版と SILS は同じ剛体を積分する。")
+    out.append("    ///")
+    out.append("    /// The motor coefficients are absent on purpose: the firmware's C++ plant")
+    out.append("    /// computes the rotor forces and this side only receives them.")
+    out.append("    /// モータの係数は意図的に無い。ロータの力を計算するのはファームの C++ の")
+    out.append("    /// プラントで、こちら側はそれを受け取るだけだからである。")
+    out.append("    /// </summary>")
+    out.append("    public static class GeneratedParams")
+    out.append("    {")
+    out.append("        /// <summary>Vehicle mass [kg]. / 機体の質量 [kg]。</summary>")
+    out.append(f"        public const float MassKilograms = {_cs_float(c['mass'])};")
+    out.append("")
+    out.append("        /// <summary>Roll inertia Ixx, about the body's forward axis [kg*m^2]."
+               " / ロール慣性 Ixx。機体の前方向のまわり [kg·m²]。</summary>")
+    out.append(f"        public const float InertiaForwardAxis = {_cs_float(c['Ixx'])};")
+    out.append("")
+    out.append("        /// <summary>Pitch inertia Iyy, about the body's left axis [kg*m^2]."
+               " / ピッチ慣性 Iyy。機体の左右方向のまわり [kg·m²]。</summary>")
+    out.append(f"        public const float InertiaLeftAxis = {_cs_float(c['Iyy'])};")
+    out.append("")
+    out.append("        /// <summary>Yaw inertia Izz, about the body's up axis [kg*m^2]."
+               " / ヨー慣性 Izz。機体の上方向のまわり [kg·m²]。</summary>")
+    out.append(f"        public const float InertiaUpAxis = {_cs_float(c['Izz'])};")
+    out.append("")
+    out.append("        /// <summary>")
+    out.append("        /// The principal moments in Unity's axis order (x right, y up,")
+    out.append("        /// z forward): Ixx to z, Iyy to x, Izz to y.")
+    out.append("        /// Unity の軸順（x 右・y 上・z 前）に並べ替えた主慣性モーメント。")
+    out.append("        /// Ixx を z へ、Iyy を x へ、Izz を y へ。")
+    out.append("        /// </summary>")
+    out.append("        public static Vector3 InertiaTensorUnityAxes =>")
+    out.append("            new Vector3(InertiaLeftAxis, InertiaUpAxis, InertiaForwardAxis);")
+    out.append("")
+    out.append("        /// <summary>")
+    out.append("        /// A rotor's offset from the centre along one axis [m]. The four")
+    out.append("        /// rotors sit at the four sign combinations of this offset.")
+    out.append("        /// 中心からロータまでの 1 軸あたりの距離 [m]。4 つのロータは、この")
+    out.append("        /// 距離の符号の 4 通りの組み合わせの位置に在る。")
+    out.append("        /// </summary>")
+    out.append(f"        public const float RotorOffsetMeters = {_cs_float(c['arm_offset'])};")
+    out.append("")
+    out.append("        /// <summary>How far above the centre a rotor sits [m]."
+               " / ロータが中心より上に在る高さ [m]。</summary>")
+    out.append(f"        public const float RotorHeightMeters = {_cs_float(c['rotor_height'])};")
+    out.append("")
+    out.append("        /// <summary>The propeller's radius [m]; appearance only."
+               " / プロペラの半径 [m]。見た目にのみ使う。</summary>")
+    out.append(
+        f"        public const float PropellerRadiusMeters = {_cs_float(c['propeller_radius'])};"
+    )
+    out.append("")
+    out.append("        /// <summary>Gravity [m/s^2], the value every implementation shares."
+               " / 重力加速度 [m/s²]。全実装が揃って使う値。</summary>")
+    out.append(
+        f"        public const float GravityMetersPerSecondSquared = {_cs_float(c['gravity'])};"
+    )
+    out.append("")
+    out.append("        // The collision box's full extents [m], in Unity's axis order. The")
+    out.append("        // source file stores HALF extents in FLU order, as MuJoCo's <geom")
+    out.append("        // size> does; the doubling and the axis swap are already applied.")
+    out.append("        // 衝突箱の全長 [m]。Unity の軸順。基準ファイルは MuJoCo の <geom size>")
+    out.append("        // と同じく FLU 順の半長を持つ。2 倍と軸の入れ替えは適用済みである。")
+    out.append(f"        public const float BoxSizeRight = {_cs_float(box_full_x)};")
+    out.append(f"        public const float BoxSizeUp = {_cs_float(box_full_y)};")
+    out.append(f"        public const float BoxSizeForward = {_cs_float(box_full_z)};")
+    out.append("")
+    out.append("        /// <summary>The collision box's full size in Unity's axis order."
+               " / Unity の軸順の衝突箱の全長。</summary>")
+    out.append("        public static Vector3 BoxSizeUnityAxes =>")
+    out.append("            new Vector3(BoxSizeRight, BoxSizeUp, BoxSizeForward);")
+    out.append("")
+    out.append("        /// <summary>")
+    out.append("        /// Half the box's thickness: the centre height of a body resting on")
+    out.append("        /// the floor.")
+    out.append("        /// 箱の厚みの半分。床に載った機体の中心の高さ。")
+    out.append("        /// </summary>")
+    out.append("        public const float RestingCentreHeightMeters = 0.5f * BoxSizeUp;")
+    out.append("    }")
+    out.append("}")
+    out.append("")
+    return "\n".join(out)
+
+
+# =============================================================================
+# Renderer 4: docs/architecture/stampfly-parameters.md marker table
 # =============================================================================
 _DOC_ROWS_JP: Tuple[Tuple[str, str, str, str], ...] = (
     # (label, symbol, constants-key-or-measured-key, kind)
@@ -508,15 +677,18 @@ def run_generate(repo_root: Path, check_only: bool) -> int:
 
     py_path = repo_root / GEN_PY_REL
     hpp_path = repo_root / GEN_HPP_REL
+    cs_path = repo_root / GEN_CS_REL
     docs_path = repo_root / DOCS_REL
 
     new_py = render_python(view)
     new_hpp = render_cpp(view)
+    new_cs = render_csharp(view)
     new_docs = render_docs_full(view, _read(docs_path))
 
     targets = [
         (py_path, new_py),
         (hpp_path, new_hpp),
+        (cs_path, new_cs),
         (docs_path, new_docs),
     ]
 

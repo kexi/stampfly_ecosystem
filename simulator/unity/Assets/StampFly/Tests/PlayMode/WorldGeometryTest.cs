@@ -38,12 +38,12 @@ namespace StampFly.Tests.PlayMode
         // が使う軸に沿った配置では厳密である。この余裕は浮動小数の誤差ぶんだけ。
         private const float BoundsTolerance = 1e-3f;
 
-        // The vehicle is 0.0816 m across (simulator/sils/models/stampfly.xml),
-        // so a ray offset by less than half that stays inside an opening the
-        // checker considers passable.
-        // 機体の幅は 0.0816 m（simulator/sils/models/stampfly.xml）。その半分
-        // 未満だけずらしたレイは、検査が通れると見なす開口の中に留まる。
-        private const float VehicleHalfWidthM = 0.0408f;
+        // A ray offset by less than half the vehicle's width stays inside an
+        // opening the checker considers passable. The width is the collision
+        // box's, taken from the generated parameters rather than restated here.
+        // 機体の幅の半分未満だけずらしたレイは、検査が通れると見なす開口の中に
+        // 留まる。幅は衝突箱のもので、ここに書き直さず生成されたパラメータから取る。
+        private const float VehicleHalfWidthM = 0.5f * Sim.GeneratedParams.BoxSizeRight;
 
         private const string WorldsFolder = "Assets/StampFly/Worlds";
 

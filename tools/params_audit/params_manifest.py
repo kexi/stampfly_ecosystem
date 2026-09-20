@@ -149,6 +149,41 @@ EXPECTED_AM_FA = EXPECTED_AM * 1.12          # V/(rad/s)^2 -- flight_anchored_mo
 EXPECTED_BM_FA = EXPECTED_BM * (1.12 ** 0.5)  # V/(rad/s)   -- flight_anchored_motor_curve.Bm (= 6.699042e-4)
 
 
+# EXPECTED_COLLISION_HALF_* / EXPECTED_ROTOR_HEIGHT — control/models/
+# stampfly_physical.yaml constants.{collision_half_x,collision_half_y,
+# collision_half_z,rotor_height}.value (added 2026-09-20 together with those
+# YAML entries). Hand-typed here for the same reason EXPECTED_AM/BM/CM above
+# are: generate.py's render_python() emits a fixed set of EXPECTED_* symbols
+# into tools/sysid/_generated_params.py, and adding to that set would change
+# an existing generated file. These four ARE machine-generated, but only on
+# the C# side (simulator/unity/.../GeneratedParams.cs, via render_csharp()).
+# If a later change extends render_python(), replace these literals with
+# imports the same way EXPECTED_MASS etc. are imported above.
+#
+# The collision box: MuJoCo stores HALF extents in body FLU order and Unity's
+# BoxCollider.size is a FULL extent, so the Unity-side checks below compare
+# against the doubled values -- the same doubling render_csharp() applies.
+# 衝突箱・ロータ高さの期待値（2026-09-20、同名の YAML 項目追加と同時）。上の
+# EXPECTED_AM/BM/CM と同じ理由でここに手書きする: render_python() が
+# tools/sysid/_generated_params.py へ出す EXPECTED_* の顔ぶれは固定で、そこへ
+# 足すと既存の生成物が変わってしまうため。これら4件も機械生成はされるが、
+# C# 側（simulator/unity/.../GeneratedParams.cs、render_csharp()）だけである。
+# MuJoCo は機体 FLU 順の「半長」、Unity の BoxCollider.size は「全長」なので、
+# 下の Unity 側の検査は 2 倍した値と比較する（render_csharp() と同じ 2 倍）。
+EXPECTED_COLLISION_HALF_X = 0.0408   # m -- FLU x (forward) half extent
+EXPECTED_COLLISION_HALF_Y = 0.0408   # m -- FLU y (left) half extent
+EXPECTED_COLLISION_HALF_Z = 0.0103   # m -- FLU z (up) half extent
+EXPECTED_ROTOR_HEIGHT = 0.005        # m -- rotor site height above the CG
+
+# Unity axis order (x right, y up, z forward), full extents: Unity x comes
+# from FLU y, Unity y from FLU z, Unity z from FLU x.
+# Unity の軸順（x 右・y 上・z 前）の全長。Unity x は FLU y から、Unity y は
+# FLU z から、Unity z は FLU x から来る。
+EXPECTED_BOX_FULL_RIGHT = 2.0 * EXPECTED_COLLISION_HALF_Y    # = 0.0816
+EXPECTED_BOX_FULL_UP = 2.0 * EXPECTED_COLLISION_HALF_Z       # = 0.0206
+EXPECTED_BOX_FULL_FORWARD = 2.0 * EXPECTED_COLLISION_HALF_X  # = 0.0816
+
+
 # =============================================================================
 # Judgement markers — used in place of a numeric "expected" value.
 # 判定マーカー — 数値の「期待値」の代わりに使う。
@@ -735,6 +770,18 @@ MANIFEST: Dict[str, List[ParamCheck]] = {
             expected=EXPECTED_IXX,
             note="SPEC_INERTIA['roll']",
         ),
+        ParamCheck(
+            # Unity names the axis, not the symbol: Ixx is the moment about
+            # the body's FORWARD axis. The Unity-axis Vector3 is assembled
+            # from these three in the same generated file.
+            # Unity 側は記号ではなく軸で名前を付ける。Ixx は機体の「前」軸の
+            # まわりの慣性。Unity 軸の Vector3 は同じ生成物の中でこの3つから
+            # 組み立てられる。
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'InertiaForwardAxis\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_IXX,
+            note="GeneratedParams.InertiaForwardAxis (generated)",
+        ),
     ],
     "Iyy": [
         ParamCheck(
@@ -761,6 +808,12 @@ MANIFEST: Dict[str, List[ParamCheck]] = {
             expected=EXPECTED_IYY,
             note="SPEC_INERTIA['pitch']",
         ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'InertiaLeftAxis\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_IYY,
+            note="GeneratedParams.InertiaLeftAxis (generated)",
+        ),
     ],
     "Izz": [
         ParamCheck(
@@ -786,6 +839,12 @@ MANIFEST: Dict[str, List[ParamCheck]] = {
             regex=r'"yaw":\s*([0-9eE.+-]+)\}',
             expected=EXPECTED_IZZ,
             note="SPEC_INERTIA['yaw']",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'InertiaUpAxis\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_IZZ,
+            note="GeneratedParams.InertiaUpAxis (generated)",
         ),
     ],
 
@@ -816,6 +875,82 @@ MANIFEST: Dict[str, List[ParamCheck]] = {
             regex=r'ARM_D\s*=\s*([0-9.eE+-]+)f;',
             expected=EXPECTED_ARM,
             note="mixerCompute() B^-1 ARM_D",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'RotorOffsetMeters\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_ARM,
+            note="GeneratedParams.RotorOffsetMeters (generated)",
+        ),
+    ],
+
+    # -------------------------------------------------------------------
+    # collision_half_* / box_full_* — the hidden collision box approximating
+    # the frame. MuJoCo carries FLU half extents, Unity a full extent per
+    # axis in its own order; both trace to the same SSOT entries.
+    # 衝突箱（フレームを近似した隠し箱）。MuJoCo は FLU の半長、Unity は
+    # 自分の軸順の全長を持つ。どちらも同じ SSOT の項目に辿り着く。
+    # -------------------------------------------------------------------
+    "collision_half_x": [
+        ParamCheck(
+            file="simulator/sils/models/stampfly.xml",
+            regex=r'name="collision" type="box" size="([0-9.eE+-]+) ',
+            expected=EXPECTED_COLLISION_HALF_X,
+            note="<geom name=collision> size [0] (FLU x, forward)",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'BoxSizeForward\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_BOX_FULL_FORWARD,
+            note="GeneratedParams.BoxSizeForward (generated, full extent = 2x half)",
+        ),
+    ],
+    "collision_half_y": [
+        ParamCheck(
+            file="simulator/sils/models/stampfly.xml",
+            regex=r'name="collision" type="box" size="[0-9.eE+-]+ ([0-9.eE+-]+) ',
+            expected=EXPECTED_COLLISION_HALF_Y,
+            note="<geom name=collision> size [1] (FLU y, left)",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'BoxSizeRight\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_BOX_FULL_RIGHT,
+            note="GeneratedParams.BoxSizeRight (generated, full extent = 2x half)",
+        ),
+    ],
+    "collision_half_z": [
+        ParamCheck(
+            file="simulator/sils/models/stampfly.xml",
+            regex=(r'name="collision" type="box" size="[0-9.eE+-]+ [0-9.eE+-]+ '
+                   r'([0-9.eE+-]+)"'),
+            expected=EXPECTED_COLLISION_HALF_Z,
+            note="<geom name=collision> size [2] (FLU z, up = half thickness)",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'BoxSizeUp\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_BOX_FULL_UP,
+            note="GeneratedParams.BoxSizeUp (generated, full extent = 2x half)",
+        ),
+    ],
+
+    # -------------------------------------------------------------------
+    # rotor_height — how far above the CG the thrust acts.
+    # ロータ高さ — 推力の作用点が重心より上に在る高さ。
+    # -------------------------------------------------------------------
+    "rotor_height": [
+        ParamCheck(
+            file="simulator/sils/models/stampfly.xml",
+            regex=r'name="rotor1" pos="\s*[0-9.eE+-]+\s+[0-9.eE+-]+\s+([0-9.eE+-]+)"',
+            expected=EXPECTED_ROTOR_HEIGHT,
+            note="<site name=rotor1> Z offset",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'RotorHeightMeters\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_ROTOR_HEIGHT,
+            note="GeneratedParams.RotorHeightMeters (generated)",
         ),
     ],
 
@@ -960,6 +1095,12 @@ MANIFEST: Dict[str, List[ParamCheck]] = {
             regex=r'id="calc-mass" value="([0-9.eE+-]+)"',
             expected=EXPECTED_MASS,
             note="Calculation tab calc-mass input (unscaled, kg)",
+        ),
+        ParamCheck(
+            file="simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs",
+            regex=r'MassKilograms\s*=\s*([0-9.eE+-]+)f;',
+            expected=EXPECTED_MASS,
+            note="GeneratedParams.MassKilograms (generated)",
         ),
     ],
 

@@ -18,11 +18,12 @@ C_Q、トルク/推力比 kappa、慣性モーメント 等）に関する2つ�
 **Phase 1（コード生成、2026-07-26 一部着手）:** `control/models/
 stampfly_physical.yaml` を基準とし、`sf params generate` が
 `tools/sysid/_generated_params.py`・`simulator/sils/plant/generated_params.hpp`・
-`docs/architecture/stampfly-parameters.md` のマーカー表を機械生成する。この3箇所は
+`simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs`（2026-09-20 追加）・
+`docs/architecture/stampfly-parameters.md` のマーカー表を機械生成する。この4箇所は
 もう手書きの数値リテラルを持たない — YAML を編集して `sf params generate` を
 実行するだけで全て揃う。
 
-**Phase 0（監査、現役）:** 上記3箇所以外——`simulator/genesis/motor_model.py`・
+**Phase 0（監査、現役）:** 上記4箇所以外——`simulator/genesis/motor_model.py`・
 `simulator/vpython/core/motors.py`・`firmware/vehicle/components/sf_actuator/
 actuator.cpp`（firmware は生成対象外）・MuJoCo XML・URDF・
 `stampfly-parameters.md` の既存手書き表 等——は、引き続き同じ物理定数を手書きで
@@ -53,6 +54,19 @@ sf params check --strict
 
 `sf params generate --check` は何も書き込まず、生成物が YAML から乖離していないか
 （YAML を編集したのに再生成を忘れていないか）だけを確認する（CI 用、exit 1 で失敗）。
+
+生成先は 4 箇所である。
+
+| 生成先 | 読む側 |
+|---|---|
+| `tools/sysid/_generated_params.py` | `tools/sysid/defaults.py`・本ディレクトリの `params_manifest.py` |
+| `simulator/sils/plant/generated_params.hpp` | `simulator/sils/plant/plant.hpp` |
+| `simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs` | Unity 版シミュレータ（`VehicleBody`・`VehicleAppearance`・`PropellerMesh`・`AccelerometerModel`） |
+| `docs/architecture/stampfly-parameters.md` のマーカー表 | 読者 |
+
+C# の生成物は Unity 側が使う量だけを持つ（質量・慣性・ロータ位置・衝突箱・
+プロペラ半径・重力）。ロータの力を計算するのはファームウェアを載せた C++ 側
+なので、モータの ODE・推力係数は出さない。
 
 ### 整合を検査する（Phase 0 監査、Phase 1 対象箇所も含め全体）
 
@@ -133,13 +147,32 @@ stampfly_physical.yaml` を編集して `sf params generate` を実行するこ�
 `control/models/stampfly_physical.yaml`（spec YAML）から `sf params generate`
 がコードを生成する方式が、`tools/sysid/_generated_params.py`・
 `simulator/sils/plant/generated_params.hpp`・`docs/architecture/
-stampfly-parameters.md` のマーカー表について 2026-07-26 に着手済み——この3箇所は
-もう本マニフェストによる「後追い検査」の対象ではなく、YAML そのものが正で
-生成が保証する（`sf params generate --check` で検出、CI 組み込み済み）。
+stampfly-parameters.md` のマーカー表について 2026-07-26 に着手済み。
+`simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs`（Unity 版
+シミュレータ）が 2026-09-20 に加わった。これらはもう本マニフェストによる
+「後追い検査」の主たる対象ではなく、YAML そのものが正で生成が保証する
+（`sf params generate --check` で検出、CI 組み込み済み）。
 残りの手動コピー箇所（`simulator/genesis/*`・`simulator/vpython/*`・
 firmware（生成対象外）・MuJoCo XML・URDF・docs の既存手書き表）は引き続き
 Phase 0 の本マニフェストで監査する。生成対象を広げるたびに、対応するマニフェスト
 の行を `tools/sysid/_generated_params.py` や生成先ファイルへ差し替えていく。
+
+#### Unity 版の C# 生成物について（2026-09-20）
+
+生成物でありながら、`GeneratedParams.cs` は**マニフェストにも載せてある**
+（`mass`・`Ixx`・`Iyy`・`Izz`・`arm`・`collision_half_*`・`rotor_height`）。
+理由は、この生成物が他の3つと違って**軸を割り当て直す**ためである — 慣性は
+機体 FLU から Unity の左手系へ（Ixx→z・Iyy→x・Izz→y）、衝突箱は半長から全長へ
+（2 倍）変換される。`--check` が見るのは「生成器の出力と現在のファイルが一致
+するか」だけなので、生成器の割り当て自体が誤っていても通ってしまう。
+マニフェストに載せておけば、Unity 側の各数値が MuJoCo モデルの対応する数値と
+同じ物理量を指しているかが、生成器とは独立に確かめられる。
+
+同じ 2026-09-20 に、衝突箱の半長（`collision_half_x`／`_y`／`_z`）・ロータ高さ
+（`rotor_height`）・プロペラ半径（`propeller_radius`）・重力（`gravity`）を
+基準 YAML の `constants` へ追加した。値は `simulator/sils/models/stampfly.xml`
+等が既に持つ値そのままで、数値の変更は無い（既存の生成物 3 つの内容も変わって
+いない）。
 
 ---
 
@@ -162,8 +195,10 @@ does not yet cover (Phase 0).
 **Phase 1 (code generation, started 2026-07-26):** `control/models/
 stampfly_physical.yaml` is the single source of truth. `sf params generate`
 machine-generates `tools/sysid/_generated_params.py`,
-`simulator/sils/plant/generated_params.hpp`, and the marker table in
-`docs/architecture/stampfly-parameters.md`. These three locations no longer
+`simulator/sils/plant/generated_params.hpp`,
+`simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs` (added
+2026-09-20), and the marker table in
+`docs/architecture/stampfly-parameters.md`. These four locations no longer
 hold hand-typed numeric literals -- edit the YAML and run `sf params
 generate`.
 
@@ -201,6 +236,20 @@ sf params check --strict
 `sf params generate --check` writes nothing; it only confirms the generated
 files have not drifted from the YAML (i.e. you didn't forget to regenerate
 after editing it) -- used in CI, exits 1 on staleness.
+
+There are four outputs.
+
+| Output | Who reads it |
+|---|---|
+| `tools/sysid/_generated_params.py` | `tools/sysid/defaults.py`, this directory's `params_manifest.py` |
+| `simulator/sils/plant/generated_params.hpp` | `simulator/sils/plant/plant.hpp` |
+| `simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs` | The Unity simulator (`VehicleBody`, `VehicleAppearance`, `PropellerMesh`, `AccelerometerModel`) |
+| The marker table in `docs/architecture/stampfly-parameters.md` | Readers |
+
+The C# output holds only the quantities the Unity side uses: mass, inertia,
+rotor positions, the collision box, the propeller radius and gravity. The
+rotor forces are computed by the C++ side that runs the firmware, so the motor
+ODE and the thrust coefficient are not emitted.
 
 ### Auditing consistency (Phase 0, covers the whole surface including Phase 1 locations)
 
@@ -286,12 +335,34 @@ To add a new copy location:
 Generating code from `control/models/stampfly_physical.yaml` (the spec YAML)
 via `sf params generate` started 2026-07-26, covering
 `tools/sysid/_generated_params.py`, `simulator/sils/plant/generated_params.hpp`,
-and the marker table in `docs/architecture/stampfly-parameters.md`. These
-three locations are no longer audited after the fact by this manifest -- the
-YAML is authoritative and generation guarantees agreement (caught by `sf
-params generate --check`, wired into CI). The remaining hand-copied locations
-(`simulator/genesis/*`, `simulator/vpython/*`, firmware -- out of generation
-scope --, MuJoCo XML, URDF, the docs' pre-existing hand-written tables) are
-still audited by this Phase-0 manifest. As generation coverage grows, the
-corresponding manifest rows get repointed at `tools/sysid/_generated_params.py`
-or the relevant generated file.
+and the marker table in `docs/architecture/stampfly-parameters.md`.
+`simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs` (the Unity
+simulator) joined them on 2026-09-20. These are no longer the manifest's
+primary audit surface -- the YAML is authoritative and generation guarantees
+agreement (caught by `sf params generate --check`, wired into CI). The
+remaining hand-copied locations (`simulator/genesis/*`,
+`simulator/vpython/*`, firmware -- out of generation scope --, MuJoCo XML,
+URDF, the docs' pre-existing hand-written tables) are still audited by this
+Phase-0 manifest. As generation coverage grows, the corresponding manifest
+rows get repointed at `tools/sysid/_generated_params.py` or the relevant
+generated file.
+
+#### On the Unity C# output (2026-09-20)
+
+Although it is generated, `GeneratedParams.cs` is **also listed in the
+manifest** (`mass`, `Ixx`, `Iyy`, `Izz`, `arm`, `collision_half_*`,
+`rotor_height`). The reason is that, unlike the other three, this output
+**remaps axes**: inertia moves from the body FLU frame into Unity's
+left-handed one (Ixx to z, Iyy to x, Izz to y), and the collision box goes
+from a half extent to a full one (doubled). All `--check` can see is whether
+the generator's output matches the file on disk, so a wrong mapping inside the
+generator would still pass. Listing the file in the manifest makes each Unity
+number verifiable against the corresponding number in the MuJoCo model,
+independently of the generator.
+
+On the same date the collision-box half extents (`collision_half_x`/`_y`/
+`_z`), the rotor height (`rotor_height`), the propeller radius
+(`propeller_radius`) and gravity (`gravity`) were added to the source YAML's
+`constants`. Every value is the one `simulator/sils/models/stampfly.xml` and
+its peers already carried, so no number changed -- and the three pre-existing
+generated files are byte-for-byte unchanged.

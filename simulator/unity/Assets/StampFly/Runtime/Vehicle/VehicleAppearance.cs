@@ -30,13 +30,17 @@ namespace StampFly.Vehicle
     ///
     /// ## Motor layout / モータの並び
     ///
-    /// An X-quad, from `simulator/sils/models/stampfly.xml`. The rotor sites are
-    /// at ±23 mm in the body's FLU frame, and the turn directions alternate so
-    /// the reaction torques cancel in a hover.
+    /// An X-quad. The offsets come from `StampFly.Sim.GeneratedParams`, which the
+    /// repository generates from `control/models/stampfly_physical.yaml` — the same
+    /// file `simulator/sils/models/stampfly.xml`'s rotor sites are checked against,
+    /// so the picture and the physics place the rotors alike. The turn directions
+    /// alternate so the reaction torques cancel in a hover.
     ///
-    /// X 型の 4 発で、出典は `simulator/sils/models/stampfly.xml`。ロータの site は
-    /// 機体 FLU で ±23 mm に在り、回転方向は交互で、ホバリング時に反トルクが打ち
-    /// 消し合う。
+    /// X 型の 4 発。位置は `StampFly.Sim.GeneratedParams` から来る。同クラスは
+    /// `control/models/stampfly_physical.yaml` から生成され、
+    /// `simulator/sils/models/stampfly.xml` のロータ site も同じファイルに対して
+    /// 照合されるので、絵と物理は同じ場所にロータを置く。回転方向は交互で、
+    /// ホバリング時に反トルクが打ち消し合う。
     ///
     /// | Motor | Place | FLU | Unity (x right, y up, z forward) | Turn |
     /// |---|---|---|---|---|
@@ -49,11 +53,20 @@ namespace StampFly.Vehicle
     /// </summary>
     public sealed class VehicleAppearance : MonoBehaviour
     {
+        // The rotor places come from the generated parameters, so the picture
+        // stands where the physics acts: the same two numbers position the
+        // MuJoCo model's rotor sites. Editing them means editing
+        // control/models/stampfly_physical.yaml and running `sf params generate`.
+        // ロータの位置は生成されたパラメータから来るので、絵は物理が働く場所に
+        // 立つ。MuJoCo モデルのロータ site を置くのも同じ 2 つの数値である。
+        // 変えるには control/models/stampfly_physical.yaml を編集して
+        // `sf params generate` を実行する。
+
         /// <summary>Half the distance between diagonal rotors, along one axis [m]. / 対角のロータの間隔の半分。1 軸あたり [m]。</summary>
-        public const float RotorOffsetMeters = 0.023f;
+        public const float RotorOffsetMeters = GeneratedParams.RotorOffsetMeters;
 
         /// <summary>How far above the body's centre a rotor sits [m]. / ロータが機体の中心より上に在る高さ [m]。</summary>
-        public const float RotorHeightMeters = 0.005f;
+        public const float RotorHeightMeters = GeneratedParams.RotorHeightMeters;
 
         /// <summary>The frame plate's size [m]: 82 mm square, 3 mm thick. / 機体の板の寸法 [m]。82 mm 角で厚さ 3 mm。</summary>
         public static readonly Vector3 PlateSize = new Vector3(0.082f, 0.003f, 0.082f);

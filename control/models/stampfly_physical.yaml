@@ -5,6 +5,8 @@
 # which machine-generates:
 #   - tools/sysid/_generated_params.py           (flat Python constants)
 #   - simulator/sils/plant/generated_params.hpp   (C++ constexpr constants)
+#   - simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs
+#                                                 (C# const/Vector3 constants)
 #   - the <!-- AUTO-GENERATED:params --> marker table in
 #     docs/architecture/stampfly-parameters.md (JP + EN)
 #
@@ -17,6 +19,8 @@
 # 以下を機械生成する:
 #   - tools/sysid/_generated_params.py           （フラットな Python 定数）
 #   - simulator/sils/plant/generated_params.hpp   （C++ constexpr 定数）
+#   - simulator/unity/Assets/StampFly/Runtime/Sim/GeneratedParams.cs
+#                                                 （C# const / Vector3 定数）
 #   - docs/architecture/stampfly-parameters.md 内の
 #     <!-- AUTO-GENERATED:params --> マーカー表（日本語・英語）
 #
@@ -106,6 +110,74 @@ constants:
       単体質量。base_link(0.033) + 4×プロペラリンク(各0.001) = mass(0.037)。
       独立した実測値ではなく mass からの差し引きで決まる表現上の値
       （tools/params_audit/params_manifest.py EXPECTED_URDF_BASE_MASS 参照）。
+
+  # --- Collision / appearance geometry (added 2026-09-20) -------------------
+  # 衝突形状・見た目の寸法（2026-09-20 追加）。
+  #
+  # These four were previously written ONLY inside
+  # simulator/sils/models/stampfly.xml (the collision <geom> half extents and
+  # the rotor <site> height) and hand-copied into the Unity simulator, with no
+  # entry here to check them against. They are hoisted into the SSOT so
+  # `sf params check` can compare the MuJoCo XML and the Unity C# copies --
+  # every value below is the value stampfly.xml already carries, unchanged.
+  # これら4件はこれまで simulator/sils/models/stampfly.xml だけに書かれており
+  # （衝突 <geom> の半長とロータ <site> の高さ）、Unity 版シミュレータへは
+  # 手で書き写されていて、照合できる項目がここに無かった。`sf params check`
+  # が MuJoCo XML と Unity の C# のコピーを比較できるよう SSOT に引き上げる。
+  # 以下の値は全て stampfly.xml が既に持つ値そのままで、変更はない。
+  collision_half_x:
+    value: 0.0408
+    unit: "m"
+    date: "unknown"
+    source: >
+      衝突箱（機体フレームを近似した隠し箱）の半長、機体 FLU の x（前）方向。
+      出所は simulator/sils/models/stampfly.xml の
+      `<geom name="collision" type="box" size="0.0408 0.0408 0.0103">` の
+      第1成分。独立した実測ではなくフレーム外形の近似値。
+  collision_half_y:
+    value: 0.0408
+    unit: "m"
+    date: "unknown"
+    source: >
+      衝突箱の半長、機体 FLU の y（左）方向。出所は
+      simulator/sils/models/stampfly.xml の collision geom size 第2成分。
+      x と同値（機体は正方形に近い）。
+  collision_half_z:
+    value: 0.0103
+    unit: "m"
+    date: "unknown"
+    source: >
+      衝突箱の半長、機体 FLU の z（上）方向 = 機体の厚みの半分。出所は
+      simulator/sils/models/stampfly.xml の collision geom size 第3成分。
+      床に置いた機体の重心高さがこの値になる（Unity 版 PlayMode 試験の
+      着地高さ 0.0103 m の期待値）。
+  rotor_height:
+    value: 0.005
+    unit: "m"
+    date: "unknown"
+    source: >
+      ロータ（推力の作用点）が重心より上に在る高さ。出所は
+      simulator/sils/models/stampfly.xml の
+      `<site name="rotor1" pos=" 0.023 -0.023 0.005">` 等 4 件の第3成分
+      （4 件とも同値）。X/Y オフセットは arm_offset と同一。
+  propeller_radius:
+    value: 0.01499
+    unit: "m"
+    date: "unknown"
+    source: >
+      プロペラの半径（実機 14.99 mm）。見た目にのみ使う値で、空力係数
+      （Ct/Cq）はこの半径から導出していない。既存のコピー元は
+      simulator/sils/gui/static/app.js の `PROP_RADIUS = 14.99`（mm 表記）。
+  gravity:
+    value: 9.81
+    unit: "m/s²"
+    date: "unknown"
+    source: >
+      重力加速度。標準重力 9.80665 ではなく、シミュレータ・ファーム双方が
+      揃って使ってきた 9.81 を基準値とする（simulator/sils/models/
+      stampfly.xml の `<option gravity="0 0 -9.81">`、simulator/sils/plant/
+      plant.hpp の `Config::g`）。値を変えると全実装のホバー推力が動くため、
+      既存値をそのまま記録するに留める。
 
 # ==============================================================================
 # Motor/propeller electromechanical coefficient sets. Values inside ONE set

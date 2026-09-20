@@ -22,9 +22,14 @@ namespace StampFly.Sim
     /// </summary>
     public static class AccelerometerModel
     {
-        // Standard gravity as the MuJoCo model uses it, in m/s^2.
-        // MuJoCo モデルと同じ重力加速度（m/s^2）。
-        public const float GravityMetersPerSecondSquared = 9.81f;
+        // The same gravity the MuJoCo model and the SILS plant use, in m/s^2.
+        // Generated from control/models/stampfly_physical.yaml; not a number
+        // to edit here.
+        // MuJoCo モデルと SILS のプラントが使うのと同じ重力加速度（m/s^2）。
+        // control/models/stampfly_physical.yaml から生成される値で、ここで
+        // 書き換える数値ではない。
+        public const float GravityMetersPerSecondSquared =
+            GeneratedParams.GravityMetersPerSecondSquared;
 
         /// <summary>
         /// Returns the reading in the body frame: R^-1 * ((v_after - v_before)/dt - g).
