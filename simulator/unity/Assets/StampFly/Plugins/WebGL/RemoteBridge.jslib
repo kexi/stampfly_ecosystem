@@ -60,6 +60,14 @@ var SfuRemoteLibrary = {
     ring: [],
     RING_LIMIT: 2000,
 
+    // The last per-tick trace C# handed over, as JSON Lines. Held so a page
+    // whose POST failed, or one with no server at all, can still give it up
+    // through window.stampfly.trace() / .downloadTrace().
+    // C# が直近に渡した刻みごとのトレース（JSON Lines）。送信に失敗したページや
+    // サーバの無いページからも window.stampfly.trace() ／ .downloadTrace() で
+    // 取り出せるよう保持する。
+    lastTrace: '',
+
     // Commands the page raised itself (window.stampfly.command) wait here for
     // C# to answer them; the server's commands are answered over HTTP instead.
     // ページ自身が起こした命令（window.stampfly.command）は、C# の答えをここで
@@ -342,6 +350,8 @@ var SfuRemoteLibrary = {
         command: SfuRemote.command,
         logs: function () { return SfuRemote.readLogs(); },
         download: function () { return SfuRemote.downloadLogs(); },
+        trace: function () { return SfuRemote.lastTrace; },
+        downloadTrace: function () { return SfuRemote.downloadTrace(); },
         get runId() { return SfuRemote.runId; },
         get mode() {
           return SfuRemote.mode === SfuRemote.MODE_LOCAL ? 'local' : 'public';
@@ -393,6 +403,24 @@ var SfuRemoteLibrary = {
       var link = document.createElement('a');
       link.href = url;
       link.download = (SfuRemote.runId || 'stampfly') + '.jsonl';
+      link.click();
+      URL.revokeObjectURL(url);
+      return text.length;
+    },
+
+    /**
+     * Hand the viewer the last trace as a file, for a page whose POST could not
+     * land. Named apart from the log so the two never overwrite each other in
+     * the download folder.
+     * 直近のトレースをファイルとして渡す。送信が届かなかったページのため。
+     * ログとは別の名前にしてあり、保存先で互いを上書きしない。
+     */
+    downloadTrace: function () {
+      var text = SfuRemote.lastTrace || '';
+      var url = URL.createObjectURL(new Blob([text], { type: 'application/x-ndjson' }));
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = (SfuRemote.runId || 'stampfly') + '.trace.jsonl';
       link.click();
       URL.revokeObjectURL(url);
       return text.length;
@@ -504,6 +532,43 @@ var SfuRemoteLibrary = {
     var succeeded = ok !== 0;
     var data = succeeded ? JSON.parse(UTF8ToString(dataPointer) || 'null') : null;
     SfuRemote.answer(cmdId, succeeded, data, UTF8ToString(errorPointer));
+  },
+
+  /**
+   * Post a whole per-tick trace to /api/trace as JSON Lines. Sent as text/plain
+   * rather than through SfuRemote.request, which would JSON-encode the body a
+   * second time and double the size of something already measured in megabytes.
+   *
+   * It also keeps the trace on window.stampfly so a page with no local server
+   * -- or one whose POST failed -- can still hand it over by hand:
+   * `window.stampfly.trace()` returns the text and `.downloadTrace()` saves it.
+   *
+   * 刻みごとのトレース全体を JSON Lines として /api/trace へ送る。
+   * SfuRemote.request を通さず text/plain で送るのは、あちらが本文をもう一度
+   * JSON に符号化し、既にメガバイト単位のものを倍にしてしまうためである。
+   *
+   * トレースは window.stampfly にも残す。ローカルサーバの無いページや、送信に
+   * 失敗したページからでも、人が手で取り出せるようにするためである。
+   * `window.stampfly.trace()` が本文を返し、`.downloadTrace()` が保存する。
+   */
+  SfuRemoteTrace__deps: ['$SfuRemote'],
+  SfuRemoteTrace: function (bodyPointer) {
+    var body = UTF8ToString(bodyPointer);
+    SfuRemote.lastTrace = body;
+
+    if (SfuRemote.mode !== SfuRemote.MODE_LOCAL) { return 0; }
+
+    fetch('/api/trace', {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: body,
+    }).catch(function () {
+      // The trace is still on window.stampfly, so a failed post loses nothing
+      // that cannot be fetched by hand.
+      // トレースは window.stampfly に残っているので、送信に失敗しても手で
+      // 取り出せないものは何も失われない。
+    });
+    return 1;
   },
 };
 

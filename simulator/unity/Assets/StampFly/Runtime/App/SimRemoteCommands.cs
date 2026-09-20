@@ -419,6 +419,7 @@ namespace StampFly.App
                      {
                          "sim.pause", "sim.step", "sim.speed", "sim.reset",
                          "sim.power_cycle", "sim.state", "sim.wait",
+                         "sim.trace_start", "sim.trace_stop", "sim.trace_dump",
                          "vehicle.state", "rc.set", "rc.arm", "rc.release",
                      })
             {
@@ -487,6 +488,81 @@ namespace StampFly.App
 
             bridge.Commands.Register("sim.wait", args => BeginWait(bridge, args),
                 "Hold until a virtual time arrives, then answer");
+
+            RegisterTraceCommands(bridge);
+        }
+
+        /// <summary>
+        /// The per-tick trace: start it, stop it, and post what it holds.
+        ///
+        /// The dump does NOT come back as the command's result. Twenty seconds
+        /// is eight thousand lines, which would make one `POST /api/cmd` answer
+        /// several megabytes and put a per-tick record into the command log the
+        /// `AGENTS.md` rule keeps clear. It goes to `POST /api/trace` instead,
+        /// which writes `logs/unity/<run_id>.trace.jsonl`, and the command
+        /// answers only with how many ticks were sent.
+        ///
+        /// 刻みごとのトレース。始め、止め、保持しているものを送る。
+        ///
+        /// 取り出したものは命令の結果としては**返らない**。20 秒は 8000 行で、
+        /// 1 回の `POST /api/cmd` の答えが数メガバイトになり、`AGENTS.md` の
+        /// 決まりが空けておく命令のログへ刻みごとの記録を入れてしまう。代わりに
+        /// `POST /api/trace` へ送り、そちらが `logs/unity/<run_id>.trace.jsonl`
+        /// を書く。命令が答えるのは、何刻みぶん送ったかだけである。
+        /// </summary>
+        private void RegisterTraceCommands(RemoteBridge bridge)
+        {
+            bridge.Commands.Register("sim.trace_start", _ =>
+            {
+                simLoop.Trace.Start();
+                return SimCommandResult.Success(
+                    $"{{\"recording\":true,\"capacity\":{TickTrace.Capacity}}}");
+            }, "Begin recording one line per tick into the ring");
+
+            bridge.Commands.Register("sim.trace_stop", _ =>
+            {
+                simLoop.Trace.Stop();
+                return SimCommandResult.Success(
+                    $"{{\"recording\":false,\"ticks\":{simLoop.Trace.Count}}}");
+            }, "Stop recording, keeping what the ring holds");
+
+            bridge.Commands.Register("sim.trace_dump",
+                _ => DumpTrace(bridge),
+                "Post the ring to /api/trace and answer with the count");
+        }
+
+        /// <summary>
+        /// Hand the ring to the relay, which posts it to `/api/trace`.
+        /// 輪を中継へ渡す。中継が `/api/trace` へ送る。
+        /// </summary>
+        private SimCommandResult DumpTrace(RemoteBridge bridge)
+        {
+            TickTrace tickTrace = simLoop.Trace;
+            bool hasNothing = tickTrace.Count == 0;
+            if (hasNothing)
+            {
+                return SimCommandResult.Failure(
+                    "the trace ring is empty — run sim.trace_start first");
+            }
+
+            var builder = new System.Text.StringBuilder(tickTrace.Count * 320);
+            tickTrace.WriteJsonLines(builder, bridge.Log.RunId, "page");
+
+            bool posted = bridge.PostTrace(builder.ToString());
+            bool couldNotPost = !posted;
+            if (couldNotPost)
+            {
+                return SimCommandResult.Failure(
+                    "this route cannot post a trace: sim.trace_dump needs a " +
+                    "page served by `sf unity serve`");
+            }
+
+            return SimCommandResult.Success(
+                "{" +
+                $"\"ticks\":{tickTrace.Count}," +
+                $"\"recorded\":{tickTrace.Recorded}," +
+                $"\"bytes\":{builder.Length}" +
+                "}");
         }
 
         /// <summary>

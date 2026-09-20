@@ -379,6 +379,34 @@ namespace StampFly.Remote
         }
 
         /// <summary>
+        /// Hand a whole per-tick trace to the page, which posts it to
+        /// <c>/api/trace</c>. Returns whether there was a local server to take
+        /// it; the trace is kept on <c>window.stampfly</c> either way, so a
+        /// page that could not post it can still be asked for it by hand.
+        ///
+        /// It does not go through the log: a trace is thousands of per-tick
+        /// records, which is exactly what the log is defined not to carry.
+        ///
+        /// 刻みごとのトレース全体をページへ渡す。ページが <c>/api/trace</c> へ
+        /// 送る。受け取るローカルサーバがあったかを返す。どちらにせよトレースは
+        /// <c>window.stampfly</c> に残るので、送れなかったページからも手で
+        /// 取り出せる。
+        ///
+        /// ログは通さない。トレースは刻みごとの記録が数千件であり、それこそ
+        /// ログが運ばないと定めているものだからである。
+        /// </summary>
+        public bool PostTrace(string jsonLines)
+        {
+            bool hasNothing = string.IsNullOrEmpty(jsonLines);
+            if (hasNothing)
+            {
+                return false;
+            }
+
+            return RemoteNative.Trace(jsonLines);
+        }
+
+        /// <summary>
         /// <c>remote.status</c>'s answer: how this page is connected and how its
         /// log is doing.
         /// <c>remote.status</c> の答え。このページの繋がり方と、ログの様子。

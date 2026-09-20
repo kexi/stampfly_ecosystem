@@ -67,8 +67,24 @@ namespace StampFly.Remote
         private static extern void SfuRemoteAnswer(string cmdId, int ok, string data,
                                                    string error);
 
+        [DllImport("__Internal")]
+        private static extern int SfuRemoteTrace(string body);
+
         /// <summary>Whether the .jslib is there to call. / 呼べる .jslib があるか。</summary>
         internal const bool Available = true;
+
+        /// <summary>
+        /// Post a whole trace to <c>/api/trace</c>. Returns whether the page had
+        /// a local server to post to; a public page has none and says so rather
+        /// than dropping several megabytes on the floor in silence.
+        /// トレース全体を <c>/api/trace</c> へ送る。送り先のローカルサーバが
+        /// あったかを返す。公開ページには無いので、数メガバイトを黙って捨てるの
+        /// ではなく、その旨を返す。
+        /// </summary>
+        internal static bool Trace(string body)
+        {
+            return SfuRemoteTrace(body) != 0;
+        }
 
         /// <summary>Start the bridge. / 橋を始める。</summary>
         internal static void Start(string target, string method)
@@ -152,6 +168,12 @@ namespace StampFly.Remote
         /// <summary>Nobody is waiting for an answer. / 答えを待っている者はいない。</summary>
         internal static void Answer(string cmdId, bool ok, string data, string error)
         {
+        }
+
+        /// <summary>No server to post a trace to. / トレースを送るサーバが無い。</summary>
+        internal static bool Trace(string body)
+        {
+            return false;
         }
 #endif
     }

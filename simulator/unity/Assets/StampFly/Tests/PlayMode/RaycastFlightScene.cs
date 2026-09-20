@@ -51,11 +51,13 @@ namespace StampFly.Tests.PlayMode
         public const float FloorTopMeters = 0.0f;
 
         private readonly DownwardRangefinder rangefinder = new DownwardRangefinder();
+        private readonly TickTrace trace = new TickTrace();
 
         private GameObject vehicleObject;
         private GameObject floorObject;
         private IFirmware firmware;
         private Vector3 accelerometerReading;
+        private int tickInFrame;
 
         /// <summary>The vehicle's rigid body. / 機体の剛体。</summary>
         public Rigidbody Body { get; private set; }
@@ -77,6 +79,41 @@ namespace StampFly.Tests.PlayMode
 
         /// <summary>The vehicle's height above the floor [m]. / 床からの機体の高さ [m]。</summary>
         public float AltitudeMeters => Body.position.y - FloorTopMeters;
+
+        /// <summary>
+        /// The per-tick ring, in the same format the browser posts. A test that
+        /// wants to compare the editor against a browser run starts this and
+        /// writes it out with <see cref="WriteTrace"/>.
+        /// 刻みごとの輪。ブラウザが送るのと同じ形式である。エディタとブラウザの
+        /// 実行を突き合わせたい試験は、これを始めて
+        /// <see cref="WriteTrace"/> で書き出す。
+        /// </summary>
+        public TickTrace Trace => trace;
+
+        /// <summary>
+        /// Write the ring to a file as JSON Lines, so `trace_diff.py` can read
+        /// it beside a browser's `logs/unity/<run_id>.trace.jsonl`.
+        /// 輪を JSON Lines のファイルへ書く。`trace_diff.py` が、ブラウザの
+        /// `logs/unity/<run_id>.trace.jsonl` と並べて読めるようにするためである。
+        /// </summary>
+        public void WriteTrace(string path, string runId)
+        {
+            var builder = new System.Text.StringBuilder(trace.Count * 320);
+            trace.WriteJsonLines(builder, runId, "editor");
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, builder.ToString());
+        }
+
+        /// <summary>
+        /// Mark where a rendered frame would have ended, so a trace records
+        /// which tick of its frame each sample was.
+        /// 描画のフレームが終わったであろう場所を示す。各標本がフレームの何番目の
+        /// 刻みだったかをトレースが記録できるようにするためである。
+        /// </summary>
+        public void BeginFrame()
+        {
+            tickInFrame = 0;
+        }
 
         /// <summary>
         /// Build the scene and power the firmware on.
@@ -143,6 +180,7 @@ namespace StampFly.Tests.PlayMode
         /// </summary>
         public void EndFrame()
         {
+            BeginFrame();
         }
 
         /// <summary>
@@ -169,6 +207,14 @@ namespace StampFly.Tests.PlayMode
             accelerometerReading = AccelerometerModel.Read(
                 velocityBefore, Body.linearVelocity, Body.rotation,
                 PhysicsStepSettings.StepSeconds);
+
+            // The firmware's own clock, the same source `SimLoop` records, so a
+            // browser trace and an editor trace stamp the same tick alike.
+            // ファーム自身の時計。`SimLoop` が記録するのと同じ出どころなので、
+            // ブラウザのトレースとエディタのトレースは同じ刻みに同じ時刻を打つ。
+            trace.Record(LastResult.NowMicroseconds, tickInFrame, Body,
+                         velocityBefore, input, LastResult, status);
+            tickInFrame += 1;
 
             return SfuAbi.Ok;
         }

@@ -42,6 +42,14 @@ namespace StampFly.Tests.PlayMode
     /// </summary>
     public sealed class SimRemoteCommandsTest
     {
+        /// <summary>
+        /// Frames allowed for the firmware to boot and the clock to make its
+        /// first tick before a test gives up.
+        /// ファームが起動して時計が最初の刻みを進めるまでに許すフレーム数。これを
+        /// 超えたら試験はあきらめる。
+        /// </summary>
+        private const int MaxFramesToFirstTick = 120;
+
         private GameObject bridgeObject;
         private GameObject vehicleObject;
         private SimLoop simLoop;
@@ -226,18 +234,36 @@ namespace StampFly.Tests.PlayMode
         [UnityTest]
         public IEnumerator WaitingForATimeAlreadyReachedAnswersAtOnce()
         {
-            yield return null;
+            // The frame that boots the firmware returns before it ticks, so the
+            // clock is legitimately still at zero one frame in. Wait until it
+            // has moved before asking; how many frames that takes depends on
+            // the frame rate, which made this test pass or fail by luck when
+            // it asked after exactly one frame.
+            // ファームを起動するフレームは刻む前に戻るので、1 フレーム後の時計は
+            // 正しく 0 のままである。尋ねる前に時計が動くまで待つ。何フレームかかる
+            // かはフレームレート次第で、ちょうど 1 フレーム後に尋ねていた頃は、
+            // この試験の合否が運で決まっていた。
+            int framesWaited = 0;
+            while (simLoop.Clock.VirtualMicroseconds <= 0
+                   && framesWaited < MaxFramesToFirstTick)
+            {
+                framesWaited++;
+                yield return null;
+            }
+            Assert.That(simLoop.Clock.VirtualMicroseconds, Is.GreaterThan(0),
+                        "the simulation never ticked");
 
             SimCommandResult result = Commands.Execute(
                 "sim.wait", SimCommandArgs.Parse("{\"sim_us\": 1}"));
 
-            // The clock is at zero before the first tick, so ask for the
-            // smallest positive time and expect either an immediate answer
-            // (the clock moved) or a deferral (it has not) -- never a throw.
-            // 最初の刻みの前は時計が 0 なので、正で最小の時刻を求め、即座の答え
-            // （時計が動いた）か後回し（動いていない）のどちらかを期待する。
-            // 例外は決して期待しない。
-            Assert.That(result.Ok || result.IsDeferred, Is.True, result.Error);
+            // The time asked for is already behind the clock, so the answer
+            // must come at once: Ok, not a deferral, and not the refusal a
+            // route that cannot hold a request gives to a real wait.
+            // 求めた時刻は既に時計より過去なので、答えはその場で返らねばならない。
+            // Ok であって、後回しでも、要求を保持できない経路が本物の待ちに返す
+            // 断りでもない。
+            Assert.That(result.Ok, Is.True, result.Error);
+            Assert.That(result.IsDeferred, Is.False);
         }
 
         /// <summary>

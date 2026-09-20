@@ -114,6 +114,14 @@ CMD_POLL_MAX_WAIT_S = 60.0
 # 待ち受けより長くして、待ち直しの合間を切断と読み違えないようにする。
 PAGE_ALIVE_S = CMD_POLL_MAX_WAIT_S + 10.0
 
+# The largest per-tick trace `POST /api/trace` will store. The ring holds 8192
+# ticks at roughly 300 bytes each, so a full dump is about 2.5 MB; the cap is
+# well above that and well below anything that would exhaust the server.
+# `POST /api/trace` が保存する刻みごとのトレースの上限。輪は 8192 刻みを持ち
+# 1 刻みおよそ 300 バイトなので、満杯の取り出しは約 2.5 MB である。上限は
+# それより十分大きく、サーバを枯らす大きさより十分小さくしてある。
+MAX_TRACE_BYTES = 64 * 1024 * 1024
+
 # Compressed WebGL files. Unity's default is Brotli; the fallback loader also
 # produces gzip. The server sets Content-Encoding so Chrome decompresses them.
 # 圧縮された WebGL のファイル。Unity の既定は Brotli で、フォールバックの
@@ -159,6 +167,7 @@ EVENTS: Dict[str, str] = {
     "cmd.result": "sf unity cmd printed the result it received",
     "log.rejected": "a line the page posted failed validation",
     "log.accepted": "a batch of page lines was appended",
+    "trace.stored": "a per-tick trace was written to <run_id>.trace.jsonl",
     "build.start": "a Unity CLI build was launched",
     "build.finished": "a Unity CLI build ended (exit code in data)",
     "test.start": "a Unity CLI test run was launched",
@@ -198,6 +207,18 @@ def _run_log_path(run_id: str) -> Path:
     `logs/unity/<run_id>.jsonl` -- 実行 1 回の全てのログ。サーバ自身の事象、
     CLI の行、ページが送った行が同じファイルに入る。"""
     return _unity_logs_dir() / f"{run_id}.jsonl"
+
+
+def _run_trace_path(run_id: str) -> Path:
+    """`logs/unity/<run_id>.trace.jsonl` -- one run's per-tick diagnostic dump.
+
+    Beside the run's log rather than inside it, because a trace is thousands
+    of per-tick records and the log is defined not to carry those.
+    `logs/unity/<run_id>.trace.jsonl` -- 実行 1 回の刻みごとの診断の取り出し。
+
+    実行のログの中ではなく隣に置く。トレースは刻みごとの記録が数千件であり、
+    ログはそれを運ばないと定めているためである。"""
+    return _unity_logs_dir() / f"{run_id}.trace.jsonl"
 
 
 def _server_info_path(run_id: str) -> Path:
@@ -604,6 +625,15 @@ class _Handler(BaseHTTPRequestHandler):
             return
 
         path = urlsplit(self.path).path
+
+        # The trace is JSON Lines, not a JSON object, and it is large: it is
+        # read as raw text before the JSON body parse below would reject it.
+        # トレースは JSON の物体ではなく JSON Lines で、しかも大きい。下の JSON
+        # の解析が拒む前に、生のテキストとして読む。
+        if path == "/api/trace":
+            self._handle_trace()
+            return
+
         body = self._body_json()
         if not isinstance(body, dict):
             self._reject(400, "body is not a JSON object")
@@ -751,6 +781,57 @@ class _Handler(BaseHTTPRequestHandler):
             data={"accepted": accepted, "rejected": rejected},
         )
         self._send_json(200, {"ok": True, "accepted": accepted, "rejected": rejected})
+
+    def _handle_trace(self) -> None:
+        """`POST /api/trace` -- the page's per-tick diagnostic ring.
+
+        Kept apart from `/api/log` on purpose. A trace is thousands of
+        per-tick records, which is exactly what `AGENTS.md` keeps out of the
+        log, and it is written verbatim to its own file rather than validated
+        line by line: it is a diagnostic dump for `trace_diff.py`, not part of
+        the run's narrative, and the whole point is that it crosses unchanged.
+
+        `POST /api/trace` -- ページが持つ刻みごとの診断の輪。
+
+        意図して `/api/log` とは分けてある。トレースは刻みごとの記録が数千件で、
+        それこそ `AGENTS.md` がログから外しているものである。1 行ずつ検査せず
+        そのままファイルへ書くのは、これが `trace_diff.py` のための診断の取り出し
+        であって実行の筋書きの一部ではなく、変えずに渡ることに意味があるため。
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._reject(400, "Content-Length is not a number")
+            return
+
+        if length <= 0:
+            self._reject(400, "the trace body is empty")
+            return
+
+        if length > MAX_TRACE_BYTES:
+            self._reject(
+                413, f"the trace exceeds {MAX_TRACE_BYTES} bytes")
+            return
+
+        raw = self.rfile.read(length)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            self._reject(400, "the trace is not UTF-8")
+            return
+
+        path = _run_trace_path(self.relay.run_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+        ticks = max(0, text.count("\n") - 1)   # the header line is not a tick
+        self.logger.log(
+            "trace.stored",
+            f"stored {ticks} per-tick samples in {path.name}",
+            src="server",
+            data={"ticks": ticks, "bytes": len(raw), "path": str(path)},
+        )
+        self._send_json(200, {"ok": True, "ticks": ticks, "bytes": len(raw)})
 
     def _store_page_line(self, entry: Any) -> Optional[str]:
         """Validate and append one page line. Returns None when stored, or the
