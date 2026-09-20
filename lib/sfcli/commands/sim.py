@@ -23,17 +23,44 @@ COMMAND_NAME = "sim"
 COMMAND_HELP = "Run flight simulator"
 
 # Simulator backends
+#
+# `kind` says how a backend is launched. "python" (the default when the key is
+# absent) runs a Python script with a chosen interpreter, which is what both
+# original backends do. "unity" runs in Chrome instead, so `sf sim run unity`
+# hands over to `sf unity serve` -- the same entry point a user reaches
+# directly -- rather than trying to run a script here.
+# `kind` は起動のしかたを表す。"python"（鍵が無いときの既定）は選んだ
+# インタプリタで Python スクリプトを実行するもので、元からの 2 つが
+# これに当たる。"unity" は Chrome で動くため、`sf sim run unity` は
+# ここでスクリプトを実行しようとせず、利用者が直接使うのと同じ入口である
+# `sf unity serve` へ委譲する。
 BACKENDS = {
     "vpython": {
         "name": "VPython",
         "description": "VPython-based 3D visualization (2000Hz physics, 400Hz control)",
+        "kind": "python",
         "script": "simulator/vpython/scripts/run_sim.py",
         "headless_script": "simulator/vpython/scripts/run_vpython_headless.py",
+        "requires_venv": False,
+    },
+    "unity": {
+        "name": "Unity (WebGL, Chrome)",
+        "description": "Unity WebGL simulator: PhysX 400Hz, unmodified firmware as "
+                       "WebAssembly, obstacles and sensor models (Chrome only)",
+        "kind": "unity",
+        # What `sf sim list` checks for instead of a launcher script: the Unity
+        # project itself. The WebGL build is produced by `sf unity build` and
+        # lives outside git, so its absence is not what "available" means here.
+        # `sf sim list` が起動スクリプトの代わりに確認するもの: Unity
+        # プロジェクト本体。WebGL のビルドは `sf unity build` が作り git 管理
+        # 外に置かれるため、その有無はここでの「利用可能」の基準にしない。
+        "script": "simulator/unity/ProjectSettings/ProjectVersion.txt",
         "requires_venv": False,
     },
     "genesis": {
         "name": "Genesis",
         "description": "Genesis physics engine (2000Hz physics, 400Hz control, 30Hz render)",
+        "kind": "python",
         "script": "simulator/genesis/scripts/run_genesis_sim.py",
         "headless_script": "simulator/genesis/scripts/run_genesis_headless.py",
         # Genesis runs from EITHER the dedicated venv below (if it exists) OR
@@ -243,7 +270,14 @@ def run_list(args: argparse.Namespace) -> int:
 
         console.print(f"  {backend_id:12s} - {backend['name']}")
         console.print(f"               {backend['description']}")
-        console.print(f"               Script: {backend['script']}")
+        # A "unity" backend has no launcher script: what `script` names is the
+        # Unity project file whose presence decides availability. Labelling it
+        # "Script:" would misdescribe it.
+        # "unity" のバックエンドに起動スクリプトは無い。`script` が指すのは
+        # 利用可否を決める Unity プロジェクトのファイルである。「Script:」と
+        # 書くと実態と食い違う。
+        label = "Project" if _backend_kind(backend) == "unity" else "Script"
+        console.print(f"               {label}: {backend['script']}")
 
         if venv_exists is not None:
             venv_status = "exists" if venv_exists else "not found"
@@ -259,6 +293,8 @@ def run_list(args: argparse.Namespace) -> int:
         # sf CLI のインタプリタに入れれば十分。
         if backend.get("requires_venv") and interpreter is None:
             console.print(f"               Fix: sf setup {backend_id}")
+        if _backend_kind(backend) == "unity":
+            console.print("               Runs in Chrome:  sf unity serve")
 
         console.print()
 
@@ -269,6 +305,14 @@ def run_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _backend_kind(backend: dict) -> str:
+    """How this backend is launched. Absent means "python", so the two
+    original backends keep their behaviour without carrying the key.
+    このバックエンドの起動のしかた。鍵が無ければ "python" とし、元からの
+    2 つは鍵を持たなくても挙動が変わらないようにする。"""
+    return backend.get("kind", "python")
+
+
 def run_sim(args: argparse.Namespace) -> int:
     """Run interactive simulator"""
     backend_id = args.backend
@@ -277,6 +321,15 @@ def run_sim(args: argparse.Namespace) -> int:
     if not backend:
         console.error(f"Unknown backend: {backend_id}")
         return 1
+
+    # The Unity backend runs in Chrome, served by its own local server. Hand
+    # over to `sf unity serve` so both entry points behave identically and the
+    # server's options live in one place.
+    # Unity のバックエンドは Chrome で動き、専用のローカルサーバが配信する。
+    # `sf unity serve` へ委譲し、2 つの入口の挙動を同じにして、サーバの
+    # オプションを 1 か所に保つ。
+    if _backend_kind(backend) == "unity":
+        return _run_unity_backend(args)
 
     script_path = paths.root() / backend["script"]
 
@@ -341,6 +394,56 @@ def run_sim(args: argparse.Namespace) -> int:
     except Exception as e:
         console.error(f"Failed to start simulator: {e}")
         return 1
+
+
+def _run_unity_backend(args: argparse.Namespace) -> int:
+    """Delegate `sf sim run unity` to `sf unity serve`.
+
+    `sf sim run`'s own options (`--world`, `--seed`, `--mode`,
+    `--no-joystick`) belong to the two Python backends. Only `--world` has a
+    counterpart here and is passed on; the rest are reported as ignored rather
+    than silently dropped, so nobody concludes `--mode angle` took effect.
+    Imported inside the function so a problem in `unity.py` cannot stop
+    `sf sim list` or the other two backends from working.
+
+    `sf sim run unity` を `sf unity serve` へ委譲する。
+
+    `sf sim run` のオプション（`--world`・`--seed`・`--mode`・
+    `--no-joystick`）は Python の 2 つのバックエンドのものである。ここで対応
+    するのは `--world` だけで、それを渡す。残りは黙って捨てず「無視した」と
+    伝え、`--mode angle` が効いたと受け取られないようにする。`unity.py` の
+    不具合が `sf sim list` や他の 2 つを止めないよう、import は関数の中で行う。
+    """
+    from . import unity
+
+    ignored = [
+        name for name, value, default in (
+            ("--seed", getattr(args, "seed", None), None),
+            ("--mode", getattr(args, "mode", None), "rate"),
+            ("--no-joystick", getattr(args, "no_joystick", False), False),
+        ) if value != default
+    ]
+    if ignored:
+        console.warning(
+            f"Options not used by the Unity backend: {', '.join(ignored)}"
+        )
+
+    # `sf sim run`'s `--world` has its own fixed choices (ringworld / voxel /
+    # minimal) for the Python backends, which are not Unity world names. Pass
+    # it on only when the user chose something other than that default.
+    # `sf sim run` の `--world` は Python のバックエンド向けの決まった選択肢
+    # （ringworld / voxel / minimal）で、Unity の空間の名前ではない。既定以外を
+    # 選んだときだけ渡す。
+    world = getattr(args, "world", None)
+    serve_args = argparse.Namespace(
+        dir=None,
+        port=unity.DEFAULT_PORT,
+        no_browser=False,
+        world=world if world not in (None, "voxel") else None,
+        coi=False,
+    )
+    console.info("Unity backend: starting `sf unity serve`")
+    return unity.run_serve(serve_args)
 
 
 def _resolve_headless_output(output_arg: Optional[str], backend_id: str) -> Path:

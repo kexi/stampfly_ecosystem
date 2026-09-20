@@ -76,6 +76,7 @@ sf flash vehicle -m    # 書き込み後にモニタを開く
 | `sf cal list` | キャリブレーション一覧 |
 | `sf cal gyro/accel/mag` | 各種キャリブレーション |
 | `sf sim list/run` | シミュレータ操作 |
+| `sf unity serve/cmd/logs/build/test/world` | Unity 版シミュレータ（WebGL、Chrome）。ローカル配信・端末からの操作・実行 1 回のログ・Unity CLI の呼び出し・空間ファイルの検査（`docs/commands/sf-unity.md`）|
 | `sf blocks` | ブロックプログラミングWeb UI（Blockly、--demo でデモモード）|
 
 ### Genesis Simulator
@@ -519,6 +520,7 @@ When developing this codebase, follow this order:
 | ファームウェアの `ESP_LOGx`（実機） | シリアル（`sf monitor`）。**ファイルには保存されない** | テキスト | 保存したいときは端末側で記録する |
 | 50Hz テレメトリ（`sf telemetry`） | 既定では画面だけ。`--csv <file>` を渡したときだけファイル | CSV | — |
 | 解析スクリプト（`analysis/scripts/`、`sf log analyze`） | `analysis/reports/<系統>/`、またはフライトログ一式の隣（`<名前>_analysis.png`） | PNG・テキスト | — |
+| Unity 版シミュレータ（`sf unity serve`／`cmd`／`build`／`test`、ブラウザのページ） | `logs/unity/<run_id>.jsonl`（実行 1 回の全ての行）、`logs/unity/latest`（直近の `run_id` を 1 行）、`logs/unity/build-<run_id>.jsonl`／`test-<run_id>.jsonl`（Unity CLI の `--format ndjson` の出力） | JSON Lines。サーバ・CLI・ページの行が同じファイルに入り、鍵は `ts`・`level`・`src`・`event`・`run_id`・`msg`（＋`cmd_id`・`sim_us` 等）。形式は下の「新しく書くコードのログの決まり」、事象名の一覧は `docs/commands/sf-unity.md` §7 | `sf unity logs --cmd <id>`（1 つの命令の流れ）、`sf unity logs --src fw --level warn --follow`、`jq -c 'select(.cmd_id == "<id>")' logs/unity/$(cat logs/unity/latest).jsonl` |
 | CI | 失敗時だけ保存: `sils-regression-bundles`（`out_scn_*/` 全体）、`<os>-e2e-build-logs`（CMake の診断） | — | `gh run download <run-id>`、ステップのログは `gh run view --log` |
 
 ### 探しても無いもの
@@ -543,7 +545,7 @@ PC 側で動く新しいコード（Unity 版シミュレータ、`sf` の新し
 - **`cmd_id`**: 命令を受けた入口で発行し、中継するサーバ・ページ・処理・結果の全ての行に同じ値を付ける。処理の途中で出たファームウェアのログにも付ける。
 - **ファームウェアのログ**: ファームウェアは書き換えない。`ESP_LOGx` を受ける側（`esp_log.h` の差し替え）が、レベル・タグ・本文・仮想時刻を文字列にする前の形で受け取り、`src: "fw"` と `tag` を付けた行にする。後から文字列を解析して構造に戻すことはしない。
 - **量**: 制御の刻みごとの行は出さない。高レートの信号はフライトログ一式（`.sflog.zip`）に書き、その記録に `run_id` を入れて突き合わせられるようにする。
-- **出力先を足したら、上の「どこに何が出るか」の表に同じコミットで行を足す。** Unity 版シミュレータの出力先は未実装で、実装するコミットで追記する（設計は `docs/plans/unity-simulator.md`）。
+- **出力先を足したら、上の「どこに何が出るか」の表に同じコミットで行を足す。** Unity 版シミュレータの `sf unity` 側（`logs/unity/`）は追記済みで、実装は `lib/sfcli/utils/jsonl_log.py` にある（設計は `docs/plans/unity-simulator.md`、使い方は `docs/commands/sf-unity.md`）。
 
 ## 非公開文書の扱い
 

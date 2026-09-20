@@ -39,6 +39,7 @@ sf <command> [subcommand] [options]
 | `sf log` | ログ取得・解析 | [sf-log.md](sf-log.md) |
 | `sf sim` | フライトシミュレータ実行 | [sf-sim.md](sf-sim.md) |
 | `sf sils`（`sf sil`） | SILS 試験環境（閉ループホバー・レビュー動画・合否判定） | `sf sils --help` |
+| `sf unity` | Unity 版シミュレータ（WebGL、Chrome）の配信・端末からの操作・ログ・ビルド | [sf-unity.md](sf-unity.md) |
 | `sf cal` | センサキャリブレーション | [sf-cal.md](sf-cal.md) |
 | `sf sysid` | フライトログからのシステム同定 | [sf-sysid.md](sf-sysid.md) |
 | `sf params` | 物理パラメータ整合検査（C_T・C_Q・κ・慣性 等） | `sf params --help` |
@@ -179,6 +180,7 @@ command with no dedicated page, run `sf <command> --help` for details.
 | `sf log` | Log capture and analysis | [sf-log.md](sf-log.md) |
 | `sf sim` | Run flight simulator | [sf-sim.md](sf-sim.md) |
 | `sf sils` (`sf sil`) | Software-in-the-Loop bench (closed-loop hover, review video, gate) | `sf sils --help` |
+| `sf unity` | Unity simulator (WebGL, Chrome): serve, drive from a terminal, logs, build | [sf-unity.md](sf-unity.md) |
 | `sf cal` | Sensor calibration | [sf-cal.md](sf-cal.md) |
 | `sf sysid` | System identification from flight logs | [sf-sysid.md](sf-sysid.md) |
 | `sf params` | Physical parameter consistency audit (C_T, C_Q, kappa, inertia, ...) | `sf params --help` |

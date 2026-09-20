@@ -4,7 +4,7 @@
 
 ## 1. 概要
 
-フライトシミュレータを起動・管理します。VPythonとGenesisの2つのバックエンドをサポートします。
+フライトシミュレータを起動・管理します。VPython・Genesis・Unity の 3 つのバックエンドをサポートします。
 
 ## 2. サブコマンド
 
@@ -28,6 +28,12 @@ sf sim list
 |-------------|------|------|
 | `vpython` | VPython 3D可視化 | システムPython |
 | `genesis` | Genesis物理エンジン | `sf setup genesis` で sf CLI の Python に導入（`simulator/genesis/venv` があればそちらを優先） |
+| `unity` | Unity WebGL（PhysX 400Hz、無改変ファームウェアの WebAssembly 化） | Chrome。`sf unity serve` が配信する |
+
+バックエンドは `kind` で 2 通りに分かれる。`python`（既定）は選んだインタプリタで Python
+スクリプトを実行する。`unity` は Chrome で動くため、`sf sim run unity` は
+[`sf unity serve`](sf-unity.md) へ委譲する。`sf sim run` の `--seed`・`--mode`・
+`--no-joystick` は Python のバックエンド向けのもので、Unity では使わない旨を表示して無視する。
 
 ## 4. sf sim run
 
@@ -136,7 +142,20 @@ pip install -r requirements.txt pygame
 
 ## 1. Overview
 
-Launch and manage flight simulators. Supports VPython and Genesis backends.
+Launch and manage flight simulators. Supports the VPython, Genesis and Unity backends.
+
+### Backends
+
+| Backend | Description | Environment |
+|---------|-------------|-------------|
+| `vpython` | VPython 3D visualization | System Python |
+| `genesis` | Genesis physics engine | Installed into the sf CLI's Python by `sf setup genesis` (a `simulator/genesis/venv` wins if present) |
+| `unity` | Unity WebGL (PhysX 400 Hz, the unmodified firmware as WebAssembly) | Chrome, served by `sf unity serve` |
+
+A backend's `kind` decides how it is launched. `python` (the default) runs a Python script
+with a chosen interpreter. `unity` runs in Chrome, so `sf sim run unity` delegates to
+[`sf unity serve`](sf-unity.md). `sf sim run`'s `--seed`, `--mode` and `--no-joystick` belong
+to the Python backends; with Unity they are reported as unused and ignored.
 
 ## 2. Subcommands
 
