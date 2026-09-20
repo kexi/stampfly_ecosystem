@@ -55,6 +55,15 @@
 #include <mujoco/mujoco.h>
 #endif
 
+// The externally supplied rigid-body types (ExternalState / RangeInput /
+// Wrench) are needed only by the alternative implementation, so they are
+// included only when the macro is defined.
+// 外から与える剛体の型（ExternalState／RangeInput／Wrench）は別実装でしか要らない
+// ため、マクロが定義されているときだけ include する。
+#ifdef SILS_PLANT_EXTERNAL
+#include "plant_external_state.hpp"
+#endif
+
 #include "sf_math.hpp"
 #include "frames.hpp"
 #include "data_types.hpp"
@@ -493,6 +502,44 @@ public:
     mjData*        data()        { return d_; }   ///< for the optional viewer / ビューア用
 #endif
 
+#ifdef SILS_PLANT_EXTERNAL
+    // --- Externally supplied rigid body (plant_external.cpp only) ------------
+    // The Unity build owns the rigid body: the host integrates it with PhysX and
+    // injects the result here each tick, while the plant keeps only the motors,
+    // the battery, the wind and the synthetic sensors. Calling setExternalState()
+    // once switches this Plant out of its own built-in integrator for good.
+    // These declarations exist ONLY when SILS_PLANT_EXTERNAL is defined, so with
+    // the macro undefined the preprocessed token sequence is unchanged.
+    //
+    // --- 外から与える剛体（plant_external.cpp 専用）---
+    // Unity 版では剛体をホストが所有する。ホストが PhysX で積分した結果を 1 刻みごとに
+    // ここへ注入し、プラントはモータ・電池・風・合成センサだけを持つ。
+    // setExternalState() を 1 度呼ぶと、この Plant は内蔵の積分器を使わなくなる。
+    // これらの宣言は SILS_PLANT_EXTERNAL の定義時にだけ存在するので、マクロ未定義時の
+    // プリプロセス後のトークン列は変わらない。
+
+    /// Inject this tick's rigid-body state (NED/FRD). The first call switches the
+    /// plant to externally supplied mode. 本刻みの剛体の状態（NED/FRD）を注入する。
+    /// 最初の呼び出しで外部供給の動作に切り替わる。
+    void setExternalState(const ExternalState& state);
+
+    /// Inject this tick's downward range and ground-effect height.
+    /// 本刻みの下向きの距離と地面効果用の高さを注入する。
+    void setRange(const RangeInput& range);
+
+    /// Take the accumulated actuator wrench and reset the accumulator to zero.
+    /// 累積したアクチュエータの力・トルクを取り出し、累積を 0 に戻す。
+    Wrench takeWrench();
+
+    /// Integrated propeller speed of one motor [rad/s] (index 0..3).
+    /// 積分されたモータ 1 個のプロペラ回転速度 [rad/s]（添字 0..3）。
+    float motorOmega(int motor) const;
+
+    /// True once setExternalState() has been called at least once.
+    /// setExternalState() が 1 度でも呼ばれていれば true。
+    bool externalStateActive() const;
+#endif
+
 private:
     /// Ground-effect lift multiplier at body height z [m] (ENU): 1 + ge_gain·exp(−z/ge_height).
     /// 1 (no effect) when ge_gain ≤ 0 or far from the floor. See Config::ge_gain.
@@ -543,6 +590,24 @@ private:
     /// 電池更新: クーロンカウントで容量を減らし端子電圧 v_batt_=OCV(SoC)−I·R_int を再計算。
     /// モデル無効時は何もしない。
     void updateBattery(float i_total_a, float h);
+
+#ifdef SILS_PLANT_EXTERNAL
+    /// Add one substep's actuator impulse to the accumulator takeWrench() drains
+    /// (externally supplied mode). The rigid body is NOT integrated.
+    /// 副刻み 1 回ぶんのアクチュエータの力積を、takeWrench() が取り出す累積器へ足す
+    /// （外部供給の動作）。剛体は積分しない。
+    void accumulateWrench(const sf::math::Vec3& force_flu,
+                          const sf::math::Vec3& torque_flu,
+                          const sf::math::Vec3& wind_enu,
+                          float h);
+
+    /// Advance the built-in 6-DOF rigid body one substep (Unity-free mode).
+    /// 内蔵の 6 自由度の剛体を副刻み 1 回ぶん進める（Unity 無しの動作）。
+    void integrateBody(const sf::math::Vec3& force_flu,
+                       const sf::math::Vec3& torque_flu,
+                       const sf::math::Vec3& wind_enu,
+                       float h);
+#endif
 
     /// Pointer to a named sensor's data inside d_->sensordata.
     /// 名前付きセンサの d_->sensordata 内の先頭ポインタ。

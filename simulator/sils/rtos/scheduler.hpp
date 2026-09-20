@@ -124,6 +124,47 @@ public:
     // 協調ループを回す。
     void run(int64_t max_sim_us);
 
+    // --- Tick-driven entry points (defined in scheduler_step.cpp) ---
+    //
+    // Only built for hosts that own the loop themselves (the Unity native
+    // plugin); the existing executables — emu_vehicle, rtos_smoke and the other
+    // smoke targets — do not link scheduler_step.cpp, so adding these two
+    // declarations changes nothing for them. Both are ordinary non-virtual
+    // member functions and add no data member, so the layout of Scheduler is
+    // byte-for-byte what it was.
+    //
+    // --- 刻み実行用の入口（定義は scheduler_step.cpp）---
+    //
+    // ループを自分で所有するホスト（Unity のネイティブプラグイン）のためだけに
+    // ビルドする。既存の実行ファイル — emu_vehicle・rtos_smoke ほかのスモーク —
+    // は scheduler_step.cpp をリンクしないので、この 2 つの宣言を足しても何も
+    // 変わらない。どちらも仮想でない通常のメンバ関数でデータメンバも増やさない
+    // ため、Scheduler のレイアウトは 1 バイトも変わらない。
+
+    // Run the cooperative loop until the virtual clock reaches target_us, then
+    // RETURN to the caller without tearing anything down, so the host can
+    // interleave its own physics step. If the next wake-up lies beyond
+    // target_us, the clock is set to target_us and on_advance is called there
+    // before returning — the host therefore always observes exactly the time it
+    // asked for. Returns false if a task failed to yield the run-token (the
+    // caller decides what to do; unlike run(), this never aborts the process).
+    //
+    // 仮想時計が target_us に達するまで協調ループを回し、後始末をせずに呼び出し側へ
+    // 戻る。ホスト側が自前の物理ステップを挟めるようにするため。次の起床が target_us
+    // を超える場合は、時計を target_us にして on_advance をそこで呼んでから戻る —
+    // よってホストは常に、要求した時刻ちょうどを観測する。タスクが実行トークンを
+    // 返さなかったときは false を返す（対処は呼び出し側が決める。run() と違い
+    // プロセスを abort しない）。
+    bool run_until(int64_t target_us);
+
+    // Unwind and join every task thread, leaving a clean process state. Same
+    // teardown run() performs at its end; exposed so a run_until() driver can
+    // perform it when its own loop is done.
+    // 各タスクスレッドを巻き戻して join し、後始末済みのプロセス状態にする。
+    // run() が末尾で行うのと同じ後始末で、run_until() で回すホストが自分のループを
+    // 終えたときに実行できるよう公開する。
+    void shutdown();
+
     int64_t now_us() const { return now_us_; }
     const std::vector<TraceEvent>& trace() const { return trace_; }
 

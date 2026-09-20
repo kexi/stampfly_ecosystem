@@ -172,6 +172,25 @@ if(SILS_BUILD_MUJOCO_SMOKE)
   )
   target_link_libraries(plant_smoke PRIVATE mujoco)
 
+  # Actuator parity: plant/actuator_model.hpp holds statements MOVED out of
+  # plant.cpp, so the two must agree bit for bit. This drives both with the same
+  # duty sequence and compares the battery voltage every step — the one number
+  # the whole motor ODE, the RK4 and the Coulomb counting all feed into. Needs
+  # MuJoCo because the reference side is the real Plant.
+  # アクチュエータの一致: plant/actuator_model.hpp の文は plant.cpp から移したもの
+  # なので、両者は 1 ビットの違いもなく一致していなければならない。本試験は同じ
+  # duty の列を両者に与え、毎ステップ電池電圧を突き合わせる — モータ ODE・RK4・
+  # クーロンカウントのすべてが流れ込む 1 つの数値である。基準側が本物の Plant なので
+  # MuJoCo が要る。
+  add_executable(actuator_parity_test plant/actuator_parity_test.cpp plant/plant.cpp)
+  target_include_directories(actuator_parity_test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/plant
+    ${CMAKE_CURRENT_SOURCE_DIR}/frames
+    ${VN}/components/sf_math/include
+    ${VN}/components/sf_core/include   # data_types.hpp (header-only)
+  )
+  target_link_libraries(actuator_parity_test PRIVATE mujoco)
+
   # Closed-loop hover (P1.2c / gate G3): the real firmware loop on the RTOS
   # emulator + the MuJoCo Plant closing the loop. Needs both the RTOS infra
   # (sf_cores + threads + esp_timer shim) and MuJoCo.
@@ -293,33 +312,13 @@ if(SILS_BUILD_EMU)
   # になるので常に列挙して無害。
   set(EMU_WIN_COMPAT_SRCS ${EMU_HOST}/win_stdio_shim.cpp)
 
-  # All firmware sources under main/tasks/components, EXCLUDING the VL53L3CX
-  # vendor docs/ (STM32 CubeIDE examples) and any examples/tests/build output.
-  # main/tasks/components の全ソース。VL53 の docs/（STM32例）・examples/test は除外。
-  file(GLOB_RECURSE EMU_FW_SRCS CONFIGURE_DEPENDS
-       ${VN}/main/*.cpp ${VN}/main/*.c
-       ${VN}/tasks/*.cpp ${VN}/tasks/*.c
-       ${VN}/components/*.cpp ${VN}/components/*.c)
-  list(FILTER EMU_FW_SRCS EXCLUDE REGEX "/(docs|examples|test|build)/|_test\\.|/CubeIDE")
-
-  # The C HAL/driver sources (BMI270, PMW3901, VL53L3CX BareDriver) compile as C
-  # against the C-compatible host shims — exactly as on real ESP-IDF. The .cpp
-  # firmware compiles as C++. (Earlier attempt compiled .c as C++ and hit
-  # extern "C" + C++-stdlib clashes; C-compiling the C drivers is the right fix.)
-  # C の HAL/ドライバは C 互換シムに対し C でコンパイル（実 ESP-IDF と同じ）。
-  set(CMAKE_C_STANDARD 11)
-
-  # Public include dirs of every component + the driver-internal subdirs.
-  # 各コンポーネントの公開 include ＋ ドライバ内部の src サブディレクトリ。
-  file(GLOB EMU_FW_INCS LIST_DIRECTORIES true ${VN}/components/*/include)
-  list(APPEND EMU_FW_INCS
-       ${VN}/components/sf_hal_vl53l3cx/include/vl53lx
-       ${VN}/components/sf_hal_vl53l3cx/src
-       ${VN}/components/sf_hal_vl53l3cx/src/vl53lx
-       ${VN}/components/sf_hal_bmi270/src
-       ${VN}/components/sf_hal_pmw3901/src
-       ${VN}/main ${VN}/tasks
-       ${CMAKE_CURRENT_SOURCE_DIR}/../../firmware/common/protocol/include)  # shared protocol (sf_comm)
+  # EMU_FW_SRCS / EMU_FW_INCS / CMAKE_C_STANDARD, moved out verbatim so that
+  # simulator/unity/native/ (a separate project, no MuJoCo) can share exactly
+  # the same lists. The variable names and the contents are unchanged.
+  # EMU_FW_SRCS／EMU_FW_INCS／CMAKE_C_STANDARD。simulator/unity/native/（MuJoCo を
+  # 取らない別プロジェクト）がまったく同じ一覧を共有できるよう、そのまま括り出した。
+  # 変数名も中身も変えていない。
+  include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/firmware_sources.cmake)
 
   # Application sources (SF_APP_DIR, see docs/plans/sf-app-sils-plan.md Phase 1):
   # copy EMU_FW_SRCS into EMU_VEHICLE_SRCS before substituting so EMU_WS_SRCS

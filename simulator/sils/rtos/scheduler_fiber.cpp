@@ -466,12 +466,16 @@ bool Scheduler::step_once(int64_t horizon_us)
 
 void Scheduler::run(int64_t max_sim_us)
 {
-    // Initial scenario injection at t = 0.
-    // t = 0 でのシナリオ注入。
-    if (!started_) {
-        started_ = true;
-        if (on_advance_) on_advance_(now_us_);
-    }
+    // Initial scenario injection at the current virtual time — unconditional,
+    // exactly as the thread version's run() does it. It is NOT guarded by
+    // started_: guarding it would make run() behave differently from the thread
+    // version after a preceding run_until(), which is the one place the two
+    // could drift apart.
+    // 現在の仮想時刻でのシナリオ注入 — スレッド版の run() と同じく無条件に呼ぶ。
+    // started_ では守らない: 守ると、先に run_until() を呼んだ後の run() が
+    // スレッド版と違う振る舞いになる。両者がずれ得る唯一の箇所がここ。
+    started_ = true;
+    if (on_advance_) on_advance_(now_us_);
 
     // INT64_MAX horizon: no clamping, so the loop body matches the thread
     // version's exactly (see step_once).
@@ -483,7 +487,7 @@ void Scheduler::run(int64_t max_sim_us)
     shutdown();
 }
 
-void Scheduler::run_until(int64_t target_us)
+bool Scheduler::run_until(int64_t target_us)
 {
     // Same loop as run(), but it RETURNS instead of tearing down, and it always
     // leaves the virtual clock exactly at target_us so the host's physics step
@@ -510,6 +514,7 @@ void Scheduler::run_until(int64_t target_us)
         sils::compat::set_virtual_time_us(now_us_);
         if (on_advance_) on_advance_(now_us_);
     }
+    return true;
 }
 
 void Scheduler::shutdown()

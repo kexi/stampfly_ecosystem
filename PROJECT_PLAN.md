@@ -361,7 +361,7 @@ simulator/
 ├── sils/       # Software-in-the-Loop 本体（決定論的・ESP-IDF ホストビルド）
 ├── tests/      # シミュレータ横断のテスト
 ├── tools/      # シミュレータ間比較などの補助
-├── unity/      # Unity 版（WebGL、実装中）— 現状は native/ に段階 1 の技術検証のみ
+├── unity/      # Unity 版（WebGL、実装中）— 現状は native/ にファームウェアの WebAssembly 化と C の関数群
 └── vpython/    # VPython 版（軽量・ブラウザ 3D 表示）
 ```
 
@@ -371,8 +371,10 @@ simulator/
 - protocol を介した I/O により、実機との一貫性を保つ
 - `unity/` は 4 つ目のシミュレータ（ブラウザで動く Unity 版）を作る場所で、計画は `docs/plans/unity-simulator.md`。
   既存の 3 つ（SILS・VPython 版・Genesis 版）を置き換えず、リアルタイム操縦・カメラ/前向き ToF の模擬・
-  障害物のある 3D 環境を受け持つ。**現状は `native/` に段階 1 の技術検証（無改変ファームウェアの
-  WebAssembly 化）があるだけで、Unity プロジェクト本体はまだ無い**
+  障害物のある 3D 環境を受け持つ。**現状は `native/` に、段階 1 の技術検証（無改変ファームウェアの
+  WebAssembly 化）と段階 2 のネイティブコア（Unity から呼ぶ C の関数群 `bridge/`、wasm モジュール、Unity を使わない
+  最小動作確認）があり、Unity プロジェクト本体はまだ無い**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
+  切り出してあり、SILS と `unity/native/` の両方のビルドが同じ一覧を使う
 
 ---
 

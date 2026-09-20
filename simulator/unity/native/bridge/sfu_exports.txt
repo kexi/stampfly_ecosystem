@@ -1,0 +1,26 @@
+# The only symbols libsfu_firmware.dylib exposes: the C ABI of bridge/sfu_api.h.
+# Everything else — the whole firmware, the plant, the scheduler — stays hidden
+# behind -fvisibility=hidden, so nothing inside the Unity editor's process can
+# reach a firmware symbol by name.
+#
+# libsfu_firmware.dylib が見せる唯一の記号。bridge/sfu_api.h の C ABI である。
+# それ以外 — ファーム全体・プラント・スケジューラ — は -fvisibility=hidden の裏に
+# 隠れたままなので、Unity のエディタのプロセスの中から、ファームの記号へ名前で
+# 届くものは無い。
+#
+# The leading underscore is Mach-O's C name mangling, not part of the name.
+# 先頭の下線は Mach-O の C の名前修飾であり、名前の一部ではない。
+_sfu_abi_version
+_sfu_struct_size
+_sfu_boot
+_sfu_shutdown
+_sfu_step
+_sfu_param_count
+_sfu_param_info
+_sfu_param_set
+_sfu_param_get
+_sfu_set_wind
+_sfu_set_motor_health
+_sfu_set_imu_bias
+_sfu_log_read
+_sfu_log_dropped

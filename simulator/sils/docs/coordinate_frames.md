@@ -188,6 +188,103 @@ q_nb = q_we ⊗ q_mj ⊗ q_bf        # ⊗ は Hamilton 積（左が後から作
 
 ---
 
+## 7. Unity 版シミュレータとの対応
+
+Unity 版シミュレータ（`docs/plans/unity-simulator.md`）が使う座標変換。MuJoCo との対応（§2〜§6）とは別の写像で、実装は `simulator/sils/frames/frames_unity.hpp`（ヘッダのみ・MuJoCo 非依存）にある。
+
+### 7.1 Unity の規約
+
+| 区分 | 規約 |
+|------|------|
+| 利き手 | **左手系**（MuJoCo・StampFly はどちらも右手系） |
+| 上方向 | **Y 軸**が上 |
+| 単位 | m |
+| クォータニオン | 成分の順が **x, y, z, w**（`sf::math::Quat` は w, x, y, z） |
+| `Rigidbody.angularVelocity` | **世界系**の角速度（機体系ではない） |
+
+### 7.2 軸の対応
+
+世界系（NED ↔ Unity の世界）も機体系（FRD ↔ Unity の機体）も、同じ 1 つの対応を使う。
+
+```
+  北 / 前   →  Unity +Z
+  東 / 右   →  Unity +X
+  下        →  Unity −Y
+```
+
+成分で書くと、StampFly の (n, e, d) を Unity の成分へ送る行列は次のとおり。
+
+```
+M = [[0, 1,  0],
+     [0, 0, −1],
+     [1, 0,  0]]           u = M·v,   v = Mᵀ·u
+```
+
+`M` は直交（`M·Mᵀ = I`）だが **`det(M) = −1`**。回転ではなく**利き手の反転**である。§3.1・§3.2 の MuJoCo 対応が `det = +1`（純粋な回転）だったのと、ここが決定的に違う。
+
+### 7.3 極性ベクトルと軸性ベクトルで符号が違う理由
+
+`det(M) = −1` のため、量の種類で扱いが分かれる。
+
+| 種類 | 量の例 | Unity へ | Unity から |
+|------|--------|---------|-----------|
+| **極性ベクトル** | 位置・速度・力・加速度計の測定値 | `u = M·v = (v.y, −v.z, v.x)` | `v = Mᵀ·u = (u.z, u.x, −u.y)` |
+| **軸性ベクトル** | 角速度・トルク | `u = det(M)·M·v = (−w.y, w.z, −w.x)` | `v = det(M)·Mᵀ·u = (−u.z, −u.x, u.y)` |
+
+極性ベクトルは素の成分の組なので、そのまま写る。軸性ベクトルは外積で作られ、外積の向きは系の利き手で決まるため、`det = −1` の写像では符号が 1 つ余分に付く。言い換えると、右手則で反時計回りの同じ回転が Unity の左手則では時計回りになるので、同じ運動を表すには軸を反転させる必要がある。
+
+### 7.4 姿勢クォータニオン
+
+2 つの回転行列が一致する条件 `R_unity = M·R(q_nb)·Mᵀ` で決まる。
+
+```
+q_nb(w,x,y,z) → Unity(x,y,z,w) = (−q.y,  q.z, −q.x,  q.w)
+Unity(x,y,z,w) → q_nb(w,x,y,z) = ( u.w, −u.z, −u.x,  u.y)
+```
+
+Unity の左手則と `det = −1` の反転が打ち消し合うため、得られた Unity のクォータニオンは通常の Hamilton の式でそのまま読める（余分な共役は不要）。
+
+**検算（符号の具体例）:**
+
+| 事例 | StampFly | Unity |
+|------|----------|-------|
+| 右ヨー（機首が右） | `q_nb = (cos, 0, 0, sin)` | +Y まわりの回転 |
+| 右ロール | 機体レート `+ωx`（FRD 前） | `−Z` まわり |
+| 機首上げ | 機体レート `+ωy`（FRD 右） | `−X` まわり |
+| 右ヨーのレート | 機体レート `+ωz`（FRD 下） | `+Y` まわり |
+| 静止して接地 | 加速度計 `[0, 0, −9.81]`（FRD） | `[0, +9.81, 0]`（上向き） |
+
+### 7.5 C# 側との取り決め
+
+C ABI は Unity の生の規約のまま双方向に受け渡し、**変換は `frames_unity.hpp` だけで行う**。C# 側はこれを再実装しない（「座標変換は 1 か所」という SILS の方針。§1 を参照）。
+
+- `Rigidbody` の値（`position`・`rotation`・`linearVelocity`・`angularVelocity`）をそのまま渡す。符号反転も軸の入替もしない
+- `Rigidbody.angularVelocity` は**世界系のまま**渡す。あらかじめ機体系へ直さない
+- 力とトルクは Unity の機体系で返るので、`AddRelativeForce` ／ `AddRelativeTorque` にそのまま渡せる
+- 空間ファイルは ENU（x=東・y=北・z=上）のまま。空間ファイルと Unity の変換だけが C# 側に残る座標の仕事
+
+### 7.6 検証
+
+単体試験 `simulator/sils/frames/frames_unity_test.cpp`。依存は `frames_unity.hpp` と `sf_math` だけで MuJoCo を含まないため、単体でビルドして実行できる。
+
+```bash
+/usr/bin/clang++ -std=c++17 -O2 \
+  -I simulator/sils/frames \
+  -I firmware/vehicle/components/sf_math/include \
+  -o /tmp/frames_unity_test simulator/sils/frames/frames_unity_test.cpp
+/tmp/frames_unity_test
+```
+
+確かめている項目:
+
+1. 軸の対応そのもの（北→+Z、東→+X、下→−Y）と、極性・軸性それぞれの往復変換
+2. 乱数でなく**固定の 7 姿勢**について、回転行列での対応 `M·R(q_nb)·Mᵀ` とクォータニオンの対応式が一致すること
+3. 符号の具体例（§7.4 の表）
+4. 静止して接地しているときの加速度計の測定値が Unity で `[0,+9.81,0]`、FRD で `[0,0,−9.81]` になること
+5. 世界系の角速度を `q_nb` で機体系へ直す経路の往復と、大きさが保たれること
+
+---
+
 <a id="english"></a>
 
 ## 1. About This Document
@@ -227,3 +324,98 @@ Canonical unit tests (Japanese §5): level rest accel=[0,0,−9.81] (driver-norm
 ## 6. Implementation
 
 `simulator/sils/frames/{frames.hpp,frames.cpp}` (shares `sf_math` Vec3/Quat), tests in `frames_test.cpp`. No coordinate transform anywhere else in the SILS.
+
+## 7. Unity Simulator Mapping
+
+The frame conversion used by the Unity simulator (`docs/plans/unity-simulator.md`). It is a different map from the MuJoCo one (§2–§6); the implementation is `simulator/sils/frames/frames_unity.hpp` (header-only, no MuJoCo dependency).
+
+### 7.1 Unity's Conventions
+
+| Item | Convention |
+|------|------------|
+| Handedness | **Left-handed** (both MuJoCo and StampFly are right-handed) |
+| Up axis | **Y** |
+| Units | m |
+| Quaternion | component order **x, y, z, w** (`sf::math::Quat` uses w, x, y, z) |
+| `Rigidbody.angularVelocity` | angular velocity in the **world** frame, not the body frame |
+
+### 7.2 Axis Correspondence
+
+The world pair (NED ↔ Unity world) and the body pair (FRD ↔ Unity body) use the same single correspondence.
+
+```
+  north / forward  →  Unity +Z
+  east  / right    →  Unity +X
+  down             →  Unity −Y
+```
+
+In components, the matrix taking StampFly's (n, e, d) to Unity's components is:
+
+```
+M = [[0, 1,  0],
+     [0, 0, −1],
+     [1, 0,  0]]           u = M·v,   v = Mᵀ·u
+```
+
+`M` is orthogonal (`M·Mᵀ = I`) but **`det(M) = −1`**: it is a **handedness flip**, not a rotation. This is the decisive difference from the MuJoCo maps of §3.1–§3.2, which have `det = +1` (proper rotations).
+
+### 7.3 Why Polar and Axial Vectors Get Different Signs
+
+Because `det(M) = −1`, the treatment splits by the kind of quantity.
+
+| Kind | Examples | To Unity | From Unity |
+|------|----------|----------|------------|
+| **Polar vector** | position, velocity, force, accelerometer reading | `u = M·v = (v.y, −v.z, v.x)` | `v = Mᵀ·u = (u.z, u.x, −u.y)` |
+| **Axial vector** | angular velocity, torque | `u = det(M)·M·v = (−w.y, w.z, −w.x)` | `v = det(M)·Mᵀ·u = (−u.z, −u.x, u.y)` |
+
+Polar vectors are plain component tuples, so they transform straight through. Axial vectors are built from a cross product, and a cross product takes its direction from the handedness of the frame, so under a `det = −1` map it gains one extra sign. Equivalently: the same physical spin that is counter-clockwise under the right-hand rule is clockwise under Unity's left-hand rule, so its axis must be flipped to describe the same motion.
+
+### 7.4 Attitude Quaternion
+
+Fixed by requiring the two rotation matrices to agree: `R_unity = M·R(q_nb)·Mᵀ`.
+
+```
+q_nb(w,x,y,z) → Unity(x,y,z,w) = (−q.y,  q.z, −q.x,  q.w)
+Unity(x,y,z,w) → q_nb(w,x,y,z) = ( u.w, −u.z, −u.x,  u.y)
+```
+
+Because Unity's left-hand rule and the `det = −1` flip cancel each other, the resulting Unity quaternion is read with the ordinary Hamilton formula — no extra conjugation.
+
+**Sign checks:**
+
+| Case | StampFly | Unity |
+|------|----------|-------|
+| Right yaw (nose right) | `q_nb = (cos, 0, 0, sin)` | rotation about +Y |
+| Right roll | body rate `+ωx` (FRD forward) | about `−Z` |
+| Nose up | body rate `+ωy` (FRD right) | about `−X` |
+| Right yaw rate | body rate `+ωz` (FRD down) | about `+Y` |
+| At rest on the ground | accelerometer `[0, 0, −9.81]` (FRD) | `[0, +9.81, 0]` (pointing up) |
+
+### 7.5 Contract with the C# Side
+
+The C ABI passes Unity's raw conventions in both directions, and **all conversion happens in `frames_unity.hpp`**. The C# side does not reimplement any of it (the SILS rule that frame conversion lives in one place; see §1).
+
+- Pass `Rigidbody` values verbatim (`position`, `rotation`, `linearVelocity`, `angularVelocity`). No sign flips, no axis swaps.
+- Pass `Rigidbody.angularVelocity` **as the world frame**; do not pre-rotate it into the body frame.
+- Force and torque come back in Unity's body frame, ready for `AddRelativeForce` / `AddRelativeTorque`.
+- The world file stays in ENU (x east, y north, z up). Converting between the world file and Unity is the only frame work left on the C# side.
+
+### 7.6 Verification
+
+Unit test `simulator/sils/frames/frames_unity_test.cpp`. It depends only on `frames_unity.hpp` and `sf_math` — no MuJoCo — so it builds and runs standalone.
+
+```bash
+/usr/bin/clang++ -std=c++17 -O2 \
+  -I simulator/sils/frames \
+  -I firmware/vehicle/components/sf_math/include \
+  -o /tmp/frames_unity_test simulator/sils/frames/frames_unity_test.cpp
+/tmp/frames_unity_test
+```
+
+What it checks:
+
+1. The axis correspondence itself (north→+Z, east→+X, down→−Y) and the round trip for both the polar and the axial map.
+2. For **7 fixed attitudes** (not random), that the rotation-matrix relation `M·R(q_nb)·Mᵀ` agrees with the closed-form quaternion mapping.
+3. The sign cases of §7.4.
+4. That the accelerometer reading at rest on the ground is `[0,+9.81,0]` in Unity and `[0,0,−9.81]` in FRD.
+5. The world-angular-velocity route through `q_nb` into body rates — round trip and magnitude preservation.

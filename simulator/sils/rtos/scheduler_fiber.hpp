@@ -171,7 +171,18 @@ public:
     // ホスト側が自前の物理ステップを挟めるようにするため。次の起床が target_us を
     // 超える場合は、時計を target_us にして on_advance をそこで呼んでから戻る —
     // よってホストは常に、要求した時刻ちょうどを観測する。
-    void run_until(int64_t target_us);
+    //
+    // Returns false if a task failed to yield the run-token, matching the thread
+    // version's signature so a host compiles against either unchanged. With one
+    // flow of control a fiber cannot fail to hand it back (the switch itself is
+    // the hand-off), so this version always returns true — the value exists for
+    // the shared signature, not because this implementation can fail.
+    // タスクが実行トークンを返さなかったときは false を返す。ホストがどちらの版でも
+    // 無改変でコンパイルできるよう、スレッド版と同じ signature にしてある。制御の
+    // 流れが 1 本の fiber では受け渡しに失敗しようがない（切り替えそのものが受け渡し）
+    // ため、この版は常に true を返す。戻り値は signature を揃えるためのもので、
+    // この実装が失敗し得るからではない。
+    bool run_until(int64_t target_us);
 
     // Free every task's stack. After this the Scheduler must not be reused.
     // 各タスクのスタックを解放する。以後この Scheduler は再利用できない。
@@ -223,7 +234,14 @@ private:
     std::vector<Task*> tasks_;
     Task* running_ = nullptr;
     int64_t now_us_ = 0;
-    bool started_ = false;               // on_advance(0) already delivered
+    // The entry-time on_advance has already been delivered, so a repeated
+    // run_until() does not deliver it again at the same virtual time. run()
+    // delivers it unconditionally (matching the thread version) and then sets
+    // this, so a run_until() after a run() does not repeat it either.
+    // 入口での on_advance を配り終えたことを示す。run_until() を繰り返し呼んでも
+    // 同じ仮想時刻で二重に配らないため。run() は（スレッド版に合わせて）無条件に
+    // 配ってからこれを立てるので、run() の後の run_until() でも重複しない。
+    bool started_ = false;
     std::function<void(int64_t)> on_advance_;
     std::vector<TraceEvent> trace_;
     std::vector<PeriodicTimer> timers_;
