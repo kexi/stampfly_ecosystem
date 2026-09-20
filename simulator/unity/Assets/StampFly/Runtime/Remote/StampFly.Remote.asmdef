@@ -1,8 +1,9 @@
 {
-    "name": "StampFly.World",
-    "rootNamespace": "StampFly.World",
+    "name": "StampFly.Remote",
+    "rootNamespace": "StampFly.Remote",
     "references": [
-        "StampFly.Core"
+        "StampFly.Core",
+        "StampFly.World"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
@@ -10,7 +11,9 @@
     "overrideReferences": false,
     "precompiledReferences": [],
     "autoReferenced": true,
-    "defineConstraints": [],
+    "defineConstraints": [
+        "UNITY_EDITOR || DEVELOPMENT_BUILD || STAMPFLY_REMOTE"
+    ],
     "versionDefines": [],
     "noEngineReferences": false
 }

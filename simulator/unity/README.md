@@ -318,6 +318,193 @@ PlayMode（38 件。うち 10 件がこの節のもの、28 件が §3 の PhysX
 レイが抜け枠には当たること、`pad` と床から `flow_quality` が引けること、前の空間を片付けて
 から次を読むと古い障害物が残らないことを見る。
 
+## 8. ログと端末からの操作（`StampFly.Core` ／ `StampFly.Remote`）
+
+### この 2 つのアセンブリについて
+
+ページが出すログの形と、端末から届く命令の受け口を持つ。基準は
+[`docs/commands/sf-unity.md`](../../docs/commands/sf-unity.md) §8（ページ側が守る約束）と
+`AGENTS.md` の「Logs」で、ここにはその実装だけを書く。
+
+```
+Assets/StampFly/
+├── Runtime/Core/                     StampFly.Core アセンブリ（他のどれも参照しない）
+│   ├── LogContract.cs                IStructuredLog・LogLevel・LogSources（`src` の語彙）
+│   ├── LogJson.cs                    1 行を JSON にする（エスケープ・鍵の並び）
+│   ├── StructuredLog.cs              run_id・cmd_id の範囲・仮想時刻・輪状バッファ・出力先
+│   ├── LogSinks.cs                   コンソール／束ね／空の出力先と、識別子の発行
+│   ├── SimCommandRegistry.cs         命令の登録簿と、誰にも依存しない命令
+│   ├── SimCommandArgs.cs             引数の JSON の読み手（JsonUtility は辞書を扱えない）
+│   └── FirmwareLogPump.cs            SfuLogRecord 1 件を `src: "fw"` の行にする
+├── Runtime/Remote/                   StampFly.Remote アセンブリ（開発用ビルドだけ）
+│   ├── RemoteBridge.cs               場面に 1 つ置く。ログ・登録簿・URL の引数を持つ
+│   ├── RemoteNative.cs               .jslib との継ぎ目（WebGL 以外では何もしない）
+│   ├── RemoteLogSink.cs              出来上がった行を .jslib へ渡す
+│   ├── EditorFileLogSink.cs          エディタの再生の行き先（下の「エディタの再生」）
+│   ├── PendingCommand.cs             届いた命令 1 つ（cmd_id・command・args）
+│   └── WorldCommands.cs              world.list ／ world.load の薄い登録
+├── Plugins/WebGL/RemoteBridge.jslib  /api/hello・/api/cmd/next・/api/cmd/result・/api/log
+└── Editor/Cli/SimCommandCli.cs       `unity command stampfly_cmd`（同じ登録簿へ）
+```
+
+`StampFly.Remote` の `defineConstraints` は `UNITY_EDITOR || DEVELOPMENT_BUILD ||
+STAMPFLY_REMOTE` で、配布用ビルドにはアセンブリごと入らない（計画 §4「中継の受け口は
+開発用ビルドだけに入れる」）。`StampFly.Core` には制約を付けない。ログの形は配布用
+ビルドでも要るためである。
+
+### 3 つの経路
+
+| 経路 | 入口 | 使う場面 |
+|------|------|---------|
+| 端末 | `sf unity cmd <命令>` → サーバ → `/api/cmd/next` → `RemoteBridge` | ローカル配信のページ |
+| ページ | `window.stampfly.command({command, args})`（Promise を返す） | ブラウザの検証、公開ページ |
+| URL の引数 | `?world=gate_course` ／ `?log=debug` → 起動時の命令列 | 公開サイトと共有のリンク |
+| エディタ | `unity command stampfly_cmd --command … --args '{…}'` | 再生中のエディタ |
+
+4 つとも同じ `SimCommandRegistry` を通る。答えるのが同じ処理だから、経路が違っても結果が
+同じになる（計画 §4）。
+
+### 命令の登録のしかた（`SimLoop` の担当へ）
+
+登録簿は実体を持たない。`sim.*`・`vehicle.*`・`rc.*`・`param.*`・`plant.*` は刻みの輪の
+担当が、`world.*`・`obstacle.*` は空間の担当が、それぞれ自分で登録する。
+
+```csharp
+private void Start()
+{
+    RemoteBridge bridge = RemoteBridge.Instance;
+    if (bridge == null) { return; }   // 配布用ビルドには橋が無い
+
+    bridge.Commands.Register("sim.pause", args =>
+    {
+        paused = args.Bool("paused", true);
+        return SimCommandResult.Success("{\"paused\":" + (paused ? "true" : "false") + "}");
+    }, "Pause or resume the simulation");
+}
+
+private void OnDestroy()
+{
+    RemoteBridge.Instance?.Commands.Unregister("sim.pause");
+}
+```
+
+| 事項 | 決まり |
+|------|--------|
+| 登録の時機 | `Awake` でも `Start` でもよい。`RemoteBridge` は `[DefaultExecutionOrder(-10000)]` で、ログと登録簿は誰の `Awake` より先に出来ている |
+| 二重登録 | 例外になる（後から登録した方が黙って勝つことを防ぐ）。場面を読み直す部品は `OnDestroy` で `Unregister` する |
+| 引数 | `args.String` ／ `Double` ／ `Int` ／ `Bool`。`--arg key=value`（文字列）と `--json`（本物の JSON）のどちらで来ても同じように読める |
+| 戻り値 | `SimCommandResult.Success(json)` ／ `Failure(reason)`。JSON は自分で組み立てる（`LogJson.Quote` が文字列を安全に引用する） |
+| 例外 | 投げても橋が受け止めて失敗にする。ページの命令の輪は止まらない |
+
+### `sim_us` の供給のしかた（`SimLoop` の担当へ）
+
+刻みの輪が時計を差し込むまで、`sim_us`・`tick`・`frame` は行に付かない（`AGENTS.md` は
+「相関の鍵は当てはまるときだけ入れる」と定める）。差し込みは 1 回だけでよい。
+
+```csharp
+private void Start()
+{
+    RemoteBridge.Instance?.Log.SetClockSource(() => new SimulationClock
+    {
+        SimulationMicroseconds = simulationMicroseconds,
+        Tick = tickCount,
+        Frame = Time.frameCount,
+    });
+}
+```
+
+毎行この関数が呼ばれるので、**フィールドを読むだけの軽いものにする**。ここで計算しない。
+
+### ファームウェアのログの渡しかた（`IFirmware` の担当へ）
+
+`sfu_log_read_record` が返す記録を、文字列にする前の形のまま渡す。`FirmwareLogPump` が
+`src: "fw"`・`event: "fw.log"`・`tag`・`sim_us`・`level`・`msg` の行にする。
+
+```csharp
+FirmwareLogPump pump = RemoteBridge.Instance.FirmwareLog;
+while (firmware.TryReadLogRecord(out FirmwareLogRecord record))
+{
+    pump.Pump(record);                      // 記録自身の sim_us と tag が残る
+}
+pump.NoteDropped(firmware.DroppedLogRecords());   // 累計を渡す。増分だけが 1 行になる
+pump.ResetForNewBoot();                           // 電源の入れ直しのたびに 1 回
+```
+
+レベルの数値は `sfu_api.h` の `SFU_LOG_*` と同じで、`FirmwareLogLevels.ToLogLevel` が
+`AGENTS.md` の 4 段へ写す（`verbose` は `debug` に合わせる。5 つ目の段を作るとサーバに
+拒否されるため）。
+
+### ログの行き先
+
+| どこで動くか | 行き先 | 取り出し方 |
+|-------------|--------|-----------|
+| ローカル配信のページ | 数十行または数百ミリ秒ごとに `POST /api/log` → `logs/unity/<run_id>.jsonl` | `sf unity logs --cmd <id>` |
+| 公開ページ | 送らない。ページの中に直近 2000 行を保持する | `window.stampfly.logs()` ／ `window.stampfly.download()` |
+| エディタの再生 | `simulator/unity/Logs/stampfly/<run_id>.jsonl` とコンソール（git 管理外） | `jq -c 'select(.src=="fw")' simulator/unity/Logs/stampfly/<run_id>.jsonl` |
+
+タブを閉じるときは `navigator.sendBeacon` で残りを送る。送信に失敗したまとまりは待ち行列の
+先頭へ戻して再送し、待ち行列が上限（4000 行）を超えたときだけ古い行から捨て、捨てた数を
+`log.dropped` の 1 行で報告する。
+
+### `cmd_id` の範囲
+
+1 つの命令の処理中に出た行すべてに、その命令の `cmd_id` が付く。付けるのは橋で、
+`using (log.BeginCommand(cmdId)) { … }` の中で処理を呼ぶ。範囲は入れ子にでき、
+`using` を抜ければ外へ漏れない。これがあるので、`sf unity logs --cmd <id>` が CLI・
+サーバ・ページの行を 1 つの流れとして時刻順に並べられる。
+
+### 試験
+
+| 置き場 | 見ること |
+|--------|---------|
+| `Tests/EditMode/StructuredLogTest.cs` | 必須の鍵、`cmd_id` の範囲（入れ子・漏れ・順序違いの片付け）、エスケープと制御文字、`NaN` の引用、レベルの下限、輪状バッファの溢れ、仮想時刻の供給、`run_id` の採用、失った行の報告、ファームの記録の変換、識別子の形 |
+| `Tests/EditMode/SimCommandRegistryTest.cs` | 未登録・重複・例外、`help` ／ `log.level`、引数が `--arg` と `--json` のどちらでも同じに読めること、エスケープ、入れ子の値、読めない中身 |
+| `Tests/EditMode/LogSampleTest.cs` | 各種の行を 1 行ずつ `tests/fixtures/unity_page_log_sample.jsonl` へ作り直し、コミット済みのものと一致すること |
+| `tests/commands/test_unity_page_log.py` | その見本を `lib/sfcli/utils/jsonl_log.py` の `validate_record` と本物の `POST /api/log` へ通す（**Unity 無しで回る**。CI 側の関門はこちら） |
+
+C# と Python は同じ処理の中では出会えないので、ファイルで出会わせてある。形式を変えたら
+EditMode の試験が見本を作り直して不合格になるので、差分を見てコミットする。
+
+### 端から端までの確認（2026-09-20 実施）
+
+橋と空間の読み込みだけを持つ場面をビルドして確かめる。企画の場面と Build Settings は
+刻みの輪の担当のものなので触らない（`Editor/Cli/RemoteCheckBuilder.cs` が一時の場面を
+自分で作り、ビルド後に消す）。
+
+```bash
+unity build . --target WebGL \
+  --execute-method StampFly.Editor.Cli.RemoteCheckBuilder.Build \
+  -o /tmp/webgl-check --non-interactive --no-tail
+PYTHONPATH=lib python3 -m sfcli unity serve --dir /tmp/webgl-check --port <空きポート> --no-browser
+# Chrome で開いたあと、別の端末から
+PYTHONPATH=lib python3 -m sfcli unity cmd sim.ping
+PYTHONPATH=lib python3 -m sfcli unity cmd world.load --arg name=gate_course
+PYTHONPATH=lib python3 -m sfcli unity logs --cmd <上で返った cmd_id>
+```
+
+`world.load` の `cmd_id` で引くと、CLI・サーバ・**ページ**の行が時刻順に 1 つの流れに並ぶ。
+
+```
+12:25:52.168Z info  cli    cmd.issued     issued world.load
+12:25:52.178Z info  server cmd.received   accepted world.load from the CLI
+12:25:52.178Z info  server cmd.forwarded  handed world.load to the page
+12:25:52.207Z info  world  world.loaded   loaded world 'gate_course' with 7 obstacles
+12:25:52.209Z info  server cmd.completed  page returned a result
+12:25:52.209Z info  cli    cmd.result     command succeeded
+```
+
+確かめたこと: `/api/hello` でサーバの `run_id` を採用すること（`remote.status` が
+`mode: local`）、`world.load` が 7 個の障害物を生成すること、`window.stampfly.command`
+が同じ処理へ届くこと（`world.list` が `current: gate_course` を返す）、未登録の命令が
+理由付きで断られること、`log.level debug` が即座に効くこと、`window.stampfly.logs()` が
+行を返すこと、タブを閉じるときの `navigator.sendBeacon` で残りが届くこと、そして
+**サーバに拒否された行が 1 つも無いこと**（`sf unity logs --event log.rejected` が空）。
+
+**自動操作のタブは背面扱いで `requestAnimationFrame` が来ず、Unity が起動しない**
+（計画 §9 (e)）。検証では、Unity のローダより前に `requestAnimationFrame` を Worker の
+タイマーで駆動する差し替えを入れたページから読み込んだ。人が前面のタブで開く分には
+要らない。
+
 ---
 
 <a id="english"></a>

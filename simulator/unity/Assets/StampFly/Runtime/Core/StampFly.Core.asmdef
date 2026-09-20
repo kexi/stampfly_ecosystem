@@ -1,9 +1,7 @@
 {
-    "name": "StampFly.World",
-    "rootNamespace": "StampFly.World",
-    "references": [
-        "StampFly.Core"
-    ],
+    "name": "StampFly.Core",
+    "rootNamespace": "StampFly.Core",
+    "references": [],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
