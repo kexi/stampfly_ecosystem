@@ -5,8 +5,8 @@
   "frame": "ENU",
   "name": "empty_room",
   "description": {
-    "ja": "何もない部屋。基本の操縦とホバリングを確かめるための、もっとも素直な空間。",
-    "en": "An empty room: the plainest world, for basic piloting and hovering."
+    "ja": "何もない部屋。基本の操縦とホバリングを確かめるための、もっとも素直な空間。出発点の機首を北東（yaw 45）にしてあるのは、±90 度だけでは座標変換の符号の誤りが隠れるためである。",
+    "en": "An empty room: the plainest world, for basic piloting and hovering. It spawns facing north-east (yaw 45) because a heading of only +/-90 hides sign errors in the frame conversion."
   },
   "room": { "size": [6.0, 6.0, 3.0], "walls": true, "ceiling": true },
   "floor": {
@@ -16,6 +16,6 @@
     "flow_quality": 0.9
   },
   "light": "indoor",
-  "spawn": { "position": [0.0, 0.0, 0.05], "yaw_deg": 90.0 },
+  "spawn": { "position": [0.0, 0.0, 0.05], "yaw_deg": 45.0 },
   "obstacles": []
 }

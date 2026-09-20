@@ -419,7 +419,9 @@ Unity へ読み込むときの変換は、y と z を入れ替えるだけでよ
   Unity.x = ENU.x,   Unity.y = ENU.z,   Unity.z = ENU.y
 ```
 
-ここで `W` は ENU→NED（§3 の逆向き）、`M` は NED→Unity（`coordinate_frames.md` §7.2、`frames_unity.hpp` が実装）である。`frames_unity.hpp` は **NED/FRD と Unity** の対応であって空間ファイルの ENU とは別の写像なので、混同しないこと。回転の符号と `spawn.yaw_deg` の −90 度のずれは `Schemas/README.md` §6.2・§6.2.1 にある。
+ここで `W` は ENU→NED（§3 の逆向き）、`M` は NED→Unity（`coordinate_frames.md` §7.2、`frames_unity.hpp` が実装）である。`frames_unity.hpp` は **NED/FRD と Unity** の対応であって空間ファイルの ENU とは別の写像なので、混同しないこと。
+
+回転は `Quaternion.AngleAxis` に**負の角**と正の軸を渡して組み立てる（`AngleAxis(−yaw, up) · AngleAxis(−pitch, forward) · AngleAxis(−roll, right)`）。Unity の `AngleAxis` は渡した軸について右ねじに回るので、ENU の正の角は Unity では負号が付く。方位は `spawn.yaw_deg` の定義（0 = 東）と機体モデルの前方（Unity +z＝ENU の北）が 90 度ずれるため `AngleAxis(90 − yaw_deg, up)` になる。詳細と検算は `Schemas/README.md` §6.2・§6.2.1 にある（2026-09-20 に符号を訂正した。それ以前の記述は逆だった）。
 
 空間ファイルの検査は `python3 tools/unity_world/validate.py <file>`（`sf unity world validate`）で行う。
 
@@ -882,7 +884,9 @@ Converting into Unity is just a swap of y and z (`U = M . W`, `det(U) = -1`):
   Unity.x = ENU.x,   Unity.y = ENU.z,   Unity.z = ENU.y
 ```
 
-Here `W` is ENU→NED (the inverse direction of §3) and `M` is NED→Unity (`coordinate_frames.md` §7.2, implemented by `frames_unity.hpp`). Note that `frames_unity.hpp` maps **NED/FRD to Unity**, which is a different map from the world file's ENU — do not conflate the two. Rotation signs and the -90 degree offset for `spawn.yaw_deg` are covered in `Schemas/README.md` §6.2 and §6.2.1.
+Here `W` is ENU→NED (the inverse direction of §3) and `M` is NED→Unity (`coordinate_frames.md` §7.2, implemented by `frames_unity.hpp`). Note that `frames_unity.hpp` maps **NED/FRD to Unity**, which is a different map from the world file's ENU — do not conflate the two.
+
+Rotation is built by passing **negative angles** and positive axes to `Quaternion.AngleAxis` (`AngleAxis(-yaw, up) . AngleAxis(-pitch, forward) . AngleAxis(-roll, right)`): Unity's `AngleAxis` turns right-handed about the axis it is given, so a positive ENU angle takes a minus sign in Unity. A heading becomes `AngleAxis(90 - yaw_deg, up)`, because `spawn.yaw_deg` is defined with 0 = east while the vehicle model's forward (Unity +z) is ENU north. The details and the checks are in `Schemas/README.md` §6.2 and §6.2.1 (the signs were corrected on 2026-09-20; the earlier wording had them backwards).
 
 World files are checked with `python3 tools/unity_world/validate.py <file>` (`sf unity world validate`).
 

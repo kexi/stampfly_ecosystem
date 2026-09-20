@@ -276,20 +276,28 @@ TextAsset の参照で持つので、作り直さないと WebGL のビルドか
 置き場を `Editor/Build/` ではなく `Editor/WorldTools/` にしてあるのは、§2 の
 `Editor/Builders/` と同じ理由（`.gitignore` の `build/` が大文字小文字を区別しない）である。
 
-### 仕様（`Schemas/README.md`）との食い違い
+### 仕様（`Schemas/README.md`）の訂正（2026-09-20）
 
-実装しながら数値で確かめた結果、仕様の §6.2 と §6.2.1 に誤りが見つかった。**実装は測定に
-従っており、仕様の記述には従っていない。** 詳細は `WorldFrames.cs` のコメントに書いてある。
+実装しながら Unity で実測した結果、仕様の §6.2・§6.2.1 に誤りが見つかったため、**仕様の
+ほうを訂正した**。実装と仕様は現在一致している。経緯は `Schemas/README.md` の各節の
+「訂正」の注に残してある。要点は次の 2 つ。
 
-| 箇所 | 仕様の記述 | 測定した事実 |
-|------|-----------|-------------|
-| §6.2 | 「`Quaternion.AngleAxis` の角に負号を付けてはならない」 | 逆で、**負号が要る**。`AngleAxis(90, Vector3.up)` は Unity の forward を right へ送る（＝ENU の北を東へ）。ENU で上から見れば時計回りなので yaw は −90 であり、+90 ではない。負号を付けると `R = Rz·Ry·Rx` との誤差が 0.0、付けないと 2.0（完全な鏡像）になる |
-| §6.2.1 | `SpawnYawToUnity` は `AngleAxis(yawDeg - 90, up)` | `AngleAxis(90 - yawDeg, up)` が正しい。仕様の式では `yaw_deg = 0` が**西**を向く（§6.2.1 自身の検算の表は東と書いている）。yaw が 90 と −90 では両者が一致し、同梱 6 空間の出発点はすべてそこなので、この誤りは同梱の空間では表に出ない |
+| 箇所 | 誤っていた記述 | 訂正後 |
+|------|--------------|--------|
+| §6.2 | 「`AngleAxis` の角に負号を付けてはならない」 | 負号が**要る**。`AngleAxis` は渡した軸について右ねじに回るので、ENU の正の角は Unity では負号が付く。§6.2 の表（−x／−z／−y）は当初から正しく、矛盾していたのは説明文とコード例のほうだった |
+| §6.2.1 | `AngleAxis(yawDeg − 90, up)` | `AngleAxis(90 − yawDeg, up)`。誤った式では `yaw_deg = 0` が**西**を向き、同じ節の検算の表と矛盾していた |
 
-`ring` の外形についても 1 点補足する。検査（`tools/unity_world/validate.py`）は輪を半径
-`内径/2 + thickness` の円で囲むが、その円に多角形を**外接**させると角が境界からはみ出す。
-そこで棒を外円の弦の長さに切って**内接**させてある。こうすると軸平行な外形が分割数に
-よらず検査と一致し、穴も塞がらない（同梱の 3 つの輪で確認済み）。
+§6.2.1 の誤りが今まで見つからなかったのは、**同梱 6 空間の出発点がすべて `yaw_deg` ±90 で、
+その 2 つの値では両式が同じ結果になる**ためである。同じ隠れ方が二度と起きないよう、
+(a) §6.2.1 の検算の表に ±90 以外（0・45・180・−135）を加え、EditMode 試験
+`SpawnYawPointsTheVehicleWhereTheFormatSays` が 6 件すべてを確かめる、(b) 誤ったほうの式を
+名指しして落とす `SpawnYawIsNotTheMirroredExpression` を置く、(c) `empty_room` の
+`spawn.yaw_deg` を 45 に変え（何もない 6 m 四方の部屋なのでねらいを損なわない）、
+PlayMode 試験 `AnOffAxisSpawnHeadingSurvivesTheWholeLoad` がファイルから生成まで端から端まで
+確かめる、の 3 つを入れた。
+
+`ring` の外形（外円の弦に切って内接させる）と `tunnel` に床を作らないことは、仕様 §3 の
+「注意点」に明記した。
 
 ### 試験
 
@@ -599,23 +607,28 @@ The folder is `Editor/WorldTools/` rather than `Editor/Build/` for the same reas
 `Editor/Builders/` in section 2: the `.gitignore` rule `build/` is matched
 case-insensitively.
 
-### Where the Specification (`Schemas/README.md`) Is Wrong
+### Corrections to the Specification (`Schemas/README.md`), 2026-09-20
 
-Checking the numbers while implementing turned up two errors in the specification's §6.2
-and §6.2.1. **The implementation follows the measurement, not the specification's wording.**
-The details are in the comments in `WorldFrames.cs`.
+Measuring in Unity while implementing turned up two errors in the specification's §6.2 and
+§6.2.1, so **the specification was corrected**. The implementation and the specification now
+agree; each section carries a "Correction" note recording what happened. The two points:
 
-| Place | What the specification says | What was measured |
-|-------|------------------------------|-------------------|
-| §6.2 | "Do not negate the angle when using `Quaternion.AngleAxis`" | The opposite: the negation **is** required. `AngleAxis(90, Vector3.up)` sends Unity forward to right, i.e. ENU north to east — clockwise seen from above in ENU, so a yaw of -90, not +90. With the negation the error against `R = Rz·Ry·Rx` is 0.0; without it, 2.0, an exact mirror |
-| §6.2.1 | `SpawnYawToUnity` is `AngleAxis(yawDeg - 90, up)` | `AngleAxis(90 - yawDeg, up)` is correct. Under the specification's form `yaw_deg = 0` faces **west**, while §6.2.1's own check table says east. The two forms agree at yaw 90 and -90, which is every shipped world's spawn, so no shipped world reveals the error |
+| Place | What it used to say | Corrected to |
+|-------|---------------------|--------------|
+| §6.2 | "Do not negate the angle when using `AngleAxis`" | The negation **is** required: `AngleAxis` turns right-handed about the axis it is given, so a positive ENU angle takes a minus sign in Unity. §6.2's table (-x / -z / -y) was right from the start; the prose and the code example were what contradicted it |
+| §6.2.1 | `AngleAxis(yawDeg - 90, up)` | `AngleAxis(90 - yawDeg, up)`. Under the old form `yaw_deg = 0` faced **west**, contradicting that section's own check table |
 
-One note on a `ring`'s extent as well. The checker (`tools/unity_world/validate.py`) bounds
-a ring by the circle of radius `innerDiameter/2 + thickness`, but circumscribing a polygon
-about that circle pushes its corners past the bound. The bars are therefore cut to the chord
-of the outer circle so the polygon is **inscribed** in it. The axis-aligned extent then
-matches the checker for any segment count and the hole stays clear (verified on all three
-shipped rings).
+§6.2.1's error went unnoticed because **every shipped world spawns at `yaw_deg` ±90, and the
+two expressions agree at exactly those two values**. To keep that from hiding anything again:
+(a) §6.2.1's check table now includes headings away from ±90 (0, 45, 180, -135) and the
+EditMode test `SpawnYawPointsTheVehicleWhereTheFormatSays` checks all six; (b)
+`SpawnYawIsNotTheMirroredExpression` names the wrong expression and fails on it; and (c)
+`empty_room`'s `spawn.yaw_deg` is now 45 — harmless in an empty 6 m room — with the PlayMode
+test `AnOffAxisSpawnHeadingSurvivesTheWholeLoad` checking it from the file through to the
+built scene.
+
+A `ring`'s extent (bars cut to the outer circle's chord so the polygon is inscribed) and a
+`tunnel` having no floor are now stated in the specification's §3 "Points to note".
 
 ### Tests
 

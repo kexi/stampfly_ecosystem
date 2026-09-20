@@ -175,16 +175,30 @@ namespace StampFly.Tests.EditMode
 
         [Test]
         [TestCase(0.0f, 1.0f, 0.0f)]
+        [TestCase(45.0f, 0.70710678f, 0.70710678f)]
         [TestCase(90.0f, 0.0f, 1.0f)]
         [TestCase(180.0f, -1.0f, 0.0f)]
         [TestCase(-90.0f, 0.0f, -1.0f)]
+        [TestCase(-135.0f, -0.70710678f, -0.70710678f)]
         public void SpawnYawPointsTheVehicleWhereTheFormatSays(
             float yawDeg, float expectEast, float expectNorth)
         {
             // README §6.2.1's own check table: yaw_deg 0 faces east, 90 north,
-            // 180 west, -90 south. The vehicle model's forward is Unity +z.
+            // 180 west, -90 south, with 45 and -135 added off the axes.
+            //
+            // The cases away from +/-90 are the point of this test. The
+            // specification's original expression, AngleAxis(yaw - 90, up),
+            // agrees with the correct one at exactly yaw = 90 and yaw = -90 —
+            // and every shipped world spawns at one of those two — so an error
+            // there stayed hidden until an off-axis heading was tried.
+            //
             // README §6.2.1 の検算の表。yaw_deg は 0 が東、90 が北、180 が西、
-            // −90 が南。機体モデルの前方は Unity の +z。
+            // −90 が南。これに軸から外れた 45 と −135 を足してある。
+            //
+            // ±90 から離れた場合がこの試験の要点である。仕様が当初示していた
+            // AngleAxis(yaw − 90, up) は、yaw が 90 と −90 のときだけ正しい式と
+            // 一致する。同梱のどの空間もその 2 つの値で出発するので、軸から
+            // 外れた方位を試すまで誤りが隠れていた。
             Quaternion rotation = WorldFrames.SpawnYawToUnity(yawDeg);
 
             float[] forwardEnu = WorldFrames.UnityToEnu(rotation * Vector3.forward);
@@ -217,6 +231,36 @@ namespace StampFly.Tests.EditMode
             Quaternion rotation = WorldFrames.SpawnYawToUnity(0.0f);
 
             Assert.That(rotation.eulerAngles.y, Is.EqualTo(90.0f).Within(Tolerance));
+        }
+
+        [Test]
+        public void SpawnYawIsNotTheMirroredExpression()
+        {
+            // The specification's original form, AngleAxis(yaw - 90, up), is
+            // the mirror of the correct one and faces WEST at yaw 0. It agrees
+            // with the correct expression only at yaw = +/-90, which is why
+            // every shipped world passed under either. This test names the
+            // wrong expression so that reverting to it fails loudly rather
+            // than passing everywhere the shipped worlds look.
+            //
+            // 仕様が当初示していた AngleAxis(yaw − 90, up) は正しい式の鏡像で、
+            // yaw 0 で**西**を向く。正しい式と一致するのは yaw が ±90 のときだけ
+            // で、だからこそ同梱のどの空間もどちらでも通ってしまった。この試験は
+            // 誤ったほうの式を名指しし、そこへ戻したときに、同梱の空間が見る
+            // 範囲では気づけずに通ってしまうのではなく、はっきり落ちるようにする。
+            const float offAxisYawDeg = 0.0f;
+
+            Quaternion correct = WorldFrames.SpawnYawToUnity(offAxisYawDeg);
+            Quaternion mirrored = Quaternion.AngleAxis(
+                offAxisYawDeg - WorldFrames.SpawnYawOffsetDeg, Vector3.up);
+
+            float[] correctEnu = WorldFrames.UnityToEnu(correct * Vector3.forward);
+            float[] mirroredEnu = WorldFrames.UnityToEnu(mirrored * Vector3.forward);
+
+            Assert.That(correctEnu[0], Is.EqualTo(1.0f).Within(Tolerance),
+                        "yaw_deg 0 must face ENU east");
+            Assert.That(mirroredEnu[0], Is.EqualTo(-1.0f).Within(Tolerance),
+                        "the specification's original expression faces west, which is the bug");
         }
 
         [Test]

@@ -336,6 +336,30 @@ namespace StampFly.Tests.PlayMode
                         "yaw_deg 90 must face ENU north");
         }
 
+        [Test]
+        public void AnOffAxisSpawnHeadingSurvivesTheWholeLoad()
+        {
+            // empty_room spawns at yaw 45 on purpose: a heading of only +/-90
+            // gives the same answer under both the correct expression and the
+            // mirrored one the specification used to give, so it would hide a
+            // sign error in the frame conversion. This checks the off-axis
+            // heading end to end, through the file, the reader and the loader.
+            // empty_room の出発点が yaw 45 なのは意図的である。方位が ±90 だけ
+            // だと、正しい式と、仕様が以前示していた鏡像の式とで同じ答えになり、
+            // 座標変換の符号の誤りを隠してしまう。ここでは軸から外れた方位が、
+            // ファイル・読み込み・生成を通して端から端まで保たれることを見る。
+            WorldFile world = Load("empty_room");
+            Assert.That(world.spawn.yaw_deg, Is.EqualTo(45.0f).Within(1e-4f),
+                        "empty_room must keep an off-axis spawn heading");
+
+            float[] forwardEnu = WorldFrames.UnityToEnu(loader.SpawnRotation * Vector3.forward);
+
+            const float diagonal = 0.70710678f;
+            Assert.That(forwardEnu[0], Is.EqualTo(diagonal).Within(1e-4f), "east component");
+            Assert.That(forwardEnu[1], Is.EqualTo(diagonal).Within(1e-4f), "north component");
+            Assert.That(forwardEnu[2], Is.EqualTo(0.0f).Within(1e-4f), "a heading must stay level");
+        }
+
         // -------------------------------------------------------------------
         // The per-type bounds, as tools/unity_world/validate.py computes them.
         // 種類ごとの外形。tools/unity_world/validate.py の計算と同じ。

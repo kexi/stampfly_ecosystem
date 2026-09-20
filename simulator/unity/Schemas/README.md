@@ -117,6 +117,8 @@ Unity 版シミュレータが読み込む**空間ファイル**（`*.world.json
 
 - `gate`・`tunnel` の `size` は**開口**の寸法であり、外形ではない。外形は開口に `thickness` を足した大きさになる
 - `ring` は丸いので `size[0]` と `size[1]` は等しくなければならない（検査が確かめる）。輪は **x-z 平面**にあり、y 方向の厚みが `thickness` である。つまり回転が無いとき、輪を**北向きに**くぐることになる
+- `ring` は `segments` 本の直線の棒で近似し、その棒を**半径 `size[0]/2 + thickness` の円に内接させる**（棒の長さはその外円の弦、すなわち `2·(size[0]/2 + thickness)·sin(π/segments)`）。検査が使う外形はこの外円を囲む箱なので、**外接**させると棒の角がその箱からはみ出してしまう。内接させれば分割数によらず外形が検査と一致し、内径の穴も塞がらない
+- `tunnel` は側壁 2 枚と天井だけで、**床は作らない**。管は部屋の床の上に置かれる前提であり、中に床をもう 1 枚作ると機体が越える段差になるためである（`size[2]` の開口の高さは部屋の床から測る）
 - `table` の `size[2]` は**天板上面**の高さである（天板の厚みではない）。脚は Unity 側が天板の四隅から床まで伸ばす
 - `ramp` は +y 方向に向かって上がる。向きを変えるには `rotation_deg` の yaw を使う
 
@@ -278,56 +280,81 @@ static float[] UnityToEnu(Vector3 v) => new[] { v.x, v.z, v.y };
 | pitch（+y まわり） | **−z** まわり |
 | yaw（+z まわり） | **−y** まわり |
 
-ただし `Quaternion.AngleAxis` を使うときは、**角に負号を付けてはならない**。Unity の `AngleAxis` は左手系で「正軸から見て時計回りが正」であり、上の表の符号反転をすでに含んでいるためである。負号を書くと二重に反転して逆向きになる。
+`Quaternion.AngleAxis` でこの表のとおりに組み立てるには、**角に負号を付ける**（軸は正のまま `Vector3.right`／`forward`／`up` を渡す）。`AngleAxis(−θ, +軸)` は `AngleAxis(θ, −軸)` と同じ回転なので、これが上の表の「負の軸まわり」そのものである。
+
+Unity の `AngleAxis` は、**渡した軸について右ねじ**（軸の正の側から見て反時計回り）に回す。左手系なのは座標系のほうであり、利き手の違いを担うのは §6.1 の y↔z の入れ替えである。`AngleAxis` 自身が符号反転を含むわけではないので、負号は明示的に書く必要がある。
 
 ```csharp
-// ENU intrinsic yaw -> pitch -> roll, expressed in Unity's left-handed frame.
-// ENU の内因性 yaw → pitch → roll を、Unity の左手系で組み立てる。
+// ENU intrinsic yaw -> pitch -> roll, expressed in Unity's frame.
+// ENU の内因性 yaw → pitch → roll を、Unity の座標系で組み立てる。
 //
-// Why no minus signs: Unity's AngleAxis is left-handed (positive = clockwise
-// seen from the positive axis), which already carries the sign flip that
-// det(U) = -1 demands. Negating as well would flip the rotation twice.
-// 負号を付けない理由: Unity の AngleAxis は左手系なので、det(U) = −1 が要求する
-// 符号反転をすでに含む。さらに負号を付けると二重に反転してしまう。
+// Why the minus signs: Unity's AngleAxis turns right-handed about the axis it
+// is given, so a positive ENU angle must be written as a negative angle about
+// the positive Unity axis -- which is the "about -x / -z / -y" of the table.
+// The handedness change itself is carried by the y-z swap of 6.1, not by
+// AngleAxis, so the sign flip has to be written out here.
+// 負号を付ける理由: Unity の AngleAxis は渡した軸について右ねじに回る。よって
+// ENU の正の角は、Unity の正の軸まわりの負の角として書く必要がある。これが表の
+// 「−x／−z／−y まわり」である。利き手の違いを担うのは §6.1 の y↔z の入れ替えで
+// あって AngleAxis ではないので、符号反転はここで明示する。
 static Quaternion EnuRotationToUnity(float[] rotationDeg)
 {
     float roll = rotationDeg[0], pitch = rotationDeg[1], yaw = rotationDeg[2];
-    return Quaternion.AngleAxis(yaw,   Vector3.up)        // ENU +z -> Unity y
-         * Quaternion.AngleAxis(pitch, Vector3.forward)   // ENU +y -> Unity z
-         * Quaternion.AngleAxis(roll,  Vector3.right);    // ENU +x -> Unity x
+    return Quaternion.AngleAxis(-yaw,   Vector3.up)        // ENU +z -> Unity -y
+         * Quaternion.AngleAxis(-pitch, Vector3.forward)   // ENU +y -> Unity -z
+         * Quaternion.AngleAxis(-roll,  Vector3.right);    // ENU +x -> Unity -x
 }
 ```
 
-この式は、ENU の `Rz(yaw)·Ry(pitch)·Rx(roll)` と `U · R_enu · Uᵀ` が一致することを数値で確かめてある（roll・pitch・yaw を単独で振った場合と、3 つを混ぜた場合の両方）。
+**検算（Unity 6000.6.2f1 で実測）:**
 
-### 6.2.1 `spawn.yaw_deg` だけは −90° のずれが要る
+`EnuRotationToUnity` が作った回転で ENU の基底ベクトルを回し、§6.1 の入れ替えで ENU に読み戻したものを、ENU で直に評価した `R = Rz(yaw)·Ry(pitch)·Rx(roll)` と成分ごとに比べた。roll・pitch・yaw を単独で振った場合と 3 つを混ぜた場合の両方で、**最大誤差 0.0**（負号を付けない式では **2.0**、すなわち完全な鏡像になる）。単独の角では次のようになる。
+
+| ENU の回転 | ENU での効果 | 実測した Unity の `ToAngleAxis` |
+|-----------|-------------|-------------------------------|
+| roll = +90° | 北 `(0,1,0)` → 上 `(0,0,1)` | 角 +90°、軸 `(−1, 0, 0)` |
+| pitch = +90° | 東 `(1,0,0)` → 下 `(0,0,−1)` | 角 +90°、軸 `(0, 0, −1)` |
+| yaw = +90° | 東 `(1,0,0)` → 北 `(0,1,0)` | 角 +90°、軸 `(0, −1, 0)` |
+
+`ToAngleAxis` が返す軸が上の表の「−x／−z／−y」と一致している。この 3 件は EditMode 試験の `RollTurnsTheEnuNorthAxisUpward`・`PitchTipsTheEnuEastAxisDownward`・`YawTurnsTheEnuEastAxisCounterClockwise`、混合の照合は `RotationIsAppliedYawThenPitchThenRoll` が守る。
+
+> **訂正（2026-09-20）:** 本節は当初「`AngleAxis` は左手系なので角に負号を付けてはならない」と述べ、負号の無いコード例を載せていた。Unity C# 側の実装時に実測したところ、`AngleAxis(+90°, Vector3.up)` は Unity の前方 `+z` を右 `+x` へ送る（＝ENU の北を東へ送る＝ENU では上から見て時計回り＝yaw −90°）ことが分かり、負号が必要であると判明した。上の表（−x／−z／−y）は当初から正しく、誤っていたのは説明文とコード例のほうで、両者が互いに矛盾していた。
+
+### 6.2.1 `spawn.yaw_deg` は 90° のずれを差し引く
 
 上の `EnuRotationToUnity` は**障害物の向き**（`rotation_deg`）のための式である。`spawn.yaw_deg` は「どちらを向いて置くか」を表す**方位**であり、機体モデルの前方をどう定義したかが効くため、そのままでは使えない。
 
 - `spawn.yaw_deg` の定義（§2.3）は **0 = 東（ENU +x）、90 = 北（ENU +y）**
 - Unity の機体モデルの前方は慣例どおり **+z**。`U` で ENU に写すと **+y＝北**である
 
-つまり yaw=0 のとき、機体モデルの素の前方（北）と、求める向き（東）が 90° ずれている。この差を引く。
+つまり yaw=0 のとき、機体モデルの素の前方（北）と、求める向き（東）が 90° ずれている。§6.2 と同じく ENU の方位は Unity では負号が付くので、角は `90 − yaw_deg` になる（`yaw_deg − 90` ではない）。
 
 ```csharp
 // The vehicle model's forward (+z in Unity) maps to ENU north, but yaw_deg = 0
-// means east, so the 90 deg offset between them is subtracted.
+// means east. The heading is negated for the same reason as 6.2 -- AngleAxis
+// turns right-handed about +y, which is clockwise in ENU -- so the angle is
+// the 90 deg offset MINUS the heading.
 // 機体モデルの前方（Unity +z）は ENU の北に当たるが、yaw_deg = 0 は東を指す。
-// この 90 度のずれを引く。
+// §6.2 と同じ理由（AngleAxis は +y について右ねじ＝ENU では時計回り）で方位に
+// 負号が付くので、角は 90 度のずれから方位を引いたものになる。
 static Quaternion SpawnYawToUnity(float yawDeg)
-    => Quaternion.AngleAxis(yawDeg - 90.0f, Vector3.up);
+    => Quaternion.AngleAxis(90.0f - yawDeg, Vector3.up);
 ```
 
-**検算（数値で確認済み）:**
+**検算（Unity 6000.6.2f1 で実測）:**
 
 | `yaw_deg` | `AngleAxis` の角 | 機体の前方（ENU） | 意味 |
 |-----------|-----------------|------------------|------|
-| 0 | −90° | `(1, 0, 0)` | 東 ✓ |
+| 0 | +90° | `(1, 0, 0)` | 東 ✓ |
+| 45 | +45° | `(0.707, 0.707, 0)` | 北東 ✓ |
 | 90 | 0° | `(0, 1, 0)` | 北 ✓ |
-| 180 | 90° | `(−1, 0, 0)` | 西 ✓ |
-| −90 | −180° | `(0, −1, 0)` | 南 ✓ |
+| 180 | −90° | `(−1, 0, 0)` | 西 ✓ |
+| −90 | +180° | `(0, −1, 0)` | 南 ✓ |
+| −135 | +225° | `(−0.707, −0.707, 0)` | 南西 ✓ |
 
-機体モデルの前方を +z 以外にした場合は、この −90 を対応する値に直すこと。
+機体モデルの前方を +z 以外にした場合は、この 90 を対応する値に直すこと。
+
+> **訂正（2026-09-20）:** 本節は当初 `AngleAxis(yawDeg − 90, up)` と述べていたが、その式では `yaw_deg = 0` が**西**を向き、同じ節の検算の表（0 = 東）と矛盾していた。Unity C# 側の実装時の実測で判明した。同梱 6 空間の出発点はすべて `yaw_deg` が ±90 で、この 2 つの値では両式が同じ結果になるため、同梱の空間だけでは誤りが表に出なかった。そこで上の表に ±90 以外の値（0・45・180・−135）を加え、EditMode 試験 `SpawnYawPointsTheVehicleWhereTheFormatSays` がこの 6 件すべてを確かめる。
 
 ### 6.3 `frames_unity.hpp` との関係
 
@@ -609,6 +636,8 @@ The **origin** is the point `position` refers to. It is the centre of the bottom
 
 - For `gate` and `tunnel`, `size` is the **opening**, not the outer extent. The outer extent is the opening plus `thickness`
 - A `ring` is round, so `size[0]` and `size[1]` must be equal (the checker enforces this). The ring lies in the **x-z plane** and is `thickness` deep along y, so with no rotation it is flown through **heading north**
+- A `ring` is approximated by `segments` straight bars **inscribed in the circle of radius `size[0]/2 + thickness`** (each bar is that outer circle's chord, `2·(size[0]/2 + thickness)·sin(π/segments)` long). The bounds the checker uses are the box around that outer circle, so **circumscribing** the polygon about it would push the bars' corners outside that box. Inscribing makes the extent match the checker for any segment count while leaving the inner hole clear
+- A `tunnel` is two side walls and a roof, with **no floor**. The tube is meant to rest on the room floor, and a second floor inside it would be a step the vehicle has to climb (`size[2]`, the opening height, is measured from the room floor)
 - A `table`'s `size[2]` is the height of the **top surface**, not the thickness of the top. Unity draws the legs from the top's corners down to the floor
 - A `ramp` rises toward +y. Use the yaw of `rotation_deg` to point it elsewhere
 
@@ -768,51 +797,73 @@ Rotation is fixed by **conjugation** under the change of basis: `R_unity = U . R
 | pitch (about +y) | about **-z** |
 | yaw (about +z) | about **-y** |
 
-When using `Quaternion.AngleAxis`, however, **do not negate the angle**. Unity's `AngleAxis` is left-handed (positive means clockwise seen from the positive axis), so it already carries the sign flip in the table above. Negating as well flips the rotation twice and points it the wrong way.
+To build exactly that table with `Quaternion.AngleAxis`, **negate the angle** and pass the positive axis (`Vector3.right` / `forward` / `up`). `AngleAxis(-θ, +axis)` is the same rotation as `AngleAxis(θ, -axis)`, which is precisely the "about the negative axis" of the table.
+
+Unity's `AngleAxis` turns **right-handed about the axis it is given** (counter-clockwise seen from the positive end of that axis). What is left-handed is the coordinate frame, and the handedness change is carried by the y-z swap of §6.1 — not by `AngleAxis` — so the sign flip has to be written out explicitly.
 
 ```csharp
-// ENU intrinsic yaw -> pitch -> roll, expressed in Unity's left-handed frame.
+// ENU intrinsic yaw -> pitch -> roll, expressed in Unity's frame.
 //
-// Why no minus signs: Unity's AngleAxis is left-handed (positive = clockwise
-// seen from the positive axis), which already carries the sign flip that
-// det(U) = -1 demands. Negating as well would flip the rotation twice.
+// Why the minus signs: Unity's AngleAxis turns right-handed about the axis it
+// is given, so a positive ENU angle must be written as a negative angle about
+// the positive Unity axis -- which is the "about -x / -z / -y" of the table.
+// The handedness change itself is carried by the y-z swap of 6.1, not by
+// AngleAxis, so the sign flip has to be written out here.
 static Quaternion EnuRotationToUnity(float[] rotationDeg)
 {
     float roll = rotationDeg[0], pitch = rotationDeg[1], yaw = rotationDeg[2];
-    return Quaternion.AngleAxis(yaw,   Vector3.up)        // ENU +z -> Unity y
-         * Quaternion.AngleAxis(pitch, Vector3.forward)   // ENU +y -> Unity z
-         * Quaternion.AngleAxis(roll,  Vector3.right);    // ENU +x -> Unity x
+    return Quaternion.AngleAxis(-yaw,   Vector3.up)        // ENU +z -> Unity -y
+         * Quaternion.AngleAxis(-pitch, Vector3.forward)   // ENU +y -> Unity -z
+         * Quaternion.AngleAxis(-roll,  Vector3.right);    // ENU +x -> Unity -x
 }
 ```
 
-This expression was verified numerically against `U . (Rz(yaw) Ry(pitch) Rx(roll)) . U^T`, both for each angle alone and for the three combined.
+**Check (measured in Unity 6000.6.2f1):**
 
-### 6.2.1 `spawn.yaw_deg` Needs a -90 Degree Offset
+Each ENU basis vector was rotated by the quaternion `EnuRotationToUnity` returns, read back into ENU through the swap of §6.1, and compared component by component against `R = Rz(yaw) Ry(pitch) Rx(roll)` evaluated directly in ENU. For each angle alone and for the three combined, the **largest error is 0.0** (with the un-negated expression it is **2.0**, an exact mirror). For the single angles:
+
+| ENU rotation | Effect in ENU | Measured Unity `ToAngleAxis` |
+|--------------|---------------|------------------------------|
+| roll = +90 | north `(0,1,0)` becomes up `(0,0,1)` | angle +90, axis `(-1, 0, 0)` |
+| pitch = +90 | east `(1,0,0)` becomes down `(0,0,-1)` | angle +90, axis `(0, 0, -1)` |
+| yaw = +90 | east `(1,0,0)` becomes north `(0,1,0)` | angle +90, axis `(0, -1, 0)` |
+
+The axes `ToAngleAxis` reports match the table's -x / -z / -y. These three are held down by the EditMode tests `RollTurnsTheEnuNorthAxisUpward`, `PitchTipsTheEnuEastAxisDownward` and `YawTurnsTheEnuEastAxisCounterClockwise`; the combined comparison by `RotationIsAppliedYawThenPitchThenRoll`.
+
+> **Correction (2026-09-20):** this section originally said "Unity's `AngleAxis` is left-handed, so do not negate the angle" and carried an un-negated code example. Measuring while implementing the Unity C# side showed that `AngleAxis(+90, Vector3.up)` sends Unity forward `+z` to right `+x` — ENU north to ENU east, a clockwise turn seen from above in ENU, i.e. a yaw of -90 — so the negation is required. The table above (-x / -z / -y) was correct from the start; the prose and the code example were wrong, and the two contradicted each other.
+
+### 6.2.1 `spawn.yaw_deg` Subtracts the Heading from a 90 Degree Offset
 
 The `EnuRotationToUnity` above is for an **obstacle's orientation** (`rotation_deg`). `spawn.yaw_deg` is a **heading** — which way the vehicle faces — and so depends on how the vehicle model's forward direction is defined. It cannot use that expression unchanged.
 
 - `spawn.yaw_deg` is defined (§2.3) as **0 = east (ENU +x), 90 = north (ENU +y)**
 - The vehicle model's forward is, by convention, **+z** in Unity, which maps through `U` to **ENU +y, i.e. north**
 
-So at yaw = 0 the model's bare forward (north) and the required heading (east) differ by 90 degrees. Subtract that difference.
+So at yaw = 0 the model's bare forward (north) and the required heading (east) differ by 90 degrees. As in §6.2 an ENU heading takes a minus sign in Unity, so the angle is `90 - yaw_deg`, not `yaw_deg - 90`.
 
 ```csharp
 // The vehicle model's forward (+z in Unity) maps to ENU north, but yaw_deg = 0
-// means east, so the 90 deg offset between them is subtracted.
+// means east. The heading is negated for the same reason as 6.2 -- AngleAxis
+// turns right-handed about +y, which is clockwise in ENU -- so the angle is
+// the 90 deg offset MINUS the heading.
 static Quaternion SpawnYawToUnity(float yawDeg)
-    => Quaternion.AngleAxis(yawDeg - 90.0f, Vector3.up);
+    => Quaternion.AngleAxis(90.0f - yawDeg, Vector3.up);
 ```
 
-**Check (verified numerically):**
+**Check (measured in Unity 6000.6.2f1):**
 
 | `yaw_deg` | `AngleAxis` angle | Vehicle forward (ENU) | Meaning |
 |-----------|-------------------|-----------------------|---------|
-| 0 | -90 | `(1, 0, 0)` | east, correct |
+| 0 | +90 | `(1, 0, 0)` | east, correct |
+| 45 | +45 | `(0.707, 0.707, 0)` | north-east, correct |
 | 90 | 0 | `(0, 1, 0)` | north, correct |
-| 180 | 90 | `(-1, 0, 0)` | west, correct |
-| -90 | -180 | `(0, -1, 0)` | south, correct |
+| 180 | -90 | `(-1, 0, 0)` | west, correct |
+| -90 | +180 | `(0, -1, 0)` | south, correct |
+| -135 | +225 | `(-0.707, -0.707, 0)` | south-west, correct |
 
-If the vehicle model's forward is defined as something other than +z, adjust this -90 accordingly.
+If the vehicle model's forward is defined as something other than +z, adjust this 90 accordingly.
+
+> **Correction (2026-09-20):** this section originally gave `AngleAxis(yawDeg - 90, up)`, under which `yaw_deg = 0` faces **west**, contradicting this section's own check table (0 = east). It was found by measurement while implementing the Unity C# side. Every shipped world spawns with `yaw_deg` at ±90, and the two expressions agree at exactly those two values, so the shipped worlds alone never exposed the error. The table above therefore now includes values away from ±90 (0, 45, 180, -135), and the EditMode test `SpawnYawPointsTheVehicleWhereTheFormatSays` checks all six.
 
 ### 6.3 Relation to `frames_unity.hpp`
 
