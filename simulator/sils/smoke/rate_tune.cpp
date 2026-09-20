@@ -14,14 +14,14 @@
  * The closed-loop hover surfaced that a 1 rad/s yaw command tracked at only
  * 0.05 rad/s: the mixer scales yaw by kappa (0.00971) so the yaw gain needs to
  * be ~1/kappa larger than roll/pitch. This harness commands a yaw-rate step and
- * reports tracking so gains can be swept (CLAUDE.md: control params need SILS
+ * reports tracking so gains can be swept (AGENTS.md: control params need SILS
  * numerical backing). Gains are injected at runtime via the parameter system
  * before the controller loads them, so a sweep is just repeated runs.
  *
  * 閉ループホバーで 1 rad/s のヨー指令が 0.05 rad/s しか追従しないと判明。ミキサーが
  * ヨーを kappa(0.00971) で縮小するため、ヨーゲインはロール/ピッチの ~1/kappa 倍要る。
  * 本試験プログラムはヨーレートのステップを与えて追従を報告し、ゲインを掃引できる
- * （CLAUDE.md: 制御パラメータは SILS の数値裏付けが必須）。ゲインはコントローラが
+ * （AGENTS.md: 制御パラメータは SILS の数値裏付けが必須）。ゲインはコントローラが
  * 読む前にパラメータ系へ実行時注入するので、掃引は実行の繰り返しだけ。
  *
  * Usage: rate_tune <model.xml> <yaw_stick> <rate.yaw.kp> <rate.yaw.ti>

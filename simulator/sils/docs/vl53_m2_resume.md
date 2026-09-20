@@ -169,7 +169,7 @@ ToF が距離を返せたら:
    （`altitude_controller.hpp` captureAltitude/update）。
 4. `sf sils scenario hover_espnow.scn --video` で**空中安定ホバー動画**。
 5. 注意: `HOVER_THRUST_CORRECTION=1.12` は実機の電池電圧低下前提。emu は INA3221 で Vbat 一定ゆえ
-   緩い climb/sink の可能性 → 数値裏付けの上で要調整（CLAUDE.md 制御パラメータ規約）。
+   緩い climb/sink の可能性 → 数値裏付けの上で要調整（AGENTS.md 制御パラメータ規約）。
 
 **config 判断 = 解決**: M2 が通ったので出荷 config（USE_TOF=true）を維持する（baro flip 不要、Code Identity 維持）。
 

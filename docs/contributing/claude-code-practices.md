@@ -4,11 +4,13 @@
 
 本ドキュメントは、StampFly Ecosystem 開発で蓄積した Claude Code の実践的な使い方をまとめたものである。2026年4月の初版執筆時点で50件超、2026年9月時点で1,800件を超えるコミットを通じて得られた知見に基づく。
 
+> **現状の注記:** 本リポジトリでは指示の本文を `AGENTS.md` に置き、`CLAUDE.md` は `@AGENTS.md` の 1 行だけを持つ読み込み用のファイルとしている。以下で述べる「指示書（AGENTS.md）による行動制御」の仕組みはそのまま成り立ち、書く先が `AGENTS.md` になる。
+
 ## 1. セッション管理
 
-### CLAUDE.md による行動制御
+### 指示書（AGENTS.md）による行動制御
 
-CLAUDE.md はセッションごとに自動で読み込まれ、Claude Code の振る舞いを規定する最重要ファイルである。
+プロジェクトの指示書はセッションごとに自動で読み込まれ、Claude Code の振る舞いを規定する最重要ファイルである（本リポジトリでは `CLAUDE.md` の 1 行を通して `AGENTS.md` が読み込まれる）。
 
 | 設定項目 | 効果 | 本プロジェクトでの実例 |
 |---------|------|---------------------|
@@ -17,7 +19,7 @@ CLAUDE.md はセッションごとに自動で読み込まれ、Claude Code の�
 | コミットルールの明記 | 変更の取りこぼし防止 | 「コードを変更したら必ずコミット」 |
 | ツール優先順位 | 一貫したワークフロー | 「sf CLI を積極的に使用すること」 |
 
-**教訓:** CLAUDE.md に曖昧な指示を書くと無視される。「〜すること」と断定的に書く。
+**教訓:** AGENTS.md に曖昧な指示を書くと無視される。「〜すること」と断定的に書く。
 
 ### Next steps によるセッション間の継続性
 
@@ -150,7 +152,7 @@ sf log viz data.csv
 
 **効果:**
 - Claude Code に「sf コマンドを使え」とだけ指示すれば、全ツールにアクセスできる
-- コマンド名が統一されているため、CLAUDE.md に網羅的なコマンド表を記載できる
+- コマンド名が統一されているため、AGENTS.md に網羅的なコマンド表を記載できる
 - 新ツール追加時も同じパターンに従うため、学習コストが低い
 
 ### サブエージェントの使い分け
@@ -189,17 +191,17 @@ Changes:
 | 大きな変更を一度に依頼 | 段階に分けて1つずつ依頼（ESKF リファクタリングの例） |
 | コンテキスト切れで作業ロスト | Next steps をコミットに含めて復帰可能にする |
 | ドキュメント更新を後回し | 「コード変更と同時にドキュメントも更新して」と明記 |
-| 不要なファイル生成 | Claude Code のツール既定方針（明示的な要求がない限り README やドキュメントファイルを作成しない）に従う。プロジェクト固有の運用にしたい場合は CLAUDE.md に明記する |
+| 不要なファイル生成 | Claude Code のツール既定方針（明示的な要求がない限り README やドキュメントファイルを作成しない）に従う。プロジェクト固有の運用にしたい場合は AGENTS.md に明記する |
 
-### CLAUDE.md の反復改善
+### AGENTS.md の反復改善
 
-CLAUDE.md は一度書いて終わりではない。作業中に発見した問題をルールとして追記していく:
+AGENTS.md は一度書いて終わりではない。作業中に発見した問題をルールとして追記していく:
 
 - **Slide Rules**: スライド変更時の自動レビューが漏れた失敗を教訓に、ルール化した
 - **画像確認はサブエージェント限定**: rate limit（一定期間内に使えるトークン量・利用量の上限）に抵触する問題が発生し、ルール化した
 - **BL8（コードブロック下端）**: 同じレイアウト崩れが6回発生し、チェックリストに追加した
 
-CLAUDE.md 自体が「プロジェクト固有の学習済みルールブック」として成長する。
+AGENTS.md 自体が「プロジェクト固有の学習済みルールブック」として成長する。
 
 ---
 
@@ -209,11 +211,13 @@ CLAUDE.md 自体が「プロジェクト固有の学習済みルールブック�
 
 This document summarizes practical know-how for using Claude Code, accumulated through the development of the StampFly Ecosystem. It was first written in April 2026, based on insights from 50+ commits; by September 2026 the project had grown past 1,800 commits.
 
+> **Current note:** In this repository the instructions themselves live in `AGENTS.md`, and `CLAUDE.md` is a one-line loader containing only `@AGENTS.md`. The mechanism described below as behavioral control still holds; the file you write to is `AGENTS.md`.
+
 ## 1. Session Management
 
-### Behavioral Control via CLAUDE.md
+### Behavioral Control via the Instructions File (AGENTS.md)
 
-CLAUDE.md is automatically loaded at session start and governs Claude Code's behavior.
+The project instructions file is automatically loaded at session start and governs Claude Code's behavior (in this repository, `AGENTS.md` is loaded through the one line in `CLAUDE.md`).
 
 | Setting | Effect | Example from This Project |
 |---------|--------|--------------------------|
@@ -222,7 +226,7 @@ CLAUDE.md is automatically loaded at session start and governs Claude Code's beh
 | Commit rules | Prevent forgotten changes | "Always commit after code changes" |
 | Tool priorities | Consistent workflow | "Use sf CLI preferentially" |
 
-**Lesson:** Vague instructions in CLAUDE.md get ignored. Write assertively: "Do X" not "Consider doing X".
+**Lesson:** Vague instructions in AGENTS.md get ignored. Write assertively: "Do X" not "Consider doing X".
 
 ### Session Continuity via Next Steps
 
@@ -269,7 +273,7 @@ Split one bug into multiple independent, testable fixes to enable bisection when
 
 ### sf CLI Unification
 
-Consolidating scripts under sf CLI subcommands unifies tool access. One instruction in CLAUDE.md ("use sf commands") covers all tools.
+Consolidating scripts under sf CLI subcommands unifies tool access. One instruction in AGENTS.md ("use sf commands") covers all tools.
 
 ## 6. Document Synchronization
 
@@ -282,5 +286,5 @@ Update related documentation in the same session as code changes. "Do it later" 
 | Vague test instructions | Specify: "Run 69 PC unit tests, verify all pass" |
 | Large changes at once | Break into stages (ESKF refactoring example) |
 | Context loss between sessions | Include Next steps in every commit |
-| Deferred documentation | "Update docs alongside code changes" in CLAUDE.md |
-| Iterating CLAUDE.md | Add rules as problems are discovered; it grows into a project-specific rulebook over time |
+| Deferred documentation | "Update docs alongside code changes" in AGENTS.md |
+| Iterating AGENTS.md | Add rules as problems are discovered; it grows into a project-specific rulebook over time |

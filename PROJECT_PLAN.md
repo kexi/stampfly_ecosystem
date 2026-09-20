@@ -50,7 +50,8 @@ StampFly Ecosystem は、StampFly 機体を中心に、ドローン制御を **�
 stampfly-ecosystem/
 ├── README.md          # 入口（要約・初飛行まで）
 ├── LICENSE
-├── CLAUDE.md          # AI 支援ツール向けの作業規約（人間向けの説明は docs/ に置く）
+├── AGENTS.md          # AI 支援ツール向けの作業規約（人間向けの説明は docs/ に置く）
+├── CLAUDE.md          # `@AGENTS.md` の 1 行だけ（Claude Code に AGENTS.md を読み込ませる）
 ├── docs/              # 人間が読む文書と公開サイト（§3）
 ├── firmware/          # 組込みで動く実体（§4）
 ├── protocol/          # 通信・ログ形式の仕様と整合検査（§5）
@@ -75,8 +76,9 @@ stampfly-ecosystem/
 ### LICENSE
 - 本リポジトリの利用条件。教育・研究用途での再利用を前提とする
 
-### CLAUDE.md
-- Claude Code 等の AI 支援ツールに対する作業規約。人間向けの説明は書かない（`docs/` に置く）
+### AGENTS.md と CLAUDE.md
+- `AGENTS.md`: Claude Code 等の AI 支援ツールに対する作業規約。人間向けの説明は書かない（`docs/` に置く）
+- `CLAUDE.md`: `@AGENTS.md` の 1 行だけを書く。規約の本文は `AGENTS.md` に置き、どの AI 支援ツールからも同じ内容が読めるようにする（2026-09-20 に `CLAUDE.md` から移した）
 - 本文書と矛盾させない。構造に関わる規約は本文書が正
 
 ---
@@ -425,7 +427,7 @@ simulator/
 6. **新しい用途・技術は節を足してから置く。** 既存の節に収まらないものは、本文書に節（または既存節への行）を追加してから配置する
 7. **大きな見直しは計画文書で行う。** 入口の再設計・Workshop の書き換えのような構造に及ぶ検討は `docs/plans/` に
    「見直し中」として置き、本文書からリンクする。結論が出たら本文書に反映し、計画文書は削除する（規則 4）
-8. **CLAUDE.md は本文書に従う。** AI 向け規約が構造に触れるときは本文書を参照し、独自の構造を定めない
+8. **AGENTS.md は本文書に従う。** AI 向け規約が構造に触れるときは本文書を参照し、独自の構造を定めない
 
 現在「見直し中」の事項: 利用者に独自コードを書いてもらう入口（`docs/plans/user-programming-entry-review.md`）、
 Workshop（L0）の API・レッスンの現行設計への更新（§4）、`sf app`・`sf lesson` の全階層対応（§1・§9）、

@@ -197,7 +197,7 @@ sf sils scenario simulator/sils/scenarios/hover_alt.scn --duration 30000000 --vi
 - ツール: オフライン gen4 probe = `simulator/sils/build/vl53_probe <mm> <frames>`（CMake `SILS_BUILD_VL53_PROBE`）。
   軌跡 = フライトログ一式内の `truth.csv`（`SILS_EMU_FLIGHTLOG`）、`sf sils scenario --video` がバンドルに設定。
 - メモリ: `project_stampfly_emulator.md`（全体経緯）、`feedback_control_simulation.md`（制御変更は数値裏付け必須）。
-- **CLAUDE.md 厳守**: 制御パラメータ（HOVER_THRUST_CORRECTION 等）は**変更しない**。§1 の数値解析が「閉ループで
+- **AGENTS.md 厳守**: 制御パラメータ（HOVER_THRUST_CORRECTION 等）は**変更しない**。§1 の数値解析が「閉ループで
   吸収・パラメータ変更不要」を裏付けている。
-- 画像（MP4 フレーム）を見る必要があればサブエージェント内で完結（CLAUDE.md 画像ルール）。判定は数値で足りる。
+- 画像（MP4 フレーム）を見る必要があればサブエージェント内で完結（AGENTS.md 画像ルール）。判定は数値で足りる。
 ```

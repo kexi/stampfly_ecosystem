@@ -34,8 +34,8 @@ from scipy import signal
 import sflog
 
 # =============================================================================
-# Named constants (no magic numbers -- CLAUDE.md convention)
-# 名前付き定数（マジックナンバー禁止 -- CLAUDE.md の規約）
+# Named constants (no magic numbers -- AGENTS.md convention)
+# 名前付き定数（マジックナンバー禁止 -- AGENTS.md の規約）
 # =============================================================================
 
 # Radian gyro columns of imu.csv, keyed by the short axis label used

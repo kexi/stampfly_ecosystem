@@ -391,10 +391,10 @@ def _units_table(spec: dict, lang: str) -> str:
 def render_doc_md(spec: dict) -> str:
     """Render docs/reference/flight-log-format.md (Japanese section first,
     English section second, per the repository's bilingual doc convention
-    -- see CLAUDE.md "Documentation").
+    -- see AGENTS.md "Documentation").
     docs/reference/flight-log-format.md を生成する（リポジトリのバイリンガル
     文書規約どおり、日本語セクションを先に、英語セクションを後に置く --
-    CLAUDE.md の「Documentation」参照）。
+    AGENTS.md の「Documentation」参照）。
     """
     naming = spec["file_naming"]
     csv_rules = spec["csv_rules"]

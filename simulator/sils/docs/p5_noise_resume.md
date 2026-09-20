@@ -92,7 +92,7 @@ diff <trajectory or console>  # 完全一致なら決定論OK
 # (5) P5 レビュー動画(§9 必須): sf sils scenario .../hover_alt.scn --noise n0 --video
 #   単一 run カメラは px/py 毎フレーム追従に修正済（位置保持なし＋ノイズで機体が数十m流れるため、
 #   固定 lookat だと画面外）。床は 200m に拡大（追従しても床が見える）。
-#   ※ 画像確認はサブエージェント限定(CLAUDE.md)。
+#   ※ 画像確認はサブエージェント限定(AGENTS.md)。
 ```
 
 **合格判定（P5 達成済み・2026-06-03）**: ① noise n0 でホバーが有界（G2）✅ ② 同シード決定論 ✅

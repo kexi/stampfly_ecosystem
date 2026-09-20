@@ -120,7 +120,7 @@ if (vel_sp < -takeoff_climb_rate) vel_sp = -takeoff_climb_rate;   // ← 緩降�
 | 1 | ロックが外れない→**実は規約バグ** | ①テストの中央取り違え（バグに合わせて歪めた）→ ②規約自体が誤り（中立 raw 3072 がバネ静止 2048 と真逆＝離せば降下） | **SILS が通っても規約が正しいとは限らない**。ハードの物理（バネ静止2048）と飛行実績（旧 vehicle=中央2048ホールド）に照合する。対称 throttle_axis へ是正 |
 | 2 | 目標を捕捉できない | 速度クランプを片側（上昇のみ）にした | 捕捉は片道でなく**双方向の整定問題**。観測不能窓の行き過ぎを下げて戻す自由度が要る |
 
-落とし穴2は制御則自体は正しく前提ミスを SILS が炙り出した例。落とし穴1は逆に、**SILS の偽合格が規約バグを覆い隠していた**例で、実機ハードの物理と飛行実績コードへの照合が決め手になった。いずれも「数値で裏付けてから実装・コミット」（CLAUDE.md 規約）に加え、**模擬が物理を写しているか**を問う重要性を示す。
+落とし穴2は制御則自体は正しく前提ミスを SILS が炙り出した例。落とし穴1は逆に、**SILS の偽合格が規約バグを覆い隠していた**例で、実機ハードの物理と飛行実績コードへの照合が決め手になった。いずれも「数値で裏付けてから実装・コミット」（AGENTS.md 規約）に加え、**模擬が物理を写しているか**を問う重要性を示す。
 
 ---
 
@@ -215,4 +215,4 @@ Clamp symmetrically (±takeoff_climb_rate) so the cascade can gently descend bac
 | 1 | Gate never opens → **really a convention bug** | (1) wrong center in the test (bent to match the bug); (2) the convention itself was inverted — neutral raw 3072 vs the spring rest 2048 (release → descend) | **A passing SILS run does not prove the convention is right.** Cross-check against the hardware physics (spring rest 2048) and the flight-proven code (legacy = centre 2048 hold). Fixed to a symmetric throttle_axis |
 | 2 | Target not captured | velocity clamp was one-sided (climb only) | Capture is a bidirectional settle, not a one-way climb; allow correcting the unobservable-window overshoot back down |
 
-Pitfall 2 is a case where the control law was correct and SILS surfaced a wrong assumption. Pitfall 1 is the opposite — a **false SILS pass masked a convention bug**, and cross-checking against the real hardware physics and the flight-proven code was decisive. Both underscore "back it with simulation before committing" (CLAUDE.md) AND asking **whether the simulation actually mirrors the physics**.
+Pitfall 2 is a case where the control law was correct and SILS surfaced a wrong assumption. Pitfall 1 is the opposite — a **false SILS pass masked a convention bug**, and cross-checking against the real hardware physics and the flight-proven code was decisive. Both underscore "back it with simulation before committing" (AGENTS.md) AND asking **whether the simulation actually mirrors the physics**.

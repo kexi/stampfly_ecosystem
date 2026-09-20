@@ -24,7 +24,7 @@ BLOCKED_PATHS='^(docs/hikoki64/|docs/si2026/|docs/sci26/|docs/juida2026/|docs/ka
 BLOCKED_WORDS='科研費|科学研究費|KAKENHI|kakenhi'
 # Files allowed to mention those words (rules and this hook itself)
 # 上記の語を含んでよいファイル（ルール文書とこのフック自身）
-WORD_EXEMPT='^(\.githooks/|\.gitignore$|CLAUDE\.md$)'
+WORD_EXEMPT='^(\.githooks/|\.gitignore$|AGENTS\.md$|CLAUDE\.md$)'
 
 bad_paths=""; bad_words=""
 while IFS= read -r f; do

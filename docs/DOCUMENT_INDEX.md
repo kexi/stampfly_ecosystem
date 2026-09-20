@@ -8,7 +8,7 @@
 |---------|------|
 | [README.md](../README.md) | プロジェクト全体の紹介・クイックスタート |
 | [PROJECT_PLAN.md](../PROJECT_PLAN.md) | プロジェクト全体の設計方針・計画 |
-| [CLAUDE.md](../CLAUDE.md) | Claude Code 向けプロジェクト設定 |
+| [AGENTS.md](../AGENTS.md) | AI 支援ツール向けの作業規約（`CLAUDE.md` は `@AGENTS.md` の 1 行でこれを読み込む） |
 
 ## 2. ユーザー向けドキュメント (`docs/`)
 
@@ -220,7 +220,7 @@ POS_HOLD 位置制御の実機検証を機に `firmware/vehicle_new` が `firmwa
 |------|-------------|
 | [README.md](../README.md) | Project introduction and quick start |
 | [PROJECT_PLAN.md](../PROJECT_PLAN.md) | Overall project design policy and plan |
-| [CLAUDE.md](../CLAUDE.md) | Claude Code project configuration |
+| [AGENTS.md](../AGENTS.md) | Working rules for AI coding agents (`CLAUDE.md` imports it with the single line `@AGENTS.md`) |
 
 ## 2. User Documentation (`docs/`)
 

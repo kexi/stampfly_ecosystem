@@ -101,7 +101,7 @@ ffprobe -v error -show_entries format=duration:stream=width,height,nb_frames \
 
 ### 4. 動画の目視確認（サブエージェント限定・必須）
 
-**動画フレームの画像 Read はメインコンテキストで行わない**（CLAUDE.md スライド画像
+**動画フレームの画像 Read はメインコンテキストで行わない**（AGENTS.md スライド画像
 ルールに準ずる。画像 Read はコンテキストを大きく消費し rate limit の原因になる）。
 サブエージェントで数フレーム（ホバー時・マニューバ時）を抽出・確認し、テキストの
 所見だけ返させる:

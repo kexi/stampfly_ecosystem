@@ -179,6 +179,6 @@ WiFi ハード層が弾く）。
 
 - `requirements.md §2`・`architecture.md`・`detailed_design.md §3` に **PAIRING 状態と遷移**が無い。
   実装前に「状態モデルにペアリングをどう位置づけるか」をユーザーと確認し、設計文書を先に更新する
-  （CLAUDE.md: 設計矛盾は実装前に報告・議論）。
+  （AGENTS.md: 設計矛盾は実装前に報告・議論）。
 - `detailed_design.md §7.6` の `espnow_pair/`（サンプルコード予約・実体なし）と本機能の関係を整理。
   教育例（`coding_and_education.md` の `09_espnow_pair`）と本体機能は別物として扱う。

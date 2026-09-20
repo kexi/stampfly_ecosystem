@@ -50,7 +50,7 @@
 | S5 | `landing/index.html` の「制御を自作できる」訴求 | 入口へのリンク無し | 入口の設計が決まったら導線を付ける | 入口の設計に従属 |
 | S6 | `.mkdocs/mkdocs.yml` の目次「計画 > 現行」 | 2 本のみ | 生きている計画 10 本を掲載 | 済 |
 | S7 | `docs/assets/presentation.md`・`firmware/workshop/lessons/lesson_12_python_sdk/README.md` に `sf flight takeoff` 等の記述 | `takeoff`/`land`/`hover` はトップレベルの sf コマンドで、`sf flight` というグループは無い（S4 の作業で判明） | 実コマンド名に直す（Lesson 12 は Workshop の L0 更新時） | 要 |
-| S8 | スライド `docs/events/sci_tutorial_2026/slides/chapters/sci_s5_sim_analysis.tex`（`lib/stampfly` のパス誤記 1 か所）、`docs/events/stampfly_workshop/slides/chapters/python_sdk.tex`（章全体が TCP 23／WebSocket の旧 SDK 前提） | `lib/stampfly` は 2026-09-13 に削除。`.tex` の変更は PDF リビルドと目視レビューが必須（`CLAUDE.md` Slide Rules）のため今回は未修正 | スライドレビューの工程として別途実施。`python_sdk.tex` は `tools/stampfly_py`（UDP 8889/8890）前提に書き直す | 要 |
+| S8 | スライド `docs/events/sci_tutorial_2026/slides/chapters/sci_s5_sim_analysis.tex`（`lib/stampfly` のパス誤記 1 か所）、`docs/events/stampfly_workshop/slides/chapters/python_sdk.tex`（章全体が TCP 23／WebSocket の旧 SDK 前提） | `lib/stampfly` は 2026-09-13 に削除。`.tex` の変更は PDF リビルドと目視レビューが必須（`AGENTS.md` Slide Rules）のため今回は未修正 | スライドレビューの工程として別途実施。`python_sdk.tex` は `tools/stampfly_py`（UDP 8889/8890）前提に書き直す | 要 |
 
 ## 4. 記録の扱い（アーカイブ禁止規則との整合）
 

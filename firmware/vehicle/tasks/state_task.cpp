@@ -56,7 +56,7 @@ static sf::StateManager g_state_manager;
 // from gravity on the ground before takeoff. The position/velocity "ground is zero, not
 // flight-representative" handoff is handled separately and precisely at the airborne
 // edge by ImuTask's resetPositionVelocity (class-B, architecture §4); the bias is the
-// same IMU in flight, so its ground estimate is kept. (CLAUDE.md: control changes are
+// same IMU in flight, so its ground estimate is kept. (AGENTS.md: control changes are
 // backed by simulation — the sweep is the evidence.)
 //
 // ARM での地上→飛行 共分散ハンドオフ — なぜ「姿勢のみ」で全リセットでないか。
@@ -68,7 +68,7 @@ static sf::StateManager g_state_manager;
 // だけ膨張」。後者を採用: 設計意図（ARM で姿勢の自信をリセット）を満たしつつ安定 — 姿勢は
 // 離陸前に地上で重力から再収束するため。位置/速度の「地上ゼロは飛行を代表しない」ハンドオフは
 // 空中エッジで ImuTask の resetPositionVelocity が別途・正確に処理（クラスB, architecture §4）。
-// バイアスは飛行中も同じ IMU ゆえ地上推定を保持。（CLAUDE.md: 制御変更はシミュレーションで裏付け。）
+// バイアスは飛行中も同じ IMU ゆえ地上推定を保持。（AGENTS.md: 制御変更はシミュレーションで裏付け。）
 //
 // @design detailed_design.md §3 — ARM: ESKF attitude-covariance inflation (was full reset) [OK]
 // @design architecture.md §4 — ground→flight covariance handoff (SILS-validated)            [OK]

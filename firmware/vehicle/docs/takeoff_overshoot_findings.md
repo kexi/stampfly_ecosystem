@@ -45,7 +45,7 @@
 
 ## 3. 推奨対応（修正は実機検証が前提）
 
-SILS で再現・検証できないため、**投機的な制御変更はしない**（CLAUDE.md: 制御系変更は SILS 数値裏付け後）。実機側で：
+SILS で再現・検証できないため、**投機的な制御変更はしない**（AGENTS.md: 制御系変更は SILS 数値裏付け後）。実機側で：
 
 1. **起動校正の改善**（第一候補）: 静止サンプル数/窓を増やす、または ba_z を重力基準でより正確に推定して初回の残差を縮める。
 2. **初回離陸の保守化**（任意）: 初回のみ `takeoff_climb_rate_` を下げる／ブラインド窓の速度ループゲインを下げ、ba_z 残差への感度を落とす。
@@ -98,7 +98,7 @@ One run does first-takeoff → land → re-takeoff and compares the climb peaks.
 
 ## 3. Recommended action (a fix requires hardware verification)
 
-Since SILS cannot reproduce/verify it, **no speculative control change is made** (CLAUDE.md: control changes need SILS numerical backing). On hardware:
+Since SILS cannot reproduce/verify it, **no speculative control change is made** (AGENTS.md: control changes need SILS numerical backing). On hardware:
 
 1. **Improve the boot calibration** (first choice): more still samples / a longer window, or a more accurate gravity-referenced ba_z, to shrink the first-takeoff residual.
 2. **Make the first takeoff conservative** (optional): only for the first takeoff, lower `takeoff_climb_rate_` or the blind-window velocity-loop gain to reduce sensitivity to the ba_z residual.

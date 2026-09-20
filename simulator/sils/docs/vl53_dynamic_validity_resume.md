@@ -130,7 +130,7 @@ NG）。現 hover_alt.scn はこの構造だが phase C の過推力で 1.4m を
    - Plant の duty→thrust を PLANTDBG で再計測し、firmware hover duty（~0.63）での net accel を
      直接確認 → 過推力が真なら原因（vbat? Ct? 電圧補償?）を特定。
 2. **ToF レンジを ~1600mm へ拡張**（MAX_MM 引き上げ＋設定A の strip 制約確認）で過渡の余裕を増やす。
-3. 安定後 `--video`（PASS かつ trajectory.csv 非空時のみ、画像確認はサブエージェント限定=CLAUDE.md）。
+3. 安定後 `--video`（PASS かつ trajectory.csv 非空時のみ、画像確認はサブエージェント限定=AGENTS.md）。
 
 **検証レシピ**:
 ```bash
