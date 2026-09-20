@@ -224,6 +224,7 @@ RC の注入を仮想時間で行うことが、刻みが RC 周期より長く�
 | `bridge/sfu_flight.mjs` | 2 つの JS の確認が共有する構造体の配置と飛行（台本・物理・判定） |
 | `bridge/sfu_module_check.mjs` | wasm モジュールを JS から飛ばす確認（JS が Unity の代役） |
 | `bridge/sfu_heap_layout_check.mjs` | 同じモジュールを、起動前のヒープのずれ 24 通りで飛ばして一致を求める |
+| `bridge/sfu_inflight_alloc_check.mjs` | 同じモジュールを、**飛行中**のホストの呼び出しを種 N 通りの時点で挟みながら飛ばして一致を求める。`--noise` で保持の敏感さを測る |
 | `bridge/sfu_module_main.cpp` | 出荷するモジュールがリンクする翻訳単位。論理は持たない |
 | `bridge/sfu_exports.txt` | dylib が公開する記号の一覧 |
 | `CMakeLists.txt` | 独立したプロジェクト。MuJoCo を取得しない |
@@ -515,6 +516,54 @@ regression, so the peak altitude and the flight state are part of the verdict to
 ending at 0.013 m (on the ground) in state 1 — that is how the check was confirmed to detect the
 fault it guards against.
 
+### The Flight Does Not Depend on What the Host Does IN FLIGHT Either (the browser's defect is not here)
+
+**Whatever tick a host allocates, frees, drains the log or reads status and parameters on, the
+flight comes out the same.** This is where the heap scans above stop: they shift the heap once
+before `sfu_boot` and then leave it alone, while the browser touches the module on frame
+boundaries that land on a different tick every run. Because the same build flew the same script
+differently from one browser run to the next — ALT_HOLD holding about 0.40 m for five seconds and
+then the altitude coming apart, ending in `Impact detected: 7.9G` and a failsafe DISARM — an
+in-flight allocation defect of the same family as the alignment one had to be ruled out.
+
+`bridge/sfu_inflight_alloc_check.mjs` ruled it out. Between ticks, at moments a seeded random
+number generator picks, it interleaves `_malloc`/`_free` (random sizes up to 4096 B),
+`sfu_log_read_record` (until the ring is empty), `sfu_last_status`/`sfu_log_dropped` and
+`sfu_param_get`/`sfu_param_count`.
+
+| Sweep | Scale | Result |
+|---|---|---|
+| Default (every family) | 64 seeds × 60 s (24,000 ticks; per run about 8,400 allocations, 7,200 frees, 191 log reads, 4,900 status and 3,600 parameter calls) | The altitude series is **identical tick for tick across every seed** |
+| One family at a time (`--kinds alloc`/`log`/`status`/`param`) | 8 seeds × 25 s each | All identical |
+| Painted allocations (`--fill 0x00`/`0xAA`/`0xFF`) | 16 seeds × 25 s each | All identical — so there is no uninitialised read |
+
+**The browser's reproducibility defect therefore does not live inside the firmware module.** It is
+on the host side, outside the `.jslib`.
+
+### ALT_HOLD's Hold Does Not Diverge Under Small Input Perturbations
+
+With the allocation hypothesis refuted, the competing explanation — that floating-point
+differences between the browser's PhysX and the editor's are amplified until the altitude comes
+apart eleven seconds later — was measured as well. `--noise <metres>` adds a symmetric
+perturbation to the host's position every tick. The band is measured from the moment ALT_HOLD has
+settled (8.3 s) to the arrival of the gust (10 s).
+
+| Perturbation | Altitude band while holding (min..max over 8 seeds) | Seeds that lost the hold |
+|---|---|---|
+| 0 (none) | 0.0647 m | 0 |
+| 1e-7 m | 0.0644..0.0677 m | 0 |
+| 1e-6 m | 0.0646..0.0684 m | 0 |
+| 1e-5 m | 0.0605..0.0694 m | 0 |
+
+Extending the flight to 60 s changes nothing and no seed collapses. **The hold's band grows only
+in proportion to the perturbation; it does not diverge.** 1e-6 m is the order a difference between
+two physics engines would be, and it widens the band by only 0.004 m over the unperturbed case.
+That explanation does not hold either.
+
+(At 1e-4 m every seed stays at a peak of 0.013 m in state 1 and never takes off. That is not a
+collapsed hold but a large per-tick perturbation corrupting the pre-take-off calibration — a
+different phenomenon.)
+
 `sfu_smoke_options.hpp` still holds `const char*` into `argv` rather than `std::string`. That is no
 longer a correctness requirement, just the cheaper way to read a command line that outlives the
 parse.
@@ -642,6 +691,7 @@ flies with the latter.
 | `bridge/sfu_flight.mjs` | The struct layout and the flight (script, physics, verdict) both JS checks share |
 | `bridge/sfu_module_check.mjs` | Flies the wasm module from JS (JS stands in for Unity) |
 | `bridge/sfu_heap_layout_check.mjs` | Flies the same module behind 24 pre-boot heap shifts and requires them to agree |
+| `bridge/sfu_inflight_alloc_check.mjs` | Flies the same module while interleaving a host's calls **in flight** at N seeded moments and requires them to agree; `--noise` measures the hold's sensitivity instead |
 | `bridge/sfu_module_main.cpp` | The translation unit the shipped module links; holds no logic |
 | `bridge/sfu_exports.txt` | The symbols the dylib exposes |
 | `CMakeLists.txt` | A project of its own; does not fetch MuJoCo |

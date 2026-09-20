@@ -152,3 +152,19 @@ unity-native-test seconds="30": unity-native-build
         simulator/unity/native/build-module-spike/sfu_firmware.js 14
     node simulator/unity/native/bridge/sfu_heap_layout_check.mjs \
         simulator/unity/native/build-wasm/sfu_firmware.js 14
+    # And the same question asked of what the host does BETWEEN ticks, which is
+    # where the two heap scans stop: they shift the heap once before `sfu_boot`
+    # and then leave it alone, while the browser allocates, frees, drains the log
+    # and reads parameters on frame boundaries that land on different ticks every
+    # run. Sixteen seeds over 25 simulated seconds, each holding ALT_HOLD well
+    # past the moment a browser run came apart; the full 64-seed sweep is
+    # `--seeds 64`, and `--noise <metres>` measures the hold's sensitivity
+    # instead of its determinism.
+    # 同じ問いを、刻みと刻みの**あいだ**にホストが行うことへ向ける。2 つのヒープの
+    # 走査が届かないのがそこである。走査は `sfu_boot` の前に 1 回ずらして以後放って
+    # おくが、ブラウザは実行ごとに違う刻みへ落ちるフレームの切れ目で、確保・解放・
+    # ログの取り出し・パラメータの読み出しを行う。種 16 通り、各 25 秒で、ブラウザの
+    # 実行が崩れた時刻を十分に越えて ALT_HOLD を保つ。64 通りの全数は `--seeds 64`、
+    # `--noise <メートル>` は決定性ではなく保持の敏感さを測る。
+    node simulator/unity/native/bridge/sfu_inflight_alloc_check.mjs \
+        simulator/unity/native/build-wasm/sfu_firmware.js 25 --seeds 16

@@ -160,6 +160,17 @@ const GUST_FORCE_N = 0.07;
 export const LEVEL_MAX_DEG = 20.0;
 export const FLIGHT_STATE_FLYING = 5;
 
+// The window over which the hold's altitude band is measured: from two seconds
+// after the switch to ALT_HOLD, by which time the climb has settled, to the
+// moment the gust arrives. Measuring from the switch itself would report the
+// settling overshoot rather than the hold, and measuring into the gust would
+// report the gust.
+// 保持の高度の幅を測る区間。ALT_HOLD へ移ってから 2 秒後（上昇が落ち着く頃）から、
+// 突風が来る瞬間まで。切り替えの瞬間から測ると、保持ではなく落ち着くまでの行き過ぎを
+// 報告してしまう。突風の中まで測れば、報告するのは突風になってしまう。
+const HOLD_SETTLED_US = 8300000;
+const HOLD_END_US = GUST_START_US;
+
 function rcScriptAt(nowUs) {
   for (const entry of RC_SCRIPT) {
     if (nowUs < entry.tEndUs) return entry;
@@ -262,6 +273,36 @@ export function stepForStatus(sfu, mem, dtUs) {
 /// はそこでファームのログを取り出す（ホストが行うのは最後に 1 回ではなく時々で
 /// ある）。結果を記録として返す。
 export function fly(sfu, mem, simSeconds, onSecond = null) {
+  return flyTraced(sfu, mem, simSeconds, { onSecond });
+}
+
+/// The flight itself, with the hooks only `sfu_inflight_alloc_check.mjs` needs.
+/// `fly` is this with no hooks, so the two can never drift apart: whatever the
+/// module check blesses is exactly what the seeded sweep compares.
+///
+/// `hooks.onSecond(nowUs)` — as `fly`'s argument of the same name.
+/// `hooks.betweenTicks()` — run after every tick, where a host's own work goes.
+/// `hooks.positionNoise()` — metres added to each position axis per tick, for
+///   measuring how sensitive the hold is to a difference the size of another
+///   physics engine's rounding. Null adds nothing at all, not zero: an addition
+///   of 0.0 is exact, but leaving it out keeps the arithmetic byte-identical to
+///   what `fly` has always done.
+///
+/// 飛行そのもの。フックは `sfu_inflight_alloc_check.mjs` だけが要るものである。
+/// `fly` はこれをフック無しで呼ぶだけなので、2 つが食い違うことはない。モジュールの
+/// 確認が認めるものが、そのまま種の走査が比べるものになる。
+///
+/// `hooks.onSecond(nowUs)` — `fly` の同名の引数と同じ。
+/// `hooks.betweenTicks()` — 各刻みの後に走る。ホスト自身の仕事はここに入る。
+/// `hooks.positionNoise()` — 刻みごとに位置の各軸へ足す量 [m]。別の物理エンジンの
+///   丸めほどの違いに、保持がどれだけ敏感かを測るためのもの。null は 0 を足すの
+///   ではなく**何も足さない**。0.0 の加算は厳密ではあるが、省いておけば演算が
+///   `fly` が従来行ってきたものとバイト単位で同じに保たれる。
+export function flyTraced(sfu, mem, simSeconds, hooks = {}) {
+  const onSecond = hooks.onSecond ?? null;
+  const betweenTicks = hooks.betweenTicks ?? null;
+  const positionNoise = hooks.positionNoise ?? null;
+
   sfu.HEAP32[mem.i32(mem.inPtr, IN_STRUCT_SIZE)] = IN_SIZE;
   sfu.HEAP32[mem.i32(mem.outPtr, OUT_STRUCT_SIZE)] = OUT_SIZE;
   sfu.HEAP32[mem.i32(mem.inPtr, IN_DT_US)] = TICK_US;
@@ -288,9 +329,34 @@ export function fly(sfu, mem, simSeconds, onSecond = null) {
   let gustIsOn = false;
   let failure = null;
 
+  // The altitude tick by tick, as the raw doubles: the seeded sweep compares
+  // these for exact equality, so rounding them would hide a small divergence
+  // that later grows into a lost hold.
+  // 刻みごとの高度を生の double で残す。種の走査はこれを厳密に比べるので、丸めると
+  // 後で保持を失うほどに育つ小さな食い違いを見逃してしまう。
+  const trace = [];
+
+  // The altitude band ALT_HOLD occupies while it is holding — the interval
+  // between the settled hold and the arrival of the gust. This is the number
+  // the noise sweep reads.
+  // ALT_HOLD が保持している間に高度が占める幅。保持が落ち着いてから突風が来るまでの
+  // 区間である。雑音の走査が読むのはこの値である。
+  let holdMin = Infinity;
+  let holdMax = -Infinity;
+
   while (nowUs < totalUs) {
     // Pack what the host has, the way Unity's .jslib will.
     // ホストが持っている情報を、Unity の .jslib が行うのと同じ形で詰める。
+    // With a noise source, the body itself is nudged before it is packed, so
+    // the perturbation feeds back through the firmware's control as a real
+    // physics difference would, rather than being a one-tick measurement error.
+    // 雑音源があるときは、詰める前に剛体そのものを揺らす。そうすれば揺らぎは、
+    // 1 刻みの測定誤差ではなく本物の物理の違いと同じように、ファームの制御を
+    // 通って戻ってくる。
+    if (positionNoise !== null) {
+      for (let axis = 0; axis < 3; ++axis) body.position[axis] += positionNoise();
+    }
+
     for (let axis = 0; axis < 3; ++axis) {
       sfu.HEAPF32[f32(inPtr, IN_POSITION) + axis] = body.position[axis];
       sfu.HEAPF32[f32(inPtr, IN_VELOCITY_WORLD) + axis] = body.velocityWorld[axis];
@@ -428,6 +494,12 @@ export function fly(sfu, mem, simSeconds, onSecond = null) {
     body.accelLocal = rotateToBody(body.rotation, kinematicWorld);
 
     lastAltitude = body.position[1];
+    trace.push(lastAltitude);
+    const isHolding = nowUs >= HOLD_SETTLED_US && nowUs < HOLD_END_US;
+    if (isHolding) {
+      if (lastAltitude < holdMin) holdMin = lastAltitude;
+      if (lastAltitude > holdMax) holdMax = lastAltitude;
+    }
     if (lastAltitude > maxAltitude) maxAltitude = lastAltitude;
     lastTiltDeg = tiltFromLevelDeg(body.rotation);
     if (lastTiltDeg > maxTiltDeg) maxTiltDeg = lastTiltDeg;
@@ -442,6 +514,7 @@ export function fly(sfu, mem, simSeconds, onSecond = null) {
     if (moduleNowUs !== ticks * TICK_US) clockExact = false;
 
     if (onSecond !== null && nowUs % 1000000 === 0) onSecond(nowUs);
+    if (betweenTicks !== null) betweenTicks();
   }
 
   const wallSeconds = Number(process.hrtime.bigint() - wallStart) / 1e9;
@@ -454,11 +527,21 @@ export function fly(sfu, mem, simSeconds, onSecond = null) {
   const level = lastTiltDeg < LEVEL_MAX_DEG;
   const flying = lastFlightState === FLIGHT_STATE_FLYING;
 
+  // No tick fell in the hold window (a run too short to reach it), which is not
+  // a band of zero but no measurement at all.
+  // 保持の区間に刻みが 1 つも入らなかった場合（そこへ届かない短い実行）。これは
+  // 幅 0 ではなく、測っていないということである。
+  const measuredHold = holdMax >= holdMin;
+
   return {
     failure,
     ticks, clockExact, wallSeconds,
     maxAltitude, lastAltitude, maxTiltDeg, lastTiltDeg, lastFlightState,
     hovering, level, flying,
+    trace,
+    holdBand: measuredHold ? holdMax - holdMin : NaN,
+    holdMin: measuredHold ? holdMin : NaN,
+    holdMax: measuredHold ? holdMax : NaN,
     passed: failure === null && hovering && level && flying && clockExact,
   };
 }
