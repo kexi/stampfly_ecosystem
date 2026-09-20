@@ -70,6 +70,9 @@ namespace StampFly.Remote
         [DllImport("__Internal")]
         private static extern int SfuRemoteTrace(string body);
 
+        [DllImport("__Internal")]
+        private static extern string SfuRemoteFaults();
+
         /// <summary>Whether the .jslib is there to call. / 呼べる .jslib があるか。</summary>
         internal const bool Available = true;
 
@@ -84,6 +87,15 @@ namespace StampFly.Remote
         internal static bool Trace(string body)
         {
             return SfuRemoteTrace(body) != 0;
+        }
+
+        /// <summary>
+        /// The page-level faults kept since load, as a JSON array.
+        /// 読み込み以降に保持したページ全体の異常。JSON の配列。
+        /// </summary>
+        internal static string Faults()
+        {
+            return SfuRemoteFaults();
         }
 
         /// <summary>Start the bridge. / 橋を始める。</summary>
@@ -174,6 +186,12 @@ namespace StampFly.Remote
         internal static bool Trace(string body)
         {
             return false;
+        }
+
+        /// <summary>No page, so no page-level faults. / ページが無いので異常も無い。</summary>
+        internal static string Faults()
+        {
+            return "[]";
         }
 #endif
     }

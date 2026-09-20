@@ -420,6 +420,7 @@ namespace StampFly.App
                          "sim.pause", "sim.step", "sim.speed", "sim.reset",
                          "sim.power_cycle", "sim.state", "sim.wait",
                          "sim.trace_start", "sim.trace_stop", "sim.trace_dump",
+                         "plant.torque_probe", "plant.wind",
                          "vehicle.state", "rc.set", "rc.arm", "rc.release",
                      })
             {
@@ -475,16 +476,50 @@ namespace StampFly.App
 
             bridge.Commands.Register("sim.reset", _ =>
             {
+                // Deliberately NOT a restart. The body goes back to its spawn
+                // and the firmware keeps running, so the clock keeps counting
+                // and a vehicle that was armed is still armed -- which is the
+                // point when somebody wants to retry a manoeuvre mid-flight.
+                // For a clean slate use `sim.power_cycle`. The answer says
+                // which is which, because "reset" reads like the other one.
+                // これは意図して**再起動ではない**。機体は出発点へ戻り、ファームは
+                // 動き続けるので、時計は数え続け、ARM されていた機体は ARM された
+                // ままである。飛行の途中で操作をやり直したい人が欲しいのはこちら
+                // である。まっさらにしたいなら `sim.power_cycle` を使う。「reset」は
+                // もう一方に読めるので、答えにどちらがどちらかを書く。
                 simLoop.MoveToSpawn();
-                return SimCommandResult.Success();
-            }, "Put the vehicle back at its spawn, leaving the firmware running");
+                return SimCommandResult.Success(
+                    "{" +
+                    $"\"sim_us\":{simLoop.Clock.VirtualMicroseconds}," +
+                    $"\"armed\":{(simLoop.LastResult.Armed != 0 ? "true" : "false")}," +
+                    "\"note\":\"the body moved; the clock and the firmware kept " +
+                    "running — use sim.power_cycle for a fresh start\"" +
+                    "}");
+            }, "Move the vehicle to its spawn; the firmware and clock keep running");
 
             bridge.Commands.Register("sim.power_cycle", _ =>
             {
+                // Centre the scripted sticks too. A power cycle is "a new
+                // vehicle on the bench", and a new vehicle does not meet the
+                // last flight's throttle and ALT_HOLD bit still held down: a
+                // page left with `throttle 0, alt_hold true` cannot be armed
+                // at all, which is what a person trying this by hand hits.
+                // `rc.release` still hands the sticks back to the keyboard;
+                // this only clears what a script was holding.
+                // 台本のスティックも中央へ戻す。電源の入れ直しは「台の上の新しい
+                // 機体」であり、新しい機体が前の飛行のスロットルと ALT_HOLD の
+                // ビットを握ったままということは無い。`throttle 0, alt_hold true`
+                // のまま残ったページは ARM すらできず、手で試した人がぶつかるのが
+                // これである。`rc.release` は従来どおりスティックをキーボードへ
+                // 返す。ここで消すのは台本が握っていた値だけである。
+                scripted.Frame = RcFrame.Centred;
                 simLoop.PowerOn();
                 return SimCommandResult.Success(
-                    $"{{\"power_cycles\":{simLoop.PowerCycles}}}");
-            }, "Discard the firmware and start a new one from INIT");
+                    "{" +
+                    $"\"power_cycles\":{simLoop.PowerCycles}," +
+                    "\"sticks\":\"centred\"" +
+                    "}");
+            }, "Discard the firmware, start a new one from INIT, centre the sticks");
 
             bridge.Commands.Register("sim.wait", args => BeginWait(bridge, args),
                 "Hold until a virtual time arrives, then answer");
@@ -529,6 +564,60 @@ namespace StampFly.App
             bridge.Commands.Register("sim.trace_dump",
                 _ => DumpTrace(bridge),
                 "Post the ring to /api/trace and answer with the count");
+
+            bridge.Commands.Register("plant.torque_probe", args =>
+            {
+                int steps = args.Int("steps", TorqueProbe.DefaultSteps);
+                bool isOutOfRange = steps < 1 || steps > 4000;
+                if (isOutOfRange)
+                {
+                    return SimCommandResult.Failure("steps must be between 1 and 4000");
+                }
+
+                // Pause first: the probe moves the body and drives PhysX
+                // itself, so a tick running underneath it would fight it.
+                // 先に止める。この測定は機体を動かし PhysX を自分で回すので、下で
+                // 刻みが走っていると取り合いになる。
+                bool wasPaused = simLoop.Clock.IsPaused;
+                simLoop.Clock.Pause();
+
+                Rigidbody body = simLoop.GetComponent<Rigidbody>();
+                TorqueProbe.AxisResult[] axes = TorqueProbe.Run(body, steps);
+
+                if (!wasPaused) { simLoop.Clock.Resume(); }
+                return SimCommandResult.Success(TorqueProbe.ToJson(body, axes));
+            }, "Apply a known torque about each body axis and report tau/I");
+
+            bridge.Commands.Register("plant.wind", args =>
+            {
+                // A steady world-frame force on the airframe, which is how a
+                // check pushes a flight off symmetry. The firmware owns the
+                // wind model, so this only tells it what is blowing.
+                // 機体にかかる世界系の一定の力。検査が飛行を対称から押し出す
+                // 手立てである。風のモデルはファームが持つので、ここは何が吹いて
+                // いるかを伝えるだけである。
+                float x = (float)args.Double("x", 0.0);
+                float y = (float)args.Double("y", 0.0);
+                float z = (float)args.Double("z", 0.0);
+
+                IFirmware firmware = simLoop.Firmware;
+                bool hasNoFirmware = firmware == null;
+                if (hasNoFirmware)
+                {
+                    return SimCommandResult.Failure("the firmware is not running");
+                }
+
+                int status = firmware.SetWind(x, y, z);
+                bool refused = status != SfuAbi.Ok;
+                if (refused)
+                {
+                    return SimCommandResult.Failure(
+                        $"sfu_set_wind: {SfuAbi.Describe(status)}");
+                }
+
+                return SimCommandResult.Success(
+                    $"{{\"wind\":[{x:R},{y:R},{z:R}]}}");
+            }, "Set a steady world-frame wind force on the airframe [N]");
         }
 
         /// <summary>

@@ -1796,7 +1796,8 @@ def run_check_fly(args: argparse.Namespace) -> int:
 
     console.info(f"Flying the stage 3 check in '{args.world}' "
                  f"({args.hold_seconds}s of hold)")
-    report = module.run(send, args.world, args.hold_seconds)
+    report = module.run(send, args.world, args.hold_seconds,
+                        getattr(args, "disturb", 0.0))
 
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
@@ -2078,6 +2079,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     fly_parser.add_argument(
         "--world", default="empty_room",
         help="World to fly in (default: empty_room)",
+    )
+    fly_parser.add_argument(
+        "--disturb", type=float, default=0.0, dest="disturb",
+        help="lateral gust during the hold [N]; 0 disables it. A flight that "
+             "is never pushed off symmetry never exercises the attitude or "
+             "yaw loops",
     )
     fly_parser.add_argument(
         "--hold-seconds", type=float, default=10.0, dest="hold_seconds",

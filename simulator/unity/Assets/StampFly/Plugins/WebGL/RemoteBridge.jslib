@@ -68,6 +68,25 @@ var SfuRemoteLibrary = {
     // 取り出せるよう保持する。
     lastTrace: '',
 
+    // Page-level faults, kept from the moment the bridge starts.
+    //
+    // When Emscripten's main loop throws, it stops scheduling the next frame:
+    // the player is dead but the page is not, so `window.stampfly.command`
+    // still answers while the simulation has stopped for good. By the time
+    // anybody notices and opens devtools, the console history is gone. These
+    // are captured from load so `remote.status` can hand back the exception
+    // that killed the loop.
+    //
+    // ページ全体の異常を、橋が始まった時点から保持する。
+    //
+    // Emscripten のメインループが例外を投げると、次のフレームを予約しなくなる。
+    // プレイヤーは死んでいるがページは生きているので、シミュレーションが完全に
+    // 止まった後も `window.stampfly.command` は答え続ける。誰かが気付いて
+    // devtools を開く頃には、コンソールの履歴は消えている。読み込み時から拾って
+    // おき、`remote.status` がループを殺した例外を返せるようにする。
+    faults: [],
+    FAULT_LIMIT: 50,
+
     // Commands the page raised itself (window.stampfly.command) wait here for
     // C# to answer them; the server's commands are answered over HTTP instead.
     // ページ自身が起こした命令（window.stampfly.command）は、C# の答えをここで
@@ -352,6 +371,7 @@ var SfuRemoteLibrary = {
         download: function () { return SfuRemote.downloadLogs(); },
         trace: function () { return SfuRemote.lastTrace; },
         downloadTrace: function () { return SfuRemote.downloadTrace(); },
+        faults: function () { return SfuRemote.faults.slice(); },
         get runId() { return SfuRemote.runId; },
         get mode() {
           return SfuRemote.mode === SfuRemote.MODE_LOCAL ? 'local' : 'public';
@@ -415,6 +435,59 @@ var SfuRemoteLibrary = {
      * 直近のトレースをファイルとして渡す。送信が届かなかったページのため。
      * ログとは別の名前にしてあり、保存先で互いを上書きしない。
      */
+    /**
+     * Start keeping page-level faults. Three sources, because the one that
+     * kills the main loop may arrive by any of them: a synchronous throw
+     * (`onerror`), a rejected promise nobody handled, and Unity's own
+     * `console.error`, which is where an IL2CPP managed exception surfaces.
+     * The original console.error is still called, so devtools looks unchanged.
+     * ページ全体の異常を拾い始める。3 つの入口から拾う。メインループを殺すもの
+     * は、そのどれで来るか分からないからである。同期の throw（`onerror`）、誰も
+     * 扱わなかった Promise の拒否、そして Unity 自身の `console.error` ― IL2CPP の
+     * managed な例外が出てくるのがそこである。元の console.error も呼ぶので、
+     * devtools の見え方は変わらない。
+     */
+    watchForFaults: function () {
+      window.addEventListener('error', function (event) {
+        SfuRemote.noteFault('onerror', event.message
+          + (event.filename ? ' @ ' + event.filename + ':' + event.lineno : ''));
+      });
+
+      window.addEventListener('unhandledrejection', function (event) {
+        SfuRemote.noteFault('unhandledrejection', String(event.reason));
+      });
+
+      var original = console.error.bind(console);
+      console.error = function () {
+        try {
+          SfuRemote.noteFault('console.error',
+            Array.prototype.map.call(arguments, String).join(' '));
+        } catch (ignored) {
+          // Never let the capture itself break the page's logging.
+          // 拾う処理そのものがページのログを壊してはならない。
+        }
+        original.apply(null, arguments);
+      };
+    },
+
+    /**
+     * Keep one fault with the moment it happened. The moment matters: it is
+     * what lets a reader line the fault up against the last `sim.stats` line
+     * and say the loop died here.
+     * 異常を 1 つ、起きた時刻とともに保持する。時刻が重要である。読み手が最後の
+     * `sim.stats` の行と突き合わせ、ここでループが死んだと言えるのはそれによる。
+     */
+    noteFault: function (kind, text) {
+      SfuRemote.faults.push({
+        at: new Date().toISOString(),
+        kind: kind,
+        text: String(text).slice(0, 500),
+      });
+      if (SfuRemote.faults.length > SfuRemote.FAULT_LIMIT) {
+        SfuRemote.faults.shift();
+      }
+    },
+
     downloadTrace: function () {
       var text = SfuRemote.lastTrace || '';
       var url = URL.createObjectURL(new Blob([text], { type: 'application/x-ndjson' }));
@@ -440,6 +513,7 @@ var SfuRemoteLibrary = {
     SfuRemote.target = UTF8ToString(targetPointer);
     SfuRemote.commandMethod = UTF8ToString(methodPointer);
     SfuRemote.publish();
+    SfuRemote.watchForFaults();
 
     window.addEventListener('pagehide', SfuRemote.beacon);
     window.addEventListener('visibilitychange', function () {
@@ -523,6 +597,23 @@ var SfuRemoteLibrary = {
     var dropped = SfuRemote.dropped;
     SfuRemote.dropped = 0;
     return dropped;
+  },
+
+  /**
+   * The page-level faults kept since load, as a JSON array. Read by
+   * `remote.status`, so a stalled player can be asked what killed it from the
+   * terminal rather than from a devtools console that has since been cleared.
+   * 読み込み以降に保持したページ全体の異常を JSON の配列で返す。`remote.status`
+   * が読むので、止まったプレイヤーに何が殺したのかを、既に消えた devtools の
+   * コンソールではなく端末から尋ねられる。
+   */
+  SfuRemoteFaults__deps: ['$SfuRemote'],
+  SfuRemoteFaults: function () {
+    var text = JSON.stringify(SfuRemote.faults);
+    var size = lengthBytesUTF8(text) + 1;
+    var pointer = _malloc(size);
+    stringToUTF8(text, pointer, size);
+    return pointer;
   },
 
   /** Answer one command. / 命令 1 つに答える。 */

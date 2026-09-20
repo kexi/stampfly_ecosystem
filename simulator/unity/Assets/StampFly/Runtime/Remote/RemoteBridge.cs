@@ -418,7 +418,16 @@ namespace StampFly.Remote
                    "\"run_id\":" + LogJson.Quote(Log.RunId) + "," +
                    "\"jslib\":" + (RemoteNative.Available ? "true" : "false") + "," +
                    "\"commands\":" + Commands.Count + "," +
-                   "\"kept_lines\":" + Log.RingCount +
+                   "\"kept_lines\":" + Log.RingCount + "," +
+                   // What the page has caught since load. When the Emscripten
+                   // main loop dies, the player stops stepping while commands
+                   // keep being answered from JavaScript, so this is the one
+                   // place a terminal can ask what happened.
+                   // 読み込み以降にページが拾ったもの。Emscripten のメインループ
+                   // が死ぬと、プレイヤーは刻むのをやめる一方、命令は JavaScript
+                   // から答えられ続ける。端末が何が起きたか尋ねられる場所はここ
+                   // だけである。
+                   "\"faults\":" + RemoteNative.Faults() +
                    "}";
         }
 

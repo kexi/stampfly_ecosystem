@@ -88,6 +88,13 @@ DESCEND_SECONDS = 6.0
 # 出る高度を捕まえられるだけあり、飛行そのものより長くはならない数にしてある。
 HOLD_SAMPLES = 10
 
+# How long a `--disturb` gust blows for, in simulated seconds. Long enough for
+# the attitude loop to lean into it and settle, short enough that the recovery
+# still happens inside the hold.
+# `--disturb` の突風が吹く長さ。シミュレーションの秒で表す。姿勢のループが
+# 風に傾いて落ち着くだけ長く、回復が保持の中で終わるだけ短い。
+GUST_SECONDS = 2.0
+
 # How long one `sim.wait` is allowed to hold, in real seconds. Below the page's
 # own cap (`SimRemoteCommands.MaxWaitSeconds`, 60 s) and well below the
 # server's 70 s connection window, so the page is still polling throughout and
@@ -261,10 +268,12 @@ class FlightScript:
     """The stage 3 flight, step by step, against one sender.
     段階 3 の飛行を、1 つの送り手に対して 1 手順ずつ進める。"""
 
-    def __init__(self, send: Sender, world: str, hold_seconds: float) -> None:
+    def __init__(self, send: Sender, world: str, hold_seconds: float,
+                 disturb: float = 0.0) -> None:
         self.send = send
         self.world = world
         self.hold_seconds = hold_seconds
+        self.disturb = disturb
         self.recorder = FlightRecorder()
 
     # -- the primitives ---------------------------------------------------
@@ -433,8 +442,29 @@ class FlightScript:
         hold_end = HOLD_AT_S + self.hold_seconds
         span = hold_end - settled_at
 
+        # A flight that is never pushed off symmetry never asks the attitude
+        # or yaw loops to do anything, and a check made only of that case
+        # cannot see a fault in them -- which is how a yaw-axis instability
+        # reached the browser unnoticed. `--disturb` puts a lateral gust in
+        # the middle of the hold and requires the flight to survive it.
+        # 対称から一度も押し出されない飛行は、姿勢のループにもヨーのループにも
+        # 何も求めない。その場合だけで作った検査は、そこにある誤りを見られない。
+        # ヨー軸の不安定が気付かれずブラウザまで届いたのはそのためである。
+        # `--disturb` は保持の途中で横風を当て、飛行がそれを生き延びることを求める。
+        gust_at = settled_at + span * 0.4
+        gust_off = gust_at + GUST_SECONDS
+
         for index in range(1, HOLD_SAMPLES + 1):
             moment = settled_at + span * index / HOLD_SAMPLES
+
+            wants_gust = self.disturb > 0.0 and gust_at <= moment < gust_off
+            if wants_gust:
+                self.command("plant.wind", {"x": self.disturb, "y": 0.0, "z": 0.0})
+
+            wants_calm = self.disturb > 0.0 and moment >= gust_off
+            if wants_calm:
+                self.command("plant.wind", {"x": 0.0, "y": 0.0, "z": 0.0})
+
             self.wait_until(moment, "holding")
 
         return hold_end
@@ -604,7 +634,8 @@ def _seconds(sim_us: Any) -> str:
     return f"{sim_us / 1e6:.2f}s" if isinstance(sim_us, (int, float)) else "-"
 
 
-def run(send: Sender, world: str, hold_seconds: float) -> Dict[str, Any]:
+def run(send: Sender, world: str, hold_seconds: float,
+        disturb: float = 0.0) -> Dict[str, Any]:
     """Fly the check with the given sender, returning the report. A step that
     could not be carried out becomes a failing report with its reason rather
     than an exception reaching the caller, so `sf unity check fly` always has
@@ -612,7 +643,7 @@ def run(send: Sender, world: str, hold_seconds: float) -> Dict[str, Any]:
     渡された送り手で確認を飛ばし、報告を返す。行えなかった手順は、呼び出し側へ
     届く例外ではなく、理由を持つ不合格の報告にする。`sf unity check fly` が常に
     出すものと、非 0 で終わる根拠を持てるようにするためである。"""
-    script = FlightScript(send, world, hold_seconds)
+    script = FlightScript(send, world, hold_seconds, disturb)
     try:
         return script.fly()
     except FlyCheckError as failure:
@@ -642,6 +673,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[1])
     parser.add_argument("--world", default="empty_room")
     parser.add_argument("--hold-seconds", type=float, default=DEFAULT_HOLD_SECONDS)
+    parser.add_argument("--disturb", type=float, default=0.0,
+                        help="lateral gust during the hold [N]; 0 disables it")
     parsed = parser.parse_args(argv)
 
     # Importing here keeps this module free of an sfcli dependency for the
@@ -655,7 +688,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             os.path.abspath(__file__)))), "lib"))
     from sfcli.commands import unity
 
-    report = run(unity.make_sender(), parsed.world, parsed.hold_seconds)
+    report = run(unity.make_sender(), parsed.world, parsed.hold_seconds,
+                 parsed.disturb)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report.get("pass") else 1
 
