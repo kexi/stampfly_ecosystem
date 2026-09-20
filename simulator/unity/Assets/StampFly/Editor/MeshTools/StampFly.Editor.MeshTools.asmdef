@@ -1,0 +1,19 @@
+{
+    "name": "StampFly.Editor.MeshTools",
+    "rootNamespace": "StampFly.Editor.MeshTools",
+    "references": [
+        "StampFly.Core",
+        "StampFly.Vehicle"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

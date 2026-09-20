@@ -422,6 +422,11 @@ simulator/
   `simulator/shared/assets/vendor/three/`（README に出典と MIT 表記）、
   `tools/log_analyzer/vendor/plotly.min.js`（`plotly.min.js.LICENSE.txt`）
 - Python の依存は `pyproject.toml` / `requirements*.txt` で管理し、同梱しない
+- **この規則を満たしていない資産（既知の例外）**: `simulator/shared/assets/meshes/` の機体形状 STL は
+  外部リポジトリ（`kouhei1970/stampfly_sim`）から移されたもので、元の CAD の作者と利用条件が不明であり、
+  ライセンス全文を添えられていない。この事実は同ディレクトリの `README.md` に明記してある。全シミュレータ
+  （SILS・VPython 版・Genesis 版・Unity 版）と `landing/assets/model/`（同一ファイルの複製 9 個）が読む。
+  出所が確認できたら同 README を更新する
 
 ---
 

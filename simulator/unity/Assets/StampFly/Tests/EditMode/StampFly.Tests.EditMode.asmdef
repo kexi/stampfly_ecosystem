@@ -10,7 +10,9 @@
         "StampFly.Sim",
         "StampFly.Core",
         "StampFly.Remote",
-        "StampFly.App"
+        "StampFly.App",
+        "StampFly.Vehicle",
+        "StampFly.Editor.MeshTools"
     ],
     "includePlatforms": [
         "Editor"

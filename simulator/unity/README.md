@@ -198,8 +198,10 @@ simulator/unity/
 │       │   ├── PhysicsStepSettings.cs    PhysX の全体設定と刻みの長さ
 │       │   ├── GyroscopicTerm.cs         -ω×(Iω) と世界座標系の角運動量
 │       │   └── AccelerometerModel.cs     R⁻¹((v後−v前)/dt − g)
+│       ├── Runtime/Resources/StampFly/   実行時に Resources から読む材質とメッシュ
 │       ├── Editor/Builders/              WebGL ビルドの入口
 │       ├── Editor/Commands/              [CliCommand] の検証用
+│       ├── Editor/MeshTools/             STL → メッシュ資産の変換（§9 の「機体の見た目」）
 │       └── Tests/PlayMode/               判定 6 件＋計測 10 件
 ├── Packages/manifest.json
 ├── ProjectSettings/
@@ -539,7 +541,13 @@ Assets/StampFly/
 │   └── KeyboardRc.cs                 `sf sils fly` と同じ割り当て
 ├── Runtime/Vehicle/                  StampFly.Vehicle（見た目だけ。コライダを持たない）
 │   ├── PropellerMesh.cs              3 枚羽根の手続き生成
+│   ├── VehicleParts.cs               部品 13 個と色の一覧（色は stampfly_fixed.urdf の rgba）
 │   └── VehicleAppearance.cs          板・モータ缶 4 つ・プロペラ 4 つ
+├── Runtime/Resources/StampFly/       実行時に Resources から読むもの（プレイヤーのビルドに入る）
+│   ├── Materials/                    不透明・半透明の材質の雛形
+│   └── Meshes/                       STL から変換した機体の形状（<部品名>.asset。コミットする）
+├── Editor/MeshTools/                 STL → メッシュ資産の変換（エディタでのみ動く）
+│   └── BinaryStlReader.cs            バイナリ STL を素の三角形として読む（保存法線は使わない）
 ├── Runtime/Ui/                       StampFly.Ui
 │   ├── SimHud.cs                     UI Toolkit の表示（実時間比・1 刻みの所要時間・fps）
 │   └── FollowCamera.cs               追従カメラ

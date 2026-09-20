@@ -93,6 +93,27 @@ namespace StampFly.Vehicle
         // 機体の上方向のまわりに各モータが回る向き。M1〜M4。
         private static readonly float[] TurnDirections = { 1.0f, -1.0f, 1.0f, -1.0f };
 
+        /// <summary>
+        /// How far a propeller is DRAWN turning this frame [deg], which is not
+        /// how far it really turned: the speed is capped at
+        /// <see cref="VisualSpeedCapRadPerSecond"/> for the reason that constant
+        /// gives. Both appearances share this one rule so a viewer cannot tell
+        /// which of them is drawing, and so a change to the rule cannot reach
+        /// only one of them.
+        /// プロペラがこのフレームで**描かれる**回転角 [deg]。実際に回った角度では
+        /// ない。角速度は <see cref="VisualSpeedCapRadPerSecond"/> で頭打ちにして
+        /// あり、理由はその定数が述べる。2 つの見た目がこの 1 つの規則を共有するのは、
+        /// 見る側がどちらが描いているか分からないようにするためであり、規則の変更が
+        /// 片方にしか届かないことが起きないようにするためである。
+        /// </summary>
+        public static float DrawnTurnDegrees(int motor, float omegaRadPerSecond,
+                                             float elapsedSeconds)
+        {
+            float shown = Mathf.Min(
+                Mathf.Abs(omegaRadPerSecond), VisualSpeedCapRadPerSecond);
+            return TurnDirections[motor] * shown * Mathf.Rad2Deg * elapsedSeconds;
+        }
+
         [Tooltip("The loop whose motor speeds drive the propellers. " +
                  "プロペラを回す元になる、モータ角速度を持つループ。")]
         public SimLoop simLoop;
@@ -143,10 +164,8 @@ namespace StampFly.Vehicle
                     continue;
                 }
 
-                float shown = Mathf.Min(
-                    Mathf.Abs(speeds[motor]), VisualSpeedCapRadPerSecond);
-                propellerAngles[motor] +=
-                    TurnDirections[motor] * shown * Mathf.Rad2Deg * elapsedSeconds;
+                propellerAngles[motor] += DrawnTurnDegrees(
+                    motor, speeds[motor], elapsedSeconds);
                 propeller.localRotation =
                     Quaternion.Euler(0.0f, propellerAngles[motor], 0.0f);
             }

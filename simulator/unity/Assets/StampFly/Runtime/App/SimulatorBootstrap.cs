@@ -133,8 +133,12 @@ namespace StampFly.App
             vehicle.AddComponent<SimRemoteCommands>();
 #endif
 
-            var appearance = vehicle.AddComponent<VehicleAppearance>();
-            appearance.simLoop = loop;
+            // Which appearance the vehicle gets is VehicleLook's decision, not
+            // this builder's: the two appearances and the reason for choosing
+            // between them belong together.
+            // どの見た目にするかを決めるのは VehicleLook であって、この組み立て側
+            // ではない。2 つの見た目と、その間を選ぶ理由は、一緒に在るべきである。
+            VehicleLook.Attach(vehicle, loop);
 
             return loop;
         }
