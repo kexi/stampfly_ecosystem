@@ -42,6 +42,16 @@ constexpr int CS_PIN = 12;
 /// height) + 回転(flow_gyro_scale·body角速度)。ファーム ESKF が回転分を除去するので、
 /// ここで含めると pitch/roll 中でも round-trip が真速度を復元する。gyro_x/gyro_y は
 /// body の roll/pitch 角速度 [rad/s]（FRD）。最小高度未満はフロー無効。
+///
+/// Flow beyond ±240 counts per frame is also reported as invalid: that is the limit
+/// the real chip can track between frames and the limit the unmodified driver
+/// accepts, so the loss of ground lock is modelled rather than an impossible count
+/// emitted. The divisor is the height, so a landing reaches this band at a modest
+/// drift speed.
+/// 1 フレーム ±240 カウントを越えるフローも無効として報告する。これは実チップが
+/// フレーム間に追える限界であり、無改変ドライバが受け入れる限界でもある。ありえない
+/// カウントを出す代わりに、床のロックの喪失としてモデル化する。割る数は高さなので、
+/// 着地はそこそこの流れの速さでこの帯に達する。
 void set_motion_from_velocity(float vx_body, float vy_body, float height_m,
                               float gyro_x, float gyro_y);
 

@@ -59,6 +59,24 @@ constexpr float FLOW_MIN_HEIGHT    = 0.02f;     // [m] eskf_core.hpp:79 flow_min
 constexpr float FLOW_GYRO_SCALE    = 1.0f;      // eskf_core.hpp:78 flow_gyro_scale
 constexpr uint8_t SQUAL_GOOD       = 0x50;      // surface quality when locked (~80)
 
+// The largest per-frame displacement the real chip reports, and what the
+// unmodified driver accepts: pmw3901.c rejects anything beyond ±240 counts as SPI
+// corruption (`Invalid burst motion data`, ESP_ERR_INVALID_RESPONSE). The model
+// must never synthesize a count outside that range, because the count is not a
+// free parameter -- it is a displacement the sensor measures over one 100 Hz
+// frame, and a real PMW3901 physically cannot report more. Past the range the
+// surface has moved further than the sensor can track between frames, which is
+// loss of ground lock, not a large reading.
+//
+// 実チップが 1 フレームで報告できる最大変位であり、無改変ドライバが受け入れる範囲
+// でもある。pmw3901.c は ±240 カウントを越えるものを SPI の壊れとして拒む
+// （`Invalid burst motion data`、ESP_ERR_INVALID_RESPONSE）。モデルはこの範囲の外の
+// カウントを合成してはならない。カウントは自由な変数ではなく、センサが 100 Hz の
+// 1 フレームで測る変位であり、実物の PMW3901 は物理的にそれ以上を報告できない。
+// 範囲を越えるのは、フレームの間に地面がセンサの追える以上に動いたということ、
+// すなわち大きな読みではなく床のロックの喪失である。
+constexpr long MOTION_COUNT_MAX = 240;
+
 // --- Motion-burst payload constants (plausible, not gated by the driver) ----
 constexpr uint8_t BURST_MOTION_DETECTED = 0x80; // motion register bit7
 constexpr uint8_t BURST_RAW_DATA_SUM    = 0x20;
@@ -113,6 +131,37 @@ void set_motion_from_velocity(float vx_body, float vy_body, float height_m,
     // delta_x=+右フロー, delta_y=-前方フロー。ファームが remap＋ジャイロ補償して v_body を復元。
     const long delta_x = std::lround( rate_right * kPixPerRate);  // raw X = body right
     const long delta_y = std::lround(-rate_fwd   * kPixPerRate);  // raw Y = -body forward
+
+    // Beyond ±240 counts the surface has outrun what the sensor can follow between
+    // frames, so the real chip loses its ground lock rather than reporting a huge
+    // displacement. Report exactly that — no motion, no surface quality — which is
+    // also what the model already does below FLOW_MIN_HEIGHT.
+    //
+    // Emitting the out-of-range count instead used to make the unmodified driver
+    // return ESP_ERR_INVALID_RESPONSE, pmw3901_wrapper throw PMW3901Exception, and
+    // the WebGL build (where exception CATCHING is disabled) abort inside sfu_step
+    // — `Aborted(undefined)` — even though flow_task wraps the read in try/catch.
+    // The divisor is the height above the floor, so a landing passes through a band
+    // just above FLOW_MIN_HEIGHT where a mere ~1.1-1.6 m/s of drift crosses the gate.
+    //
+    // ±240 カウントを越えるのは、フレームの間に地面がセンサの追える以上に動いたとき
+    // である。実チップはそこで大きな変位を報告するのではなく床のロックを失う。
+    // まさにそれを報告する（motion 無し・品質 0）。これは FLOW_MIN_HEIGHT 未満で
+    // モデルが既に行っていることと同じである。
+    //
+    // 範囲外のカウントをそのまま出すと、無改変ドライバが ESP_ERR_INVALID_RESPONSE を
+    // 返し、pmw3901_wrapper が PMW3901Exception を投げ、例外の**捕捉**を切ってある
+    // WebGL のビルドは sfu_step の中で abort していた（`Aborted(undefined)`）。
+    // flow_task が try/catch で包んでいてもである。割る数は床からの高さなので、着地は
+    // FLOW_MIN_HEIGHT のすぐ上の帯を通り、そこではわずか 1.1〜1.6 m/s の流れで関門を
+    // 越えてしまう。
+    const bool lost_ground_lock =
+        delta_x >  MOTION_COUNT_MAX || delta_x < -MOTION_COUNT_MAX ||
+        delta_y >  MOTION_COUNT_MAX || delta_y < -MOTION_COUNT_MAX;
+    if (lost_ground_lock) {
+        set_motion(0, 0, 0);
+        return;
+    }
 
     set_motion(static_cast<int16_t>(delta_x), static_cast<int16_t>(delta_y), SQUAL_GOOD);
 }

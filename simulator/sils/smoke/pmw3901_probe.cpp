@@ -125,6 +125,49 @@ int main()
     check(dx == 0 && dy == 0, "no motion below min height", (dx == 0 && dy == 0), 1);
     check(squal == 0, "zero surface quality when no lock", squal, 0);
 
+    // --- (4) counts never leave the range the unmodified driver accepts ----------
+    //
+    // The band JUST ABOVE kMinHeight is the one a landing passes through, and the
+    // divisor there is small enough that a modest drift produces counts the real
+    // chip cannot report. pmw3901.c rejects those (> ±240) with
+    // ESP_ERR_INVALID_RESPONSE, pmw3901_wrapper turns the rejection into a thrown
+    // PMW3901Exception, and the WebGL build -- which has exception CATCHING disabled
+    // -- aborts inside sfu_step instead of letting flow_task's catch throttle it.
+    // Cases (2) and (3) missed this: (2) only ever used 0.60-1.00 m, where the
+    // counts stay small, and (3) only went BELOW the minimum height.
+    //
+    // kMinHeight の**すぐ上**の帯は着地が通る帯であり、そこでは割る数が小さいので、
+    // そこそこの流れで実チップが報告できないカウントが出る。pmw3901.c はそれを
+    // （±240 超で）ESP_ERR_INVALID_RESPONSE として拒み、pmw3901_wrapper が
+    // PMW3901Exception を投げ、例外の**捕捉**を切ってある WebGL のビルドは、
+    // flow_task の catch が抑制するのではなく sfu_step の中で abort する。
+    // 事例 (2)(3) はこれを取り逃していた。(2) は 0.60〜1.00 m しか使わず（カウントは
+    // 小さいまま）、(3) は最小高度より**下**しか見ていなかった。
+    std::printf("[pmw3901_probe] --- (4) counts stay inside the driver's ±240 gate ---\n");
+    struct Extreme { float vx, vy, h, gx, gy; const char* what; };
+    const Extreme extremes[] = {
+        {1.6f,  0.0f, 0.027f, 0.0f, 0.0f, "drift 1.6 m/s at 0.027 m (the reported HUD state)"},
+        {3.0f,  0.0f, 0.025f, 0.0f, 0.0f, "drift 3.0 m/s just above the minimum height"},
+        {0.0f,  2.0f, 0.021f, 0.0f, 0.0f, "sideways 2.0 m/s a millimetre above it"},
+        {0.0f,  0.0f, 0.500f, 0.0f, 90.0f, "a 90 rad/s pitch rate (rotational term alone)"},
+        {8.0f, -8.0f, 0.030f, 20.0f, 20.0f, "everything large at once"},
+    };
+    for (const Extreme& e : extremes) {
+        sils_pmw3901::set_motion_from_velocity(e.vx, e.vy, e.h, e.gx, e.gy);
+        int16_t edx = 0, edy = 0; uint8_t esqual = 0;
+        readBurst(edx, edy, esqual);
+        const bool in_range = edx >= -240 && edx <= 240 && edy >= -240 && edy <= 240;
+        std::printf("  %s → dx=%d dy=%d squal=%u\n", e.what, edx, edy, esqual);
+        check(in_range, "counts within ±240 (driver would not reject)", in_range, 1);
+        // Out of the trackable range the model must report a lost lock, not a clamp:
+        // a clamped count would be a displacement the sensor never measured.
+        // 追える範囲の外では、頭打ちではなくロックの喪失を報告しなければならない。
+        // 頭打ちのカウントは、センサが測っていない変位そのものである。
+        if (edx == 0 && edy == 0) {
+            check(esqual == 0, "lost ground lock reports zero surface quality", esqual, 0);
+        }
+    }
+
     if (g_failures == 0) {
         std::printf("[pmw3901_probe] OK (0 failures)\n");
         return 0;
