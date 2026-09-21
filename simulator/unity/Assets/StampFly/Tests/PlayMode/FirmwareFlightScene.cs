@@ -53,6 +53,18 @@ namespace StampFly.Tests.PlayMode
         /// <summary>The sticks this flight sends. / この飛行が送るスティックの値。</summary>
         public RcFrame Sticks = RcFrame.Centred;
 
+        /// <summary>
+        /// An input whose flags vary within a frame, when a flight needs one. Set
+        /// it and <see cref="Sticks"/>'s own flags give way to
+        /// <see cref="IRcSource.FlagsAt"/> at each tick's virtual time — which is
+        /// how a momentary button's pulse is exercised against the real firmware.
+        /// フレームの中でフラグが変わる入力。飛行がそれを要るときに設定する。設定すると
+        /// <see cref="Sticks"/> 自身のフラグに代わって、刻みごとの仮想時刻で
+        /// <see cref="IRcSource.FlagsAt"/> が使われる。モーメンタリボタンのパルスを
+        /// 実物のファームウェアに対して動かす方法がこれである。
+        /// </summary>
+        public IRcSource FlagSource;
+
         /// <summary>The firmware, so a test can read its status and its errors. / ファーム。試験が状態と誤りを読めるように。</summary>
         public IFirmware Firmware => firmware;
 
@@ -216,7 +228,7 @@ namespace StampFly.Tests.PlayMode
                 RcRoll = Sticks.Roll,
                 RcPitch = Sticks.Pitch,
                 RcYaw = Sticks.Yaw,
-                RcFlags = Sticks.Flags,
+                RcFlags = FlagsForThisTick(),
                 StepMicroseconds = SimClock.TickMicroseconds,
             };
         }
@@ -246,6 +258,25 @@ namespace StampFly.Tests.PlayMode
                 GyroscopicTerm.BodyTorqueAtMidpoint(
                     bodyRate, Body.inertiaTensor, PhysicsStepSettings.StepSeconds),
                 ForceMode.Force);
+        }
+
+        /// <summary>
+        /// This tick's flag byte, on the firmware's own clock — the same question
+        /// <see cref="SimLoop"/> asks per tick. Without a
+        /// <see cref="FlagSource"/> the sticks' own flags stand.
+        /// この刻みのフラグのバイト。ファーム自身の時計で決める ―
+        /// <see cref="SimLoop"/> が刻みごとに行うのと同じ問いである。
+        /// <see cref="FlagSource"/> が無ければスティック自身のフラグを使う。
+        /// </summary>
+        private byte FlagsForThisTick()
+        {
+            bool hasNoFlagSource = FlagSource == null;
+            if (hasNoFlagSource)
+            {
+                return Sticks.Flags;
+            }
+
+            return FlagSource.FlagsAt(Sticks, LastResult.NowMicroseconds);
         }
 
         /// <summary>The vehicle's height above the floor [m]. / 床からの機体の高さ [m]。</summary>

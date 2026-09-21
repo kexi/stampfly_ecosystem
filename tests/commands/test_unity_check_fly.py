@@ -61,6 +61,11 @@ fly_check = _load_fly_check()
 # The vehicle the stand-in page flies / 代役のページが飛ばす機体
 # ---------------------------------------------------------------------------
 
+class _Refused(Exception):
+    """A command the page declines, with the reason the real page gives.
+    ページが断る命令。本物のページが返すのと同じ理由を持つ。"""
+
+
 class FakeVehicle:
     """A vehicle just detailed enough to be judged.
 
@@ -99,7 +104,6 @@ class FakeVehicle:
         self.armed = False
         self.throttle = fly_check.ADC_CENTRE
         self.alt_hold = False
-        self.arm_flag = False
         self.hold_target = None
         # A vehicle that will not leave the floor, for the failing case.
         # 床を離れない機体。不合格の場合のため。
@@ -179,30 +183,44 @@ class FakeVehicle:
 
     # -- the commands the script sends ------------------------------------
     def set_sticks(self, args) -> dict:
+        """`rc.set` carries the SWITCHES only. `arm` is refused, because the ARM
+        flag is a momentary button the firmware toggles on its rising edge, not a
+        state a frame can hold (`firmware/vehicle/tasks/state_task.cpp:339-357`).
+        `rc.set` が運ぶのは**スイッチ**だけである。`arm` は断る。ARM のフラグは、
+        ファームが立ち上がりでトグルするモーメンタリボタンであり、フレームが保持できる
+        状態ではない（`firmware/vehicle/tasks/state_task.cpp:339-357`）。"""
+        if args.get("arm"):
+            raise _Refused(
+                "rc.set cannot hold `arm`: the ARM flag is a momentary button "
+                "the firmware toggles on its rising edge, not a state — use rc.arm")
         self.throttle = int(args.get("throttle", fly_check.ADC_CENTRE))
-        wants_arm = bool(args.get("arm", False))
-        self._edge(wants_arm)
         self.alt_hold = bool(args.get("alt_hold", False))
         self.mode = "ALT_HOLD" if self.alt_hold else "STABILIZE"
         return {}
 
     def press_arm(self, args) -> dict:
-        self._edge(bool(args.get("armed", True)))
-        return {"armed_requested": bool(args.get("armed", True)),
-                "sim_us": self.sim_us}
+        """Bring ARM to the state asked for by PRESSING the button, and only when
+        the current state differs -- which is what makes `rc.arm` idempotent.
 
-    def _edge(self, wants_arm: bool) -> None:
-        """The firmware arms on the flag's RISING edge and disarms on the
-        falling one -- the same edge `rc.arm` presses.
-        ファームはフラグの**立ち上がり**で ARM し、立ち下がりで DISARM する。
-        `rc.arm` が押すのと同じエッジである。"""
-        rose = wants_arm and not self.arm_flag
-        fell = not wants_arm and self.arm_flag
-        self.arm_flag = wants_arm
-        if rose:
-            self.armed = True
-        if fell:
-            self.armed = False
+        The firmware TOGGLES on each rising edge and decides what a press means
+        from its own state, so there is no bit to set to "armed": pressing at an
+        already-armed vehicle would disarm it.
+
+        求められた状態へ、ボタンを**押す**ことで持っていく。押すのは現在の状態が違う
+        ときだけで、これが `rc.arm` を冪等にしている。
+
+        ファームは立ち上がりごとに**トグル**し、押下の意味を自分の状態から決めるので、
+        「armed にするために立てるビット」は無い。既に ARM された機体で押せば DISARM に
+        なる。"""
+        wants_armed = bool(args.get("armed", True))
+        pressed = wants_armed != self.armed
+        was_armed = self.armed
+        if pressed:
+            self.armed = wants_armed          # one press toggles / 1 回の押下でトグル
+        return {"armed_requested": wants_armed,
+                "pressed": pressed,
+                "was_armed": was_armed,
+                "sim_us": self.sim_us}
 
     def wait(self, args) -> dict:
         target = int(round(float(args.get("seconds", 0)) * 1e6)) \
@@ -228,7 +246,6 @@ class FakeVehicle:
         self.state = "INIT"
         self.mode = "STABILIZE"
         self.armed = False
-        self.arm_flag = False
         self.hold_target = None
         return {"power_cycles": 2}
 
@@ -334,7 +351,10 @@ class FlyingPage:
         handler = handlers.get(command)
         if handler is None:
             return {"ok": False, "error": f"unknown command: {command}"}
-        return {"ok": True, "data": handler(args)}
+        try:
+            return {"ok": True, "data": handler(args)}
+        except _Refused as refused:
+            return {"ok": False, "error": str(refused)}
 
     def _post_log(self, cmd_id, command, state_before):
         """One `src: "sim"` line per command, plus a flight-state line and a
@@ -622,6 +642,62 @@ def test_a_page_that_refuses_a_command_stops_the_check_with_that_reason(server):
     assert "rc.arm" in report["error"]
     ran = next(c for c in report["checks"] if c["name"] == "the_flight_ran")
     assert not ran["pass"]
+
+
+# ---------------------------------------------------------------------------
+# The ARM flag is a momentary button / ARM のフラグはモーメンタリボタン
+# ---------------------------------------------------------------------------
+
+def test_rc_arm_presses_only_when_the_state_differs():
+    """`rc.arm` is idempotent: it presses the button only when the firmware is
+    not already in the state asked for. Asking twice for `armed=true` must leave
+    the vehicle ARMED, not armed and then disarmed -- the firmware TOGGLES on
+    each rising edge, so a second press at an armed vehicle would disarm it.
+
+    `rc.arm` は冪等である。ファームが既に求められた状態でないときだけボタンを押す。
+    `armed=true` を 2 回求めても機体は ARM のままでなければならない。ARM したうえで
+    DISARM されるのではない。ファームは立ち上がりごとに**トグル**するので、ARM された
+    機体での 2 回目の押下は DISARM になる。"""
+    vehicle = FakeVehicle()
+
+    first = vehicle.press_arm({"armed": True})
+    assert first["pressed"] is True
+    assert first["was_armed"] is False
+    assert vehicle.armed is True
+
+    second = vehicle.press_arm({"armed": True})
+    assert second["pressed"] is False, "rc.arm pressed at an already-armed vehicle"
+    assert vehicle.armed is True, "the second rc.arm disarmed the vehicle"
+
+    off = vehicle.press_arm({"armed": False})
+    assert off["pressed"] is True
+    assert vehicle.armed is False
+
+
+def test_rc_set_refuses_to_hold_the_arm_flag():
+    """`rc.set` cannot carry `arm`. Holding the bit down is ONE press to the
+    firmware, so a script that wrote `arm: true` got a single press whose effect
+    depended on what the vehicle happened to be doing.
+    `rc.set` は `arm` を運べない。ビットを押し下げ続けることはファームには**1 回**の
+    押下なので、`arm: true` と書いた台本は、機体がたまたま何をしていたかで効果の変わる
+    押下 1 回を得ていた。"""
+    vehicle = FakeVehicle()
+
+    with pytest.raises(_Refused) as refusal:
+        vehicle.set_sticks({"throttle": fly_check.ADC_CENTRE, "arm": True})
+
+    assert "rc.arm" in str(refusal.value)
+
+
+def test_the_flight_script_never_puts_arm_in_rc_set(server):
+    """The real script must press ARM with `rc.arm` alone. A page that refuses
+    `arm` in `rc.set` therefore still flies a complete pass.
+    本物の台本は ARM を `rc.arm` だけで押さねばならない。よって `rc.set` の `arm` を
+    断るページでも、飛行は最後まで合格する。"""
+    with FlyingPage(server.base_url, FakeVehicle()):
+        report = _fly()
+
+    assert report["pass"], report.get("error")
 
 
 def test_a_clock_that_did_not_go_back_to_zero_stops_the_check(server):

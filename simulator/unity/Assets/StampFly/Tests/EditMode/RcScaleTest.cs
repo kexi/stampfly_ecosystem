@@ -128,23 +128,27 @@ namespace StampFly.Tests.EditMode
         }
 
         /// <summary>
-        /// A fresh source starts neither armed nor in altitude hold, and Reset
+        /// A fresh source sends no flag and has no press in flight, and Reset
         /// returns it there — which is what a power cycle relies on so a new
-        /// firmware does not meet a latched ARM bit.
-        /// 作った直後の入力は ARM でも ALT_HOLD でもなく、Reset はそこへ戻す。
-        /// 電源の入れ直しがこれに頼っており、新しいファームが押しっぱなしの ARM に
-        /// 出会わないようにしている。
+        /// firmware does not meet the last flight's mode switch or a half-finished
+        /// ARM pulse.
+        /// 作った直後の入力はフラグを送らず、途中の押下も持たない。Reset はそこへ
+        /// 戻す。電源の入れ直しがこれに頼っており、新しいファームが前の飛行のモードの
+        /// スイッチや途中の ARM のパルスに出会わないようにしている。
         /// </summary>
         [Test]
-        public void ResetClearsArmAndAltitudeHold()
+        public void ResetClearsTheSwitchesAndAnyPressInFlight()
         {
             var source = new KeyboardRc();
 
+            source.PressAltitudeHold();
+            source.PressArm();
             source.Reset();
 
-            Assert.That(source.IsArmed, Is.False);
             Assert.That(source.IsAltitudeHold, Is.False);
             Assert.That(source.Read().Flags, Is.EqualTo(0));
+            Assert.That(source.IsArmPulseOn(0L), Is.False,
+                        "a press survived the power cycle");
         }
 
         /// <summary>

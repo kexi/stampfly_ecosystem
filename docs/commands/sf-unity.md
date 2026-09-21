@@ -128,8 +128,8 @@ sf unity cmd vehicle.state --timeout 3
 | `sim.state` | — | 時計・飛行状態・センサの要約 |
 | `sim.wait` | `sim_us` または `seconds`、`timeout_s`（既定 60、上限 60） | `{"reached": bool, "requested_sim_us": N, "sim_us": N, "ticks": N}` |
 | `vehicle.state` | — | 下表 |
-| `rc.set` | `throttle`／`roll`／`pitch`／`yaw`（12 bit の生 ADC、中央 2048）、`arm`、`alt_hold` | `{}` |
-| `rc.arm` | `armed`（既定 true） | `{"armed_requested": bool, "flags": N, "sim_us": N}` |
+| `rc.set` | `throttle`／`roll`／`pitch`／`yaw`（12 bit の生 ADC、中央 2048）、`alt_hold` | `{}`（`arm` は断る。下記参照） |
+| `rc.arm` | `armed`（既定 true） | `{"armed_requested": bool, "pressed": bool, "was_armed": bool, "sim_us": N}` |
 | `rc.release` | — | `{}`（スティックをキーボードへ戻す） |
 
 `sim.wait` は指定した**仮想時刻**に達するまで待ってから答える。待っている間もページは刻み続ける
@@ -137,9 +137,20 @@ sf unity cmd vehicle.state --timeout 3
 添えた失敗になる。端末からの台本が、実時間を当て推量で眠らずに手順を並べられるようにするための
 命令である。
 
-`rc.arm` は実機の送信機の ARM ボタンを 1 回押す動作にあたる。ファームはフラグの**立ち上がり**で
-ARM するので、`rc.set` でビットを立て続ける代わりにこれを使うと、スロットルは直前の `rc.set` が
-置いた場所に留まる。`armed=false` は逆向きに押すことで DISARM になる。
+`rc.arm` は実機の送信機の ARM ボタンを 1 回押す動作にあたる。`armed` は「その状態にしたい」の
+意味で、**ファームの現在の状態が違うときだけ押す**（同じなら押さない）。押したかどうかは答えの
+`pressed` が述べる。スティックには触らないので、スロットルは直前の `rc.set` が置いた場所に留まる。
+
+**ARM のフラグは値ではなくモーメンタリボタンである**（2026-09-22 に判明・修正）。
+`firmware/vehicle/tasks/state_task.cpp:339-357` のとおり、電文のフラグは押している間だけ 1 で、
+ファームは**立ち上がりごとに arm/disarm をトグル**し、押下の意味を自分の状態から決める。
+離しても何も起きない。よって「armed にするために立てるビット」は存在せず、既に ARM された機体で
+押せば DISARM になる。`rc.arm` がファームの状態を先に読むのはこのためで、これにより
+`armed=true` を 2 回求めても ARM のままである（冪等）。
+
+そのため **`rc.set` は `arm` を断る**。ビットを押し下げ続けることはファームには**1 回**の押下で
+あり、`arm: true` を書いた台本は、機体がたまたま何をしていたかで効果の変わる押下 1 回を得ていた。
+ARM は `rc.arm` で押す。`alt_hold` はスイッチの位置なので `rc.set` が従来どおり運ぶ。
 
 #### `vehicle.state` が返すもの
 
@@ -619,8 +630,8 @@ own owner.
 | `sim.state` | — | A summary of the clock, the flight state and the sensors |
 | `sim.wait` | `sim_us` or `seconds`, `timeout_s` (default 60, cap 60) | `{"reached": bool, "requested_sim_us": N, "sim_us": N, "ticks": N}` |
 | `vehicle.state` | — | See below |
-| `rc.set` | `throttle`/`roll`/`pitch`/`yaw` (raw 12-bit ADC, centre 2048), `arm`, `alt_hold` | `{}` |
-| `rc.arm` | `armed` (default true) | `{"armed_requested": bool, "flags": N, "sim_us": N}` |
+| `rc.set` | `throttle`/`roll`/`pitch`/`yaw` (raw 12-bit ADC, centre 2048), `alt_hold` | `{}` (`arm` is refused — see below) |
+| `rc.arm` | `armed` (default true) | `{"armed_requested": bool, "pressed": bool, "was_armed": bool, "sim_us": N}` |
 | `rc.release` | — | `{}` (the sticks go back to the keyboard) |
 
 `sim.wait` answers once the given **virtual** time arrives. The page keeps ticking while it waits
@@ -628,9 +639,22 @@ own owner.
 clock got. It exists so a script at a terminal can order its steps without sleeping for a guessed
 wall-clock duration.
 
-`rc.arm` is one press of the real transmitter's ARM button. The firmware arms on the flag's
-**rising** edge, so using this instead of holding the bit with `rc.set` leaves the throttle
-wherever the last `rc.set` put it. `armed=false` presses it the other way, which disarms.
+`rc.arm` is one press of the real transmitter's ARM button. `armed` means "bring it to this
+state", and the button is pressed **only when the firmware is not already in it**; the answer's
+`pressed` says whether a press went out. The sticks are untouched, so the throttle stays wherever
+the last `rc.set` put it.
+
+**The ARM flag is a momentary button, not a value** (found and fixed 2026-09-22).
+Per `firmware/vehicle/tasks/state_task.cpp:339-357` the wire flag is 1 only while the button is
+held, and the firmware **toggles arm/disarm on each rising edge**, deciding what a press means
+from its own state; the release does nothing. So there is no bit to set to "armed", and pressing
+at an already-armed vehicle would disarm it. That is why `rc.arm` reads the firmware's state
+first, which makes it idempotent: asking twice for `armed=true` leaves the vehicle armed.
+
+For the same reason **`rc.set` refuses `arm`**. Holding the bit down is ONE press to the
+firmware, so a script that wrote `arm: true` got a single press whose effect depended on what the
+vehicle happened to be doing. Press ARM with `rc.arm`. `alt_hold` is a switch position and
+`rc.set` still carries it.
 
 #### What `vehicle.state` Returns
 

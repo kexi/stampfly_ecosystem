@@ -193,7 +193,31 @@ namespace StampFly.Ui
             RangeReading range = simLoop.LastRange;
             var keyboard = simLoop.RcSource as KeyboardRc;
 
+            // The FIRMWARE's own ARM, never anything the input holds. The input
+            // holds no ARM state at all now — the flag is a button it presses —
+            // so this is the only place the answer exists.
+            // **ファーム自身の** ARM を出す。入力が保持しているものは決して出さない。
+            // いまや入力は ARM の状態をまったく持たない（フラグは押すボタンである）ので、
+            // 答えが在るのはここだけである。
             string armed = state.Armed != 0 ? "ARMED" : "disarmed";
+
+            // While a press's pulse is still going out, say so. An arm the
+            // firmware REFUSES — tilted, still calibrating, on USB power,
+            // mid-pairing — is otherwise invisible: the vehicle simply does not
+            // start and the pilot cannot tell a refusal from a lost keystroke.
+            // This clears itself when the pulse ends, so a refusal shows as the
+            // hint appearing and then going away with `disarmed` unchanged.
+            // 押下のパルスがまだ出ている間はそれを示す。ファームが**拒否した** ARM ―
+            // 傾き・校正中・USB 給電・ペアリング中 ― は、さもなくば見えない。機体はただ
+            // 動き出さず、利用者は拒否と打鍵の取りこぼしを区別できない。パルスが終われば
+            // 自然に消えるので、拒否は「案内が出て、`disarmed` のまま消える」ように見える。
+            bool isPressing = keyboard != null &&
+                              keyboard.IsArmPulseOn(simLoop.Clock.VirtualMicroseconds);
+            if (isPressing)
+            {
+                armed += " (arming...)";
+            }
+
             string stickHint = keyboard != null
                 ? $"   stick {keyboard.Deflection:F0}"
                 : string.Empty;

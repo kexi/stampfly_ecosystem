@@ -299,6 +299,14 @@ namespace StampFly.Sim
                 firmwareSeconds += RunOneTick(sticks, tick);
             }
 
+            // `TicksForFrame` advanced virtual time by the whole frame before the
+            // first tick ran, so the firmware's own clock -- `now_us`, which
+            // counts one tick -- is what a per-tick flag is timed against. It is
+            // read inside `RunOneTick`.
+            // `TicksForFrame` は最初の刻みが走る前にフレーム 1 つぶんの仮想時間を
+            // 進めてしまうので、刻みごとのフラグを計る基準はファーム自身の時計
+            // ―1 刻みずつ数える `now_us`― である。読むのは `RunOneTick` の中である。
+
             clock.RecordFrame(frameSeconds, ticks, firmwareSeconds);
         }
 
@@ -310,7 +318,21 @@ namespace StampFly.Sim
         /// </summary>
         private double RunOneTick(RcFrame sticks, int tickInFrame)
         {
-            SfuStepIn input = PackState(sticks);
+            // The virtual time this tick STARTS at, on the firmware's own clock.
+            // A momentary button is a pulse of a fixed length in simulated time,
+            // so which ticks carry its bit is decided here rather than once a
+            // frame -- a frame spans up to twelve ticks and a 100 ms pulse spans
+            // forty, so the two cadences do not line up.
+            // この刻みが**始まる**仮想時刻。ファーム自身の時計で表す。モーメンタリ
+            // ボタンはシミュレーションの時間で一定の長さを持つパルスなので、どの刻みが
+            // そのビットを運ぶかはフレームに 1 回ではなくここで決める。1 フレームは
+            // 最大 12 刻み、100 ms のパルスは 40 刻みで、2 つの周期は揃わない。
+            long nowMicroseconds = lastResult.NowMicroseconds;
+            byte flags = rcSource != null
+                ? rcSource.FlagsAt(sticks, nowMicroseconds)
+                : sticks.Flags;
+
+            SfuStepIn input = PackState(sticks, flags);
 
             double callStart = Time.realtimeSinceStartupAsDouble;
             int status = firmware.Step(input, ref lastResult);
@@ -369,7 +391,7 @@ namespace StampFly.Sim
         /// この刻みの始めの状態のうち、ファームが要るものすべてを Unity 自身の
         /// 規約で詰める。ここで変換するものは無い。
         /// </summary>
-        private SfuStepIn PackState(RcFrame sticks)
+        private SfuStepIn PackState(RcFrame sticks, byte flags)
         {
             Vector3 position = body.position;
             Quaternion rotation = body.rotation;
@@ -399,7 +421,7 @@ namespace StampFly.Sim
                 RcRoll = sticks.Roll,
                 RcPitch = sticks.Pitch,
                 RcYaw = sticks.Yaw,
-                RcFlags = sticks.Flags,
+                RcFlags = flags,
                 StepMicroseconds = SimClock.TickMicroseconds,
             };
         }

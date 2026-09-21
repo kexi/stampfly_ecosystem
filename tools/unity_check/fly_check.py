@@ -346,15 +346,27 @@ class FlightScript:
             f"in {MAX_WAIT_ATTEMPTS} waits of {WAIT_CHUNK_SECONDS:.0f} s: "
             "the page is running far below real time")
 
-    def sticks(self, throttle: int, arm: bool, alt_hold: bool) -> None:
+    def sticks(self, throttle: int, alt_hold: bool) -> None:
         """Hold these stick values until the next `rc.set`.
-        次の `rc.set` まで、このスティックの値を保つ。"""
+
+        ARM is deliberately not among them. The ARM flag is a momentary BUTTON
+        the firmware toggles on its rising edge, not a state a frame can hold
+        (`firmware/vehicle/tasks/state_task.cpp:339-357`), so it is pressed with
+        `rc.arm` and `rc.set` refuses it. ALT_HOLD, being a switch position, does
+        belong here.
+
+        次の `rc.set` まで、このスティックの値を保つ。
+
+        ARM は意図してここに含めない。ARM のフラグは、ファームが立ち上がりでトグルする
+        モーメンタリ**ボタン**であり、フレームが保持できる状態ではない
+        （`firmware/vehicle/tasks/state_task.cpp:339-357`）。よって `rc.arm` で押し、
+        `rc.set` はこれを断る。ALT_HOLD はスイッチの位置なので、ここに属する。
+        """
         self.command("rc.set", {
             "throttle": throttle,
             "roll": ADC_CENTRE,
             "pitch": ADC_CENTRE,
             "yaw": ADC_CENTRE,
-            "arm": arm,
             "alt_hold": alt_hold,
         })
 
@@ -402,7 +414,7 @@ class FlightScript:
         self.command("world.load", {"name": self.world})
         self.command("sim.power_cycle")
         self.command("sim.reset")
-        self.sticks(ADC_CENTRE, arm=False, alt_hold=False)
+        self.sticks(ADC_CENTRE, alt_hold=False)
 
         start = self.read_state("start")
         clock = start.get("sim_us")
@@ -425,10 +437,10 @@ class FlightScript:
         STABILIZE でスロットルを上げて機体を浮かせ、スロットルを中央にした
         ALT_HOLD へ移る。中央は「この高さを保て」の意味である。"""
         self.wait_until(CLIMB_AT_S, "before_climb")
-        self.sticks(CLIMB_THROTTLE, arm=True, alt_hold=False)
+        self.sticks(CLIMB_THROTTLE, alt_hold=False)
 
         self.wait_until(HOLD_AT_S, "climbed")
-        self.sticks(ADC_CENTRE, arm=True, alt_hold=True)
+        self.sticks(ADC_CENTRE, alt_hold=True)
 
     def hold(self) -> float:
         """Sample the altitude across the hold and return the virtual time it
@@ -474,7 +486,7 @@ class FlightScript:
         firmware lands from, then DISARM once it is down.
         ALT_HOLD でスロットルを一番下にする。これが下降の指令になり、ファームは
         そこから着地する。降りたら DISARM する。"""
-        self.sticks(ADC_MINIMUM, arm=True, alt_hold=True)
+        self.sticks(ADC_MINIMUM, alt_hold=True)
         self.wait_until(hold_end + DESCEND_SECONDS, "landed")
 
         self.command("rc.arm", {"armed": False})

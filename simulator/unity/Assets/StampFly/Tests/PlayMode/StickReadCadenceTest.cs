@@ -49,12 +49,25 @@ namespace StampFly.Tests.PlayMode
         private sealed class CountingRc : IRcSource
         {
             internal int Reads;
+            internal int FlagQueries;
             internal RcFrame Frame = RcFrame.Centred;
 
             public RcFrame Read()
             {
                 Reads += 1;
                 return Frame;
+            }
+
+            /// <summary>
+            /// Asked once a TICK, unlike <see cref="Read"/>. Counted separately so
+            /// the test can show the two cadences really are different.
+            /// <see cref="Read"/> と違い**刻み**ごとに尋ねられる。2 つの周期が実際に
+            /// 違うことを試験が示せるよう、別に数える。
+            /// </summary>
+            public byte FlagsAt(in RcFrame frame, long nowMicroseconds)
+            {
+                FlagQueries += 1;
+                return frame.Flags;
             }
         }
 
@@ -108,6 +121,18 @@ namespace StampFly.Tests.PlayMode
                         $"a frame of {SimClock.MaxTicksPerFrame} ticks read the " +
                         $"sticks {counting.Reads} times; a toggle keyed on " +
                         "wasPressedThisFrame would have fired that many times");
+
+            // The FLAGS are a per-tick question, because a momentary button is a
+            // pulse of a fixed length in simulated time and a frame spans many
+            // ticks of it. The two cadences are deliberately different, and that
+            // is the whole reason `FlagsAt` exists apart from `Read`.
+            // **フラグ**は刻みごとの問いである。モーメンタリボタンはシミュレーションの
+            // 時間で一定の長さを持つパルスで、1 フレームはその何刻みぶんにもなるから
+            // である。2 つの周期は意図して違えてあり、`FlagsAt` が `Read` と別に在る
+            // 理由はまさにそれである。
+            Assert.That(counting.FlagQueries,
+                        Is.EqualTo(SimClock.MaxTicksPerFrame),
+                        "the flags were not asked for once per tick");
         }
 
         /// <summary>

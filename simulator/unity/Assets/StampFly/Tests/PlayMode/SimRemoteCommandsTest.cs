@@ -174,14 +174,22 @@ namespace StampFly.Tests.PlayMode
         }
 
         /// <summary>
-        /// Pressing ARM sets the flag and leaves the sticks where they were,
-        /// which is what lets a script climb first and arm without resetting
-        /// the throttle it just set.
-        /// ARM を押すとフラグが立ち、スティックはそのままになる。台本が、いま
-        /// 設定したスロットルを戻さずに ARM を押せるのはこれによる。
+        /// Pressing ARM sends a PULSE on the flag and leaves the sticks where
+        /// they were, which is what lets a script climb first and arm without
+        /// resetting the throttle it just set.
+        ///
+        /// ARM を押すとフラグにパルスが出て、スティックはそのままになる。台本が、
+        /// いま設定したスロットルを戻さずに ARM を押せるのはこれによる。
+        ///
+        /// The flag is read through <see cref="IRcSource.FlagsAt"/> with a virtual
+        /// time, because the pulse is a duration in the simulation's own clock —
+        /// the bit is not a value the frame carries.
+        /// フラグは <see cref="IRcSource.FlagsAt"/> に仮想時刻を渡して読む。パルスは
+        /// シミュレーション自身の時計での長さであり、ビットはフレームが運ぶ値ではない
+        /// からである。
         /// </summary>
         [UnityTest]
-        public IEnumerator PressingArmSetsTheFlagAndKeepsTheSticks()
+        public IEnumerator PressingArmPulsesTheFlagAndKeepsTheSticks()
         {
             yield return null;
 
@@ -191,36 +199,95 @@ namespace StampFly.Tests.PlayMode
                 Commands.Execute("rc.arm", SimCommandArgs.Empty);
 
             Assert.That(armed.Ok, Is.True, armed.Error);
+            Assert.That(armed.Data, Does.Contain("\"pressed\":true"),
+                        "a disarmed vehicle was not sent a press");
 
             RcFrame frame = simLoop.RcSource.Read();
-            Assert.That(frame.Flags & SfuAbi.FlagArm, Is.EqualTo(SfuAbi.FlagArm));
             Assert.That(frame.Throttle, Is.EqualTo(3243),
                         "pressing ARM moved the throttle");
+
+            long now = simLoop.Clock.VirtualMicroseconds;
+            Assert.That(simLoop.RcSource.FlagsAt(frame, now) & SfuAbi.FlagArm,
+                        Is.EqualTo(SfuAbi.FlagArm),
+                        "the press produced no pulse on the ARM flag");
         }
 
         /// <summary>
-        /// The firmware arms on a RISING edge, so a press has to leave the bit
-        /// clear beforehand and set afterwards. Pressing it the other way
-        /// clears it, which is the DISARM at the end of a flight.
-        /// ファームは**立ち上がり**で ARM するので、押す前はビットが落ちていて、
-        /// 押した後は立っていなければならない。逆向きに押すと落ちる。飛行の終わり
-        /// の DISARM がそれである。
+        /// The pulse ends on its own, so the NEXT press can make another rising
+        /// edge. A bit that stayed up would be one endless press to the firmware.
+        /// パルスは自然に終わり、**次の**押下がもう 1 つの立ち上がりを作れること。
+        /// 上がったままのビットは、ファームには終わらない 1 回の押下になる。
         /// </summary>
         [UnityTest]
-        public IEnumerator ArmingAndDisarmingMoveTheFlagBothWays()
+        public IEnumerator TheArmPulseEndsSoTheNextPressCanBeSeen()
         {
             yield return null;
 
-            Commands.Execute("rc.set", SimCommandArgs.Parse("{\"throttle\": 2048}"));
-            Assert.That(simLoop.RcSource.Read().Flags & SfuAbi.FlagArm, Is.Zero,
-                        "the flag was set before ARM was pressed");
-
             Commands.Execute("rc.arm", SimCommandArgs.Empty);
-            Assert.That(simLoop.RcSource.Read().Flags & SfuAbi.FlagArm,
+            RcFrame frame = simLoop.RcSource.Read();
+
+            long now = simLoop.Clock.VirtualMicroseconds;
+            Assert.That(simLoop.RcSource.FlagsAt(frame, now) & SfuAbi.FlagArm,
                         Is.EqualTo(SfuAbi.FlagArm));
 
-            Commands.Execute("rc.arm", SimCommandArgs.Parse("{\"armed\": false}"));
-            Assert.That(simLoop.RcSource.Read().Flags & SfuAbi.FlagArm, Is.Zero);
+            long afterThePulse = now + KeyboardRc.ArmPulseMicroseconds;
+            Assert.That(
+                simLoop.RcSource.FlagsAt(frame, afterThePulse) & SfuAbi.FlagArm,
+                Is.Zero,
+                "the ARM bit never came back down, so the firmware would see " +
+                "one press that never ends");
+        }
+
+        /// <summary>
+        /// `rc.arm` is idempotent: it presses only when the firmware is not
+        /// already in the state asked for. Since the firmware TOGGLES on each
+        /// rising edge, a press at an already-armed vehicle would DISARM it, so
+        /// asking twice for the same state must press once.
+        /// `rc.arm` は冪等である。ファームが既に求められた状態でないときだけ押す。
+        /// ファームは立ち上がりごとに**トグル**するので、既に ARM された機体での押下は
+        /// DISARM になる。よって同じ状態を 2 回求めたら、押すのは 1 回だけでなければ
+        /// ならない。
+        /// </summary>
+        [UnityTest]
+        public IEnumerator AskingForTheStateItIsAlreadyInPressesNothing()
+        {
+            yield return null;
+
+            // The firmware in this scene has not armed (no dylib flight here), so
+            // `armed=false` is the state it is already in.
+            // この場面のファームは ARM していない（ここでは dylib で飛ばさない）ので、
+            // `armed=false` は既にその状態である。
+            SimCommandResult already =
+                Commands.Execute("rc.arm", SimCommandArgs.Parse("{\"armed\": false}"));
+
+            Assert.That(already.Ok, Is.True, already.Error);
+            Assert.That(already.Data, Does.Contain("\"pressed\":false"),
+                        "rc.arm pressed the button although the firmware was " +
+                        "already in the state asked for — that press would have " +
+                        "toggled the vehicle the wrong way");
+        }
+
+        /// <summary>
+        /// `rc.set` refuses `arm` rather than quietly dropping it. Holding the bit
+        /// down is ONE press to the firmware, so a script that wrote it was
+        /// getting a press whose effect depended on what the vehicle was doing.
+        /// `rc.set` は `arm` を黙って捨てるのではなく断ること。ビットを押し下げ続ける
+        /// ことはファームには**1 回**の押下なので、それを書いた台本は、機体が何をして
+        /// いたかで効果の変わる押下を得ていた。
+        /// </summary>
+        [UnityTest]
+        public IEnumerator RcSetRefusesToHoldTheArmFlag()
+        {
+            yield return null;
+
+            SimCommandResult refused = Commands.Execute(
+                "rc.set", SimCommandArgs.Parse("{\"throttle\": 2048, \"arm\": true}"));
+
+            Assert.That(refused.Ok, Is.False,
+                        "rc.set accepted `arm`, so a script can still hold the " +
+                        "button down and be surprised by what one press does");
+            Assert.That(refused.Error, Does.Contain("rc.arm"),
+                        "the refusal does not say what to use instead");
         }
 
         /// <summary>

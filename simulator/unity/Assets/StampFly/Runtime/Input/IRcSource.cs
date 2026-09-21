@@ -64,11 +64,42 @@ namespace StampFly.Input
         /// The latest frame. Called once per rendered frame, not once per
         /// firmware tick: the bridge injects into ESP-NOW on the firmware's own
         /// 50 Hz virtual-time cadence, so it only needs the newest value.
+        ///
         /// 最新のフレームを返す。描画 1 フレームに 1 回呼ばれ、ファームの 1 刻みに
         /// 1 回ではない。橋渡しはファーム自身の 50 Hz の仮想時間の周期で ESP-NOW へ
         /// 注入するので、要るのは最新の値だけである。
+        ///
+        /// Reading a KEY is a once-a-frame job — `wasPressedThisFrame` answers
+        /// true for a whole frame — while the flags a frame produces may need to
+        /// differ from tick to tick: a momentary button is a pulse of a fixed
+        /// length in SIMULATED time, and one frame spans between zero and twelve
+        /// ticks of it. So the two are split: this call reads the device once a
+        /// frame, and <see cref="FlagsAt"/> is asked per tick for the flags at
+        /// that tick's virtual time.
+        ///
+        /// **キー**を読むのは 1 フレームに 1 回の仕事である（`wasPressedThisFrame` は
+        /// フレームの間じゅう真を返す）。一方、1 つのフレームが出すフラグは刻みごとに
+        /// 違ってよい。モーメンタリボタンは**シミュレーションの時間**で一定の長さを持つ
+        /// パルスであり、1 フレームはその 0〜12 刻みぶんにあたるからである。よって
+        /// 2 つを分ける。この呼び出しが装置を 1 フレームに 1 回読み、
+        /// <see cref="FlagsAt"/> が刻みごとに、その刻みの仮想時刻でのフラグを答える。
         /// </summary>
         RcFrame Read();
+
+        /// <summary>
+        /// The flag byte at one tick's virtual time, given the frame
+        /// <see cref="Read"/> last returned. A source whose flags do not vary
+        /// inside a frame just answers <paramref name="frame"/>'s own flags; one
+        /// sending a momentary button's pulse decides from
+        /// <paramref name="nowMicroseconds"/> whether the pulse is still on.
+        ///
+        /// ある刻みの仮想時刻でのフラグのバイト。<see cref="Read"/> が直前に返した
+        /// フレームを受け取る。フレームの中でフラグが変わらない入力は
+        /// <paramref name="frame"/> のフラグをそのまま答える。モーメンタリボタンの
+        /// パルスを送る入力は、<paramref name="nowMicroseconds"/> からパルスがまだ
+        /// 出ているかを決める。
+        /// </summary>
+        byte FlagsAt(in RcFrame frame, long nowMicroseconds);
     }
 
     /// <summary>

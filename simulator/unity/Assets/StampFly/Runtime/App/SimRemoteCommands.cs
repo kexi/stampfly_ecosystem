@@ -513,6 +513,7 @@ namespace StampFly.App
                 // これである。`rc.release` は従来どおりスティックをキーボードへ
                 // 返す。ここで消すのは台本が握っていた値だけである。
                 scripted.Frame = RcFrame.Centred;
+                scripted.ClearArmPress();
                 simLoop.PowerOn();
                 return SimCommandResult.Success(
                     "{" +
@@ -827,6 +828,27 @@ namespace StampFly.App
 
             bridge.Commands.Register("rc.set", args =>
             {
+                // `arm` here is refused rather than quietly dropped. The flag is
+                // a momentary button, so "hold arm true" is not a thing a
+                // transmitter can express: the firmware toggles on the rising
+                // edge and a bit held down forever is ONE press. A script that
+                // wrote `arm: true` was getting a single press whose effect
+                // depended on what the vehicle happened to be doing, so it has to
+                // say `rc.arm` and be told rather than be left to guess.
+                // ここでの `arm` は、黙って捨てるのではなく断る。フラグはモーメンタリ
+                // ボタンなので、「arm を true で保つ」は送信機が表せることではない。
+                // ファームは立ち上がりでトグルし、押し下げ続けたビットは**1 回**の押下で
+                // ある。`arm: true` と書いた台本は、機体がたまたま何をしていたかで効果の
+                // 変わる押下 1 回を得ていた。よって `rc.arm` と言わせ、黙らせずに伝える。
+                bool asksForArm = args.Bool("arm", false);
+                if (asksForArm)
+                {
+                    return SimCommandResult.Failure(
+                        "rc.set cannot hold `arm`: the ARM flag is a momentary " +
+                        "button the firmware toggles on its rising edge, not a " +
+                        "state — use rc.arm");
+                }
+
                 scripted.Frame = new RcFrame(
                     (ushort)args.Int("throttle", RcScale.Centre),
                     (ushort)args.Int("roll", RcScale.Centre),
@@ -836,7 +858,7 @@ namespace StampFly.App
                 simLoop.RcSource = scripted;
                 ClaimFirmwareLog(bridge);
                 return SimCommandResult.Success();
-            }, "Override the sticks until rc.release");
+            }, "Override the sticks until rc.release (alt_hold only; ARM is rc.arm)");
 
             bridge.Commands.Register("vehicle.state",
                 _ => SimCommandResult.Success(VehicleStateJson()),
@@ -853,48 +875,71 @@ namespace StampFly.App
         }
 
         /// <summary>
-        /// One press of the ARM button, the way the real transmitter's is: the
-        /// flag goes up on a rising edge and stays up, because that is what the
-        /// pilot's stick frames carry from then on. <c>armed=false</c> presses
-        /// it the other way, which disarms.
+        /// Bring the vehicle to the ARM state <c>armed</c> asks for, by pressing
+        /// the transmitter's ARM button once — but only if it is not already in
+        /// that state.
         ///
-        /// A script could set the bit with <c>rc.set --json '{"arm": true}'</c>,
-        /// but then it owns the sticks from that moment and must remember to
-        /// carry the bit in every later frame; forgetting it disarms mid-flight.
-        /// This command exists so a script says "press ARM" and the throttle
-        /// stays wherever the last <c>rc.set</c> left it.
+        /// The flag is a momentary BUTTON, not a value: it is 1 only while held,
+        /// and the firmware TOGGLES arm/disarm on each rising edge, deciding what
+        /// a press means from its own state
+        /// (`firmware/vehicle/tasks/state_task.cpp:339-357`). So there is no bit
+        /// to set to "armed"; there is only a button to press, and pressing it at
+        /// an already-armed vehicle would disarm it. This command therefore reads
+        /// the firmware's state first and presses only on a disagreement, which is
+        /// what makes <c>rc.arm</c> idempotent: asking twice for
+        /// <c>armed=true</c> leaves the vehicle armed rather than armed then
+        /// disarmed. The answer's <c>pressed</c> says whether a press went out.
         ///
-        /// ARM ボタンを 1 回押す。実機の送信機と同じで、立ち上がりでフラグが立ち、
-        /// 以後立ったままになる。操縦者のスティックのフレームがそれを運び続ける
-        /// ためである。<c>armed=false</c> は逆向きに押すことで、DISARM になる。
+        /// The sticks are untouched, so a script can climb first and arm without
+        /// disturbing the throttle the last <c>rc.set</c> put there.
         ///
-        /// 台本は <c>rc.set --json '{"arm": true}'</c> でもビットを立てられるが、
-        /// その瞬間からスティックの持ち主になり、以後の全てのフレームでビットを
-        /// 運び続けねばならない。忘れると飛行中に DISARM する。この命令があるのは、
-        /// 台本が「ARM を押す」とだけ言えて、スロットルは直前の <c>rc.set</c> が
-        /// 置いた場所に留まるようにするためである。
+        /// <c>armed</c> が求める ARM の状態へ機体を持っていく。送信機の ARM ボタンを
+        /// 1 回押すことで行うが、既にその状態なら押さない。
+        ///
+        /// フラグは値ではなくモーメンタリ**ボタン**である。押している間だけ 1 であり、
+        /// ファームは立ち上がりごとに arm/disarm を**トグル**して、押下が何を意味するかを
+        /// 自分の状態から決める（`firmware/vehicle/tasks/state_task.cpp:339-357`）。
+        /// よって「armed にするために立てるビット」は存在しない。あるのは押すボタンだけで、
+        /// 既に ARM された機体でそれを押せば DISARM になる。そこでこの命令はまずファームの
+        /// 状態を読み、食い違っているときだけ押す。これが <c>rc.arm</c> を冪等にしている。
+        /// <c>armed=true</c> を 2 回求めても、ARM したうえで DISARM されるのではなく
+        /// ARM のままである。押下が出たかは答えの <c>pressed</c> が述べる。
+        ///
+        /// スティックには触らないので、台本は先に上昇してから、直前の <c>rc.set</c> が
+        /// 置いたスロットルを乱さずに ARM できる。
         /// </summary>
         private SimCommandResult Arm(RemoteBridge bridge, SimCommandArgs args)
         {
             bool wantsArmed = args.Bool("armed", true);
-            byte armBit = SfuAbi.FlagArm;
+            bool isArmed = simLoop.LastResult.Armed != 0;
 
-            RcFrame held = scripted.Frame;
-            byte flags = wantsArmed
-                ? (byte)(held.Flags | armBit)
-                : (byte)(held.Flags & ~armBit);
-
-            scripted.Frame = new RcFrame(
-                held.Throttle, held.Roll, held.Pitch, held.Yaw, flags);
+            // Hand the sticks to the script either way: `rc.arm` means the
+            // script is flying now, and leaving the keyboard in charge would let
+            // a stray keystroke fight it.
+            // どちらにせよスティックは台本へ渡す。`rc.arm` は「いま台本が飛ばしている」
+            // という意味であり、キーボードに任せたままだと、紛れ込んだ打鍵と競合する。
             simLoop.RcSource = scripted;
-            ClaimFirmwareLog(bridge);
 
-            return SimCommandResult.Success(
-                "{" +
+            bool isAlreadyThere = wantsArmed == isArmed;
+            if (isAlreadyThere)
+            {
+                return SimCommandResult.Success(ArmAnswer(wantsArmed, false, isArmed));
+            }
+
+            scripted.PressArm();
+            ClaimFirmwareLog(bridge);
+            return SimCommandResult.Success(ArmAnswer(wantsArmed, true, isArmed));
+        }
+
+        /// <summary>What an <c>rc.arm</c> answers. / <c>rc.arm</c> の答え。</summary>
+        private string ArmAnswer(bool wantsArmed, bool pressed, bool wasArmed)
+        {
+            return "{" +
                 $"\"armed_requested\":{(wantsArmed ? "true" : "false")}," +
-                $"\"flags\":{flags}," +
+                $"\"pressed\":{(pressed ? "true" : "false")}," +
+                $"\"was_armed\":{(wasArmed ? "true" : "false")}," +
                 $"\"sim_us\":{simLoop.Clock.VirtualMicroseconds}" +
-                "}");
+                "}";
         }
 
         /// <summary>
@@ -968,11 +1013,15 @@ namespace StampFly.App
                 "}";
         }
 
-        /// <summary>The flag byte an rc.set carries. / rc.set が持つフラグのバイト。</summary>
+        /// <summary>
+        /// The flag byte an rc.set carries: the SWITCHES only. ARM is a momentary
+        /// button and belongs to <c>rc.arm</c>, which is why it is not read here.
+        /// rc.set が持つフラグのバイト。**スイッチ**だけである。ARM はモーメンタリ
+        /// ボタンで <c>rc.arm</c> のものなので、ここでは読まない。
+        /// </summary>
         private static byte Flags(SimCommandArgs args)
         {
             byte flags = 0;
-            if (args.Bool("arm", false)) { flags |= SfuAbi.FlagArm; }
             if (args.Bool("alt_hold", false)) { flags |= SfuAbi.FlagAltitudeMode; }
             return flags;
         }
@@ -1019,9 +1068,79 @@ namespace StampFly.App
         /// </summary>
         private sealed class ScriptedRc : IRcSource
         {
+            /// <summary>
+            /// How long a scripted ARM press lasts, in simulated microseconds.
+            /// The same pulse the keyboard sends, for the same reason: the flag
+            /// is a momentary button and the firmware takes the sticks in at
+            /// 50 Hz.
+            /// 台本の ARM の押下が続く長さ。シミュレーションのマイクロ秒で表す。
+            /// キーボードが送るのと同じパルスで、理由も同じである。フラグはモーメンタリ
+            /// ボタンで、ファームはスティックを 50 Hz で取り込む。
+            /// </summary>
+            public const long ArmPulseMicroseconds = KeyboardRc.ArmPulseMicroseconds;
+
+            private const long NoPress = long.MinValue;
+            private const long PressAwaitingClock = long.MinValue + 1;
+
             public RcFrame Frame = RcFrame.Centred;
 
+            private long armPressedAtMicroseconds = NoPress;
+
+            /// <summary>Press the ARM button once. / ARM のボタンを 1 回押す。</summary>
+            public void PressArm()
+            {
+                armPressedAtMicroseconds = PressAwaitingClock;
+            }
+
+            /// <summary>Forget a press in flight, for a power cycle. / 電源の入れ直しのため、途中の押下を忘れる。</summary>
+            public void ClearArmPress()
+            {
+                armPressedAtMicroseconds = NoPress;
+            }
+
             public RcFrame Read() => Frame;
+
+            /// <inheritdoc/>
+            public byte FlagsAt(in RcFrame frame, long nowMicroseconds)
+            {
+                bool isAwaitingAClock = armPressedAtMicroseconds == PressAwaitingClock;
+                if (isAwaitingAClock)
+                {
+                    armPressedAtMicroseconds = nowMicroseconds;
+                }
+
+                // The ARM bit never comes from `rc.set`'s own flags: it is a
+                // button, and `rc.arm` is how it is pressed. A script that put
+                // `arm: true` in `rc.set` used to hold the bit down for the whole
+                // flight, which the firmware reads as ONE press -- the release it
+                // never got is what a second press needs.
+                // ARM のビットは `rc.set` 自身のフラグからは決して来ない。あれはボタンで
+                // あり、押すのは `rc.arm` である。`rc.set` に `arm: true` を入れた台本は
+                // 飛行のあいだビットを押し下げたままにしていたが、ファームはそれを
+                // **1 回**の押下として読む。2 回目の押下に要る離しが、いつまでも来ない。
+                byte flags = (byte)(frame.Flags & ~SfuAbi.FlagArm);
+                bool isPulseOn = IsArmPulseOn(nowMicroseconds);
+                if (isPulseOn)
+                {
+                    flags |= SfuAbi.FlagArm;
+                }
+
+                return flags;
+            }
+
+            /// <summary>Whether a press's pulse is still on. / 押下のパルスがまだ出ているか。</summary>
+            public bool IsArmPulseOn(long nowMicroseconds)
+            {
+                bool hasNoTimedPress = armPressedAtMicroseconds == NoPress ||
+                                       armPressedAtMicroseconds == PressAwaitingClock;
+                if (hasNoTimedPress)
+                {
+                    return false;
+                }
+
+                long sincePress = nowMicroseconds - armPressedAtMicroseconds;
+                return sincePress >= 0 && sincePress < ArmPulseMicroseconds;
+            }
         }
     }
 }
