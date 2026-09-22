@@ -80,6 +80,19 @@ namespace StampFly.World
             WorldObstacle obstacle, Transform root, Material material)
         {
             GameObject part = GameObject.CreatePrimitive(shape);
+            // Explicit component references keep native colliders in stripped WebGL builds.
+            // 型を明示して参照し、WebGLの不要コード除去で当たり判定が消えるのを防ぐ。
+            bool capsule = shape == PrimitiveType.Capsule;
+            if (capsule)
+            {
+                bool missing = part.GetComponent<CapsuleCollider>() == null;
+                if (missing) part.AddComponent<CapsuleCollider>();
+            }
+            else
+            {
+                bool missing = part.GetComponent<SphereCollider>() == null;
+                if (missing) part.AddComponent<SphereCollider>();
+            }
             Finish(part, name, scale, centreHeight, obstacle, root, material);
         }
 

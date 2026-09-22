@@ -52,6 +52,12 @@ namespace StampFly.Ui
             SetEnabled(worldNames.Count > 0);
             RefreshCurrent();
             this.RegisterValueChangedCallback(OnChoice);
+            RegisterCallback<PointerDownEvent>(OnOpenPointer, TrickleDown.TrickleDown);
+            RegisterCallback<NavigationSubmitEvent>(evt =>
+            {
+                evt.StopImmediatePropagation();
+                OpenMenu();
+            }, TrickleDown.TrickleDown);
             loader.Changed += RefreshCurrent;
         }
 
@@ -81,6 +87,26 @@ namespace StampFly.Ui
                 text.style.fontSize = enabled ? 13 : StyleKeyword.Null;
             }
             RefreshCurrent();
+        }
+
+        /// <summary>Replace the field's fixed-width popup before its built-in pointer handler runs. / 既定のポインタ処理より前に固定幅の一覧を置き換える。</summary>
+        private void OnOpenPointer(PointerDownEvent evt)
+        {
+            bool primary = evt.button == 0;
+            if (!primary) return;
+            evt.StopImmediatePropagation();
+            schedule.Execute(OpenMenu);
+        }
+
+        /// <summary>The closed field stays compact; the popup measures its full labels. / 閉じた欄は小さく保ち、開く一覧だけ完全な項目名に合わせる。</summary>
+        private void OpenMenu()
+        {
+            cancelInput();
+            var menu = new GenericDropdownMenu();
+            foreach (string choice in choices)
+                menu.AddItem(choice, choice == value, () => value = choice);
+            menu.onClose += Focus;
+            menu.DropDown(worldBound, this, DropdownMenuSizeMode.Content);
         }
 
         /// <summary>Load first; only a successful load resets the flight. / 読み込みが成功した場合だけ飛行を初期化する。</summary>

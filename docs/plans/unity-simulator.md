@@ -128,6 +128,8 @@ WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×
 
 復元と保存の試験では、全ピンの初期姿勢・速度の復元、Undo履歴の維持、転倒姿勢を保存しないことを確認した。
 
+配布用WebGLの初回確認では、`CreatePrimitive`だけで生成した `CapsuleCollider` と `SphereCollider` が不要コード除去で欠落した。生成処理で型を明示して参照するよう修正し、配布物でも保持する。エディタの試験だけではこの欠落を検出できないため、公開前にブラウザの実行ログも確認する。
+
 ### タッチUIの検証（2026-09-22）
 
 部屋選択の常時表示が視界を塞ぐという指摘を受け、タッチ操縦時は部屋名と短い飛行状態を内容に合わせた幅で表示する。部屋の一覧はタップ時だけ開き、詳細な飛行状態は `Details` で表示する。48pxの操作領域を維持し、画面全幅へ伸びる部屋選択欄をなくす。
@@ -368,6 +370,8 @@ The rigidbody collision unit test used production `PhysicsStepSettings.Apply()` 
 | No impact | 0° | Upright, zero drift and zero speed |
 
 Reset and persistence tests verify restoration of every pin's initial pose and velocity, retained undo history, and exclusion of fallen runtime poses from saves.
+
+The first release WebGL check found that stripping removed `CapsuleCollider` and `SphereCollider` used only through `CreatePrimitive`. Explicit typed component references retain them in the player. Editor tests cannot detect this release-only omission, so browser runtime logs are also checked before publication.
 
 ### Touch UI verification (2026-09-22)
 
