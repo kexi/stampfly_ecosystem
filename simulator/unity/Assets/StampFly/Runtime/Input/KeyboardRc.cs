@@ -165,6 +165,9 @@ namespace StampFly.Input
         /// <summary>The current stick deflection, 10..100. / いまのスティックの振れ幅。10〜100。</summary>
         public float Deflection => deflection;
 
+        /// <summary>Touch sticks sharing this source's buttons. / この入力のボタンと共通で使うタッチスティック。</summary>
+        public TouchRcState Touch { get; } = new TouchRcState();
+
         /// <summary>Whether the ALT_HOLD bit is being sent. / ALT_HOLD のビットを送っているか。</summary>
         public bool IsAltitudeHold => isAltitudeHold;
 
@@ -210,12 +213,27 @@ namespace StampFly.Input
         {
             Keyboard keyboard = Keyboard.current;
             bool hasKeyboard = keyboard != null;
-            if (!hasKeyboard)
+            if (hasKeyboard)
             {
-                return RcFrame.Centred;
+                ReadLatchedKeys(keyboard);
             }
 
-            ReadLatchedKeys(keyboard);
+            bool usesTouch = Touch.Enabled;
+            if (usesTouch)
+            {
+                return new RcFrame(
+                    RcScale.FromDeflection(Touch.Left.y * deflection),
+                    RcScale.FromDeflection(Touch.Right.x * deflection),
+                    RcScale.FromDeflection(Touch.Right.y * deflection),
+                    RcScale.FromDeflection(Touch.Left.x * deflection),
+                    CurrentFlags());
+            }
+
+            if (!hasKeyboard)
+            {
+                return new RcFrame(RcScale.Centre, RcScale.Centre,
+                    RcScale.Centre, RcScale.Centre, CurrentFlags());
+            }
 
             float roll = Axis(keyboard.dKey, keyboard.aKey);
             float pitch = Axis(keyboard.wKey, keyboard.sKey);
@@ -355,8 +373,19 @@ namespace StampFly.Input
         public void Reset()
         {
             isAltitudeHold = false;
+            Touch.Clear();
             armPressedAtMicroseconds = NoPress;
             wasArmKeyDown = false;
+        }
+
+        /// <summary>
+        /// Cancel interrupted touch input without changing the requested flight mode.
+        /// 操作が中断されたときにタッチ入力を取り消し、要求中の飛行モードは保持する。
+        /// </summary>
+        public void CancelTouch()
+        {
+            Touch.Clear();
+            armPressedAtMicroseconds = NoPress;
         }
     }
 }

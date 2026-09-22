@@ -4,6 +4,8 @@
     "references": [
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
+        "Unity.InputSystem",
+        "Unity.InputSystem.TestFramework",
         "StampFly.World",
         "StampFly.Native",
         "StampFly.Input",
@@ -13,7 +15,8 @@
         "StampFly.App",
         "StampFly.Vehicle",
         "StampFly.Ui",
-        "StampFly.Editor.MeshTools"
+        "StampFly.Editor.MeshTools",
+        "StampFly.Editor.Builders"
     ],
     "includePlatforms": [
         "Editor"

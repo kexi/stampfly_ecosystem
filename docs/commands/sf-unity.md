@@ -226,6 +226,36 @@ Backspace）は `simulator/unity/README.md` の「操縦」の節にある。F�
 
 一時停止中（P、または `sim.pause`）でも寄せられる。機体をよく見たいのはまさにそのときである。
 
+### スマートフォンの操作
+
+スマートフォンは横持ちで、画面の左右のスティックを両親指で操作する（Mode 2）。
+`Touch` / `Keyboard` で入力を切り替えられる。
+
+| 操作 | 働き |
+|------|------|
+| 左スティックの上下 ／ 左右 | スロットル ／ ヨー（機首の向き） |
+| 右スティックの上下 ／ 左右 | ピッチ（前後の傾き） ／ ロール（左右の傾き） |
+| ARM / DISARM | モータの有効・無効を切り替えるボタンを 1 回押す |
+| ALT HOLD | 高度維持の有効・無効を切り替える |
+| PAUSE / RESUME | シミュレーションの一時停止・再開 |
+| RESTART | シミュレーションを最初からやり直す |
+| メニュー | 詳細表示 |
+| 上部バーの GitHub / Fork アイコン | GitHub リポジトリ ／ Fork 元を開く（説明はツールチップに表示） |
+| 上部バーの License アイコン | 配布物に同梱された MIT ライセンス全文を開く |
+
+高度・飛行モード・モータの状態を画面上部に表示する。指を離したとき、操作を中断したとき、
+画面を回転・リサイズしたときにはスティックが中央に戻る。
+**中央に戻ることはモータ停止ではない。STABILIZE では中央スロットルでも推力が出る。**
+止めて確認するときは `PAUSE` を使う。
+
+画面の切欠きとホームインジケータを避けて操作領域を配置し、操縦中のページスクロールを抑える。
+Android と iPhone の実機での操作感・描画速度は未検証。
+
+WebGL ビルドは、リポジトリの `LICENSE` を配布物直下の `LICENSE.txt` に原文のまま同梱する。
+`Copyright (c) 2026 Kouhei Ito` の著作権表示と許諾・免責条項を保持し、UI から全文を読める。
+原文が無い場合や複写できない場合は、ビルドを失敗とする。
+WebGL の上部リンクはブラウザの通常のリンクで、新しいタブを開く。Unity の読み込み中にも利用できる。
+
 ### 失敗のしかた
 
 | 状況 | 終了コード | 表示 |
@@ -732,6 +762,36 @@ player). Which one it is is decided from the reading's own size, so one notch is
 
 Zooming works while the simulation is paused (P, or `sim.pause`) — which is exactly when somebody
 wants a closer look at the airframe.
+
+### Smartphone Controls
+
+Hold the phone in landscape and operate the two on-screen sticks with both thumbs (Mode 2).
+Switch the input with `Touch` / `Keyboard`.
+
+| Control | Effect |
+|---------|--------|
+| Left stick, vertical / horizontal | Throttle / yaw |
+| Right stick, vertical / horizontal | Pitch / roll |
+| ARM / DISARM | Press the motor arm/disarm button once |
+| ALT HOLD | Toggle altitude hold |
+| PAUSE / RESUME | Pause or resume the simulation |
+| RESTART | Start the simulation again |
+| Menu | Detailed readout |
+| GitHub / Fork icons in the top bar | Open the GitHub repository / fork source (tooltips identify each link) |
+| License icon in the top bar | Open the complete MIT license included in the distribution |
+
+Altitude, flight mode and motor state appear at the top. The sticks return to centre when a finger
+is released, control is interrupted, or the viewport rotates or resizes.
+**Returning to centre does not stop the motors: centred throttle still produces thrust in STABILIZE.**
+Use `PAUSE` to stop and inspect the simulation.
+
+The canvas stays clear of notches and the home indicator, and page scrolling is suppressed while piloting.
+Handling and frame rate have not yet been verified on physical Android or iPhone devices.
+
+WebGL builds copy the repository's `LICENSE` unchanged to `LICENSE.txt` at the output root.
+The full text, including `Copyright (c) 2026 Kouhei Ito`, the permission notice and disclaimer,
+is preserved and readable from the UI. A missing source or failed copy causes the build to fail.
+The WebGL top-bar links are native browser links that open a new tab and also work while Unity loads.
 
 ### How It Fails
 

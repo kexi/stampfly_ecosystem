@@ -11,6 +11,7 @@ using StampFly.Native;
 using StampFly.Sim;
 using UnityEngine;
 using UnityEngine.UIElements;
+using UnityEngine.InputSystem;
 
 namespace StampFly.Ui
 {
@@ -45,6 +46,17 @@ namespace StampFly.Ui
         private Label flightLabel;
         private Label hostLabel;
         private float secondsSinceRefresh;
+        private KeyboardRc localInput;
+        private TouchFlightControls touchControls;
+        private VisualElement readout;
+        private VisualElement help;
+        private Button inputButton;
+        private bool touchEnabled;
+        private bool showDetails;
+        private int powerCycles;
+
+        public const string RepositoryUrl = "https://github.com/kexi/stampfly_ecosystem";
+        public const string UpstreamUrl = "https://github.com/M5Fly-kanazawa/stampfly_ecosystem";
 
         private void OnEnable()
         {
@@ -69,12 +81,145 @@ namespace StampFly.Ui
             root.style.right = 0;
             root.style.bottom = 0;
 
-            root.Add(BuildPanel());
-            root.Add(BuildHelp());
+            readout = BuildPanel();
+            help = BuildHelp();
+            root.Add(readout);
+            root.Add(help);
+            root.Add(BuildToolbar());
+            touchControls = new TouchFlightControls(
+                value => localInput?.Touch.SetLeft(value),
+                value => localInput?.Touch.SetRight(value),
+                () => localInput?.PressArm(), () => localInput?.PressAltitudeHold(),
+                TogglePause, Restart);
+            root.Add(touchControls);
+            touchControls.style.display = DisplayStyle.None;
+            root.RegisterCallback<GeometryChangedEvent>(_ => CancelTouch());
         }
+
+        /// <summary>Bootstrap assigns the loop after OnEnable. / 起動処理がOnEnableの後でループを設定する。</summary>
+        private void Start()
+        {
+            localInput = simLoop?.RcSource as KeyboardRc;
+            bool hasTouch = Application.isMobilePlatform || Touchscreen.current != null;
+            SetTouchEnabled(hasTouch);
+        }
+
+        /// <summary>Keyboard controls remain available on touch-capable computers. / タッチ対応PCでもキーボードへ戻せる。</summary>
+        public void SetTouchEnabled(bool enabled)
+        {
+            CancelTouch();
+            touchEnabled = enabled;
+            bool hasInput = localInput != null;
+            if (hasInput) localInput.Touch.Enabled = enabled;
+            var settings = GetComponent<UIDocument>().panelSettings;
+            bool usesPixelLayout = enabled || Application.platform == RuntimePlatform.WebGLPlayer;
+            settings.scaleMode = usesPixelLayout ? PanelScaleMode.ConstantPixelSize : PanelScaleMode.ScaleWithScreenSize;
+            settings.scale = 1;
+            touchControls.style.display = enabled ? DisplayStyle.Flex : DisplayStyle.None;
+            inputButton.text = enabled ? "Keyboard" : "Touch";
+            ApplyReadoutLayout();
+        }
+
+        /// <summary>Compact flight state leaves space for the pilot's thumbs. / 操縦する指のために状態表示を小さくまとめる。</summary>
+        private void ApplyReadoutLayout()
+        {
+            readout.style.top = 72;
+            readout.style.right = touchEnabled ? 12 : StyleKeyword.Auto;
+            flightLabel.style.fontSize = touchEnabled ? 16 : 13;
+            hostLabel.style.display = !touchEnabled || showDetails ? DisplayStyle.Flex : DisplayStyle.None;
+            help.style.display = touchEnabled ? DisplayStyle.None : DisplayStyle.Flex;
+            Refresh();
+        }
+
+        /// <summary>Visible links need no text labels, but retain destination hints. / リンクはアイコンだけにし、行き先の案内を残す。</summary>
+        private VisualElement BuildToolbar()
+        {
+            var bar = new VisualElement();
+            bar.style.position = Position.Absolute;
+            bar.style.top = bar.style.right = 8;
+            // HTML anchors preserve browser navigation and accessibility on mobile.
+            // スマホでもブラウザ本来のリンク操作とアクセシビリティを保つ。
+            bool usesBrowserLinks = Application.platform == RuntimePlatform.WebGLPlayer;
+            if (usesBrowserLinks) bar.style.right = 180;
+            bar.style.flexDirection = FlexDirection.Row;
+            inputButton = TouchFlightControls.ActionButton("Touch", () => SetTouchEnabled(!touchEnabled));
+            bar.Add(inputButton);
+            bar.Add(TouchFlightControls.ActionButton("Details", () =>
+            {
+                showDetails = !showDetails;
+                ApplyReadoutLayout();
+            }));
+            if (usesBrowserLinks) return bar;
+            bar.Add(LinkButton(LinkIcon.Kind.Repository, "GitHub: kexi/stampfly_ecosystem", RepositoryUrl));
+            bar.Add(LinkButton(LinkIcon.Kind.Fork, "Fork source: M5Fly-kanazawa/stampfly_ecosystem", UpstreamUrl));
+            var license = TouchFlightControls.ActionButton(string.Empty, OpenLicense);
+            license.name = "license-link";
+            license.tooltip = "MIT License — Copyright (c) 2026 Kouhei Ito";
+            license.Add(new LinkIcon(LinkIcon.Kind.License));
+            bar.Add(license);
+            return bar;
+        }
+
+        /// <summary>Open public repository pages directly from a user gesture. / 利用者の操作で公開リポジトリを直接開く。</summary>
+        private static Button LinkButton(LinkIcon.Kind kind, string hint, string url)
+        {
+            var button = TouchFlightControls.ActionButton(string.Empty, () => Application.OpenURL(url));
+            button.name = kind == LinkIcon.Kind.Fork ? "upstream-link" : "repository-link";
+            button.tooltip = hint;
+            button.Add(new LinkIcon(kind));
+            return button;
+        }
+
+        /// <summary>The built copy travels with the player; the editor links to the source. / 配布時は同梱文書、エディタでは原文を開く。</summary>
+        private static void OpenLicense()
+        {
+            bool isWebPlayer = Application.platform == RuntimePlatform.WebGLPlayer;
+            string url = isWebPlayer
+                ? new System.Uri(new System.Uri(Application.absoluteURL), "LICENSE.txt").AbsoluteUri
+                : RepositoryUrl + "/blob/main/LICENSE";
+            Application.OpenURL(url);
+        }
+
+        /// <summary>Pause must not retain a held touch through resuming. / 再開時に押下を持ち越さない。</summary>
+        private void TogglePause()
+        {
+            CancelTouch();
+            simLoop?.Clock.TogglePause();
+        }
+
+        /// <summary>Restart the firmware and return to the spawn, as B does. / Bと同じくファームを再起動して出発点へ戻す。</summary>
+        private void Restart()
+        {
+            CancelTouch();
+            simLoop?.PowerOn();
+        }
+
+        /// <summary>Called by browser visibility/resize events as well as Unity lifecycle events. / ブラウザの非表示・サイズ変更とUnityの状態変更で呼ぶ。</summary>
+        public void CancelTouch()
+        {
+            touchControls?.Cancel();
+            localInput?.CancelTouch();
+        }
+
+        /// <summary>Release a gesture when the app loses focus. / アプリからフォーカスが外れたら操作を解除する。</summary>
+        private void OnApplicationFocus(bool focused)
+        {
+            bool lostFocus = !focused;
+            if (lostFocus) CancelTouch();
+        }
+
+        /// <summary>Release a gesture when the operating system suspends the app. / OSによるアプリ停止で操作を解除する。</summary>
+        private void OnApplicationPause(bool paused)
+        {
+            if (paused) CancelTouch();
+        }
+
+        /// <summary>A hidden HUD must not keep piloting. / 非表示のHUDに操作を残さない。</summary>
+        private void OnDisable() => CancelTouch();
 
         private void Update()
         {
+            UpdateTouchState();
             secondsSinceRefresh += Time.unscaledDeltaTime;
             bool isTooSoon = secondsSinceRefresh < RefreshSeconds;
             if (isTooSoon)
@@ -84,6 +229,28 @@ namespace StampFly.Ui
 
             secondsSinceRefresh = 0.0f;
             Refresh();
+        }
+
+        /// <summary>Remote override and restart also release pointer capture. / 遠隔操作への切替と再起動でも指の捕捉を解除する。</summary>
+        private void UpdateTouchState()
+        {
+            bool hasLoop = simLoop != null && touchControls != null;
+            if (!hasLoop) return;
+            bool restarted = powerCycles != simLoop.PowerCycles;
+            powerCycles = simLoop.PowerCycles;
+            bool isLocal = ReferenceEquals(simLoop.RcSource, localInput);
+            if (restarted || !isLocal) CancelTouch();
+            bool canPilot = isLocal && simLoop.Firmware != null &&
+                            simLoop.Firmware.Status == FirmwareStatus.Running && !simLoop.Clock.IsPaused;
+            bool mustRelease = !canPilot;
+            if (mustRelease && touchEnabled) CancelTouch();
+            touchControls.SetPilotingEnabled(canPilot);
+            touchControls.Arm.SetEnabled(canPilot);
+            touchControls.AltitudeHold.SetEnabled(canPilot);
+            touchControls.Restart.SetEnabled(isLocal);
+            touchControls.Arm.text = simLoop.LastResult.Armed != 0 ? "DISARM" : "ARM";
+            touchControls.AltitudeHold.text = localInput != null && localInput.IsAltitudeHold ? "ALT ON" : "ALT HOLD";
+            touchControls.Pause.text = simLoop.Clock.IsPaused ? "RESUME" : "PAUSE";
         }
 
         /// <summary>The two blocks of text, in a panel at the top left. / 左上の枠に入れた 2 つの文の塊。</summary>
@@ -224,6 +391,13 @@ namespace StampFly.Ui
             string rangeText = range.IsValid
                 ? $"{range.Distance:F3} m"
                 : "(invalid)";
+
+            bool useCompactReadout = touchEnabled && !showDetails;
+            if (useCompactReadout)
+            {
+                return $"{FlightStateNames.Mode(state.FlightMode)}  {armed}  {state.TruthPositionY:F2} m\n" +
+                       $"{FlightStateNames.State(state.FlightState)}  |  Mode 2  |  stick {keyboard?.Deflection:F0}";
+            }
 
             return
                 $"state      {FlightStateNames.State(state.FlightState)}  " +

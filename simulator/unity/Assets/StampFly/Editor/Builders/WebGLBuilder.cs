@@ -23,13 +23,15 @@ namespace StampFly.Editor.Builders
     /// Unity 内蔵のコマンドライン用ビルドが無く、ビルドプロファイルかこのような
     /// static メソッドのどちらかが要る。
     ///
-    /// Besides building, it does two things the player cannot do for itself:
+    /// Besides building, it preserves the repository license in the output and
+    /// does two things the player cannot do for itself:
     /// it copies the firmware's own wasm module beside the player (the firmware
     /// is a SEPARATE module, not linked in), and it turns on Decompression
     /// Fallback, because GitHub Pages cannot set <c>Content-Encoding</c> and a
     /// Brotli file served without that header is not decompressed by the browser.
     ///
-    /// ビルドのほかに、プレイヤー自身にはできない 2 つを行う。ファーム自身の wasm
+    /// ビルドのほかに、リポジトリのライセンスを出力に同梱し、プレイヤー自身には
+    /// できない 2 つを行う。ファーム自身の wasm
     /// モジュールをプレイヤーの隣へ複写すること（ファームは**別の**モジュールで
     /// あり、リンクされない）と、Decompression Fallback を有効にすることである。
     /// GitHub Pages は <c>Content-Encoding</c> を付けられず、そのヘッダ無しで
@@ -121,6 +123,17 @@ namespace StampFly.Editor.Builders
 
             WriteManifest(outputPath, isRelease, report);
 
+            try
+            {
+                CopyLicense(RepositoryRoot(), outputPath);
+            }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+            {
+                Debug.LogError($"[WebGLBuilder] cannot include the repository license: {error.Message}");
+                EditorApplication.Exit(1);
+                return;
+            }
+
             bool copied = CopyFirmwareModule(outputPath);
             if (!copied)
             {
@@ -137,6 +150,19 @@ namespace StampFly.Editor.Builders
         /// いたかを載せる。
         /// </summary>
         public const string ManifestFileName = "stampfly-build-manifest.json";
+
+        /// <summary>
+        /// Copy the original license without rewriting its copyright or terms.
+        /// Failures propagate so the build cannot succeed without the notice.
+        /// 著作権表示・条項を編集せず元のライセンスを複写する。
+        /// 表示を欠いたビルドが成功しないよう、失敗は呼出元へ伝える。
+        /// </summary>
+        public static void CopyLicense(string repositoryRoot, string outputPath)
+        {
+            string source = Path.Combine(repositoryRoot, "LICENSE");
+            string destination = Path.Combine(outputPath, "LICENSE.txt");
+            File.Copy(source, destination, true);
+        }
 
         /// <summary>
         /// Record what this build contains, so `sf unity build --release` can
