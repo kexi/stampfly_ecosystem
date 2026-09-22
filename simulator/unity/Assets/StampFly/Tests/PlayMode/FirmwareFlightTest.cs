@@ -1,6 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Kouhei Ito
+ * Copyright (c) 2026 Kei Nakayama (kexi)
  *
  * Part of StampFly Ecosystem (Unity simulator — the stage 3 flight checks).
  * https://github.com/M5Fly-kanazawa/stampfly_ecosystem
@@ -156,6 +157,49 @@ namespace StampFly.Tests.PlayMode
 
             Assert.That(reachedAltitudeHold, Is.True,
                         "the firmware never entered ALT_HOLD");
+        }
+
+        /// <summary>
+        /// Forward pitch still accelerates the real vehicle horizontally while ALT_HOLD maintains flight.
+        /// ALT_HOLDで飛行を維持しながら、前進のピッチ入力で実際の機体が水平方向へ加速すること。
+        /// </summary>
+        [Test]
+        public void ForwardPitchMovesTheVehicleWhileHoldingAltitude()
+        {
+            const double settleSeconds = 3.0;
+            const double forwardSeconds = 1.0;
+            const float minimumForwardMeters = 0.1f;
+            const float minimumForwardSpeedIncrease = 0.2f;
+            Assert.That(scene.Build(), Is.True, scene.Firmware?.LastError);
+            double forwardAtSeconds = HoldAtSeconds + settleSeconds;
+            int prepareStatus = scene.FlyUntil(forwardAtSeconds, now => scene.Sticks = SticksAt(now));
+            Assert.That(prepareStatus, Is.EqualTo(SfuAbi.Ok));
+            Assert.That(scene.LastResult.FlightMode, Is.EqualTo(FlightStateNames.AltitudeHold));
+            Assert.That(scene.LastResult.FlightState, Is.EqualTo(FlightStateNames.Flying));
+
+            Vector3 startPosition = scene.Body.position;
+            Vector3 forward = Vector3.ProjectOnPlane(scene.Body.rotation * Vector3.forward, Vector3.up).normalized;
+            float startingSpeed = Vector3.Dot(scene.Body.linearVelocity, forward);
+            ushort forwardPitch = RcScale.FromDeflection(-KeyboardRc.DefaultDeflection);
+            byte flags = SfuAbi.FlagArm | SfuAbi.FlagAltitudeMode;
+            bool stayedInAltitudeHold = true;
+            float lowestAltitude = scene.AltitudeMeters;
+            int status = scene.FlyUntil(forwardAtSeconds + forwardSeconds, now =>
+            {
+                scene.Sticks = new RcFrame(RcScale.Centre, RcScale.Centre, forwardPitch, RcScale.Centre, flags);
+                stayedInAltitudeHold &= scene.LastResult.FlightMode == FlightStateNames.AltitudeHold
+                    && scene.LastResult.FlightState == FlightStateNames.Flying;
+                lowestAltitude = Mathf.Min(lowestAltitude, scene.AltitudeMeters);
+            });
+
+            float forwardDistance = Vector3.Dot(scene.Body.position - startPosition, forward);
+            float speedIncrease = Vector3.Dot(scene.Body.linearVelocity, forward) - startingSpeed;
+            TestContext.WriteLine($"ALT_HOLD forward: distance={forwardDistance:F4} m, speed increase={speedIncrease:F4} m/s, minimum altitude={lowestAltitude:F4} m");
+            Assert.That(status, Is.EqualTo(SfuAbi.Ok), SfuAbi.Describe(status));
+            Assert.That(stayedInAltitudeHold, Is.True, "forward pitch left ALT_HOLD or FLYING");
+            Assert.That(lowestAltitude, Is.GreaterThan(HoldMinimumMeters), "forward pitch dropped the vehicle to the floor");
+            Assert.That(forwardDistance, Is.GreaterThan(minimumForwardMeters), "forward pitch did not move the vehicle forward");
+            Assert.That(speedIncrease, Is.GreaterThan(minimumForwardSpeedIncrease), "horizontal motion was drift rather than forward acceleration");
         }
 
         /// <summary>

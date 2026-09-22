@@ -1,11 +1,13 @@
 /*
  * SPDX-License-Identifier: MIT
  * Copyright (c) 2026 Kouhei Ito
+ * Copyright (c) 2026 Kei Nakayama (kexi)
  *
  * Part of StampFly Ecosystem (Unity simulator — keyboard piloting).
  * https://github.com/M5Fly-kanazawa/stampfly_ecosystem
  */
 
+using UnityEngine;
 using UnityEngine.InputSystem;
 
 namespace StampFly.Input
@@ -218,13 +220,16 @@ namespace StampFly.Input
                 ReadLatchedKeys(keyboard);
             }
 
-            bool usesTouch = Touch.Enabled;
+            // A visible touch UI must not swallow keyboard flight axes while its sticks are idle.
+            // タッチUIを表示していても、スティック未操作時のキーボード操縦を妨げない。
+            bool hasTouchDeflection = Touch.Left != Vector2.zero || Touch.Right != Vector2.zero;
+            bool usesTouch = Touch.Enabled && (hasTouchDeflection || !hasKeyboard);
             if (usesTouch)
             {
                 return new RcFrame(
                     RcScale.FromDeflection(Touch.Left.y * deflection),
                     RcScale.FromDeflection(Touch.Right.x * deflection),
-                    RcScale.FromDeflection(Touch.Right.y * deflection),
+                    RcScale.FromDeflection(-Touch.Right.y * deflection),
                     RcScale.FromDeflection(Touch.Left.x * deflection),
                     CurrentFlags());
             }
@@ -236,7 +241,9 @@ namespace StampFly.Input
             }
 
             float roll = Axis(keyboard.dKey, keyboard.aKey);
-            float pitch = Axis(keyboard.wKey, keyboard.sKey);
+            // Positive firmware pitch raises the nose, so forward uses negative pitch.
+            // ファームの正ピッチは機首上げなので、前進には負ピッチを送る。
+            float pitch = Axis(keyboard.sKey, keyboard.wKey);
             float yaw = Axis(keyboard.periodKey, keyboard.commaKey);
             float throttle = Axis(keyboard.spaceKey, keyboard.zKey);
 

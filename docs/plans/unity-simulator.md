@@ -134,6 +134,12 @@ WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×
 
 ### タッチUIの検証（2026-09-22）
 
+追加修正: タッチ表示中はHなどのボタンだけを受け付け、Wなどの軸入力を無視していた。未操作のタッチスティックはキーボード軸を妨げないよう変更し、Hの前後・キー解放・タッチ操作中の優先を試験する。小型表示は固定幅と等幅文字・固定桁で描き、ARM状態や高度の変化で小数点と隣の部屋選択を動かさない。
+
+前進方向の再確認では、ALT_HOLD中に従来のW相当（正ピッチ60%）を1秒送ると機首方向へ-1.0472 m移動し、後退していた。ファームの正ピッチは機首上げであるため、Wおよび右タッチスティック上方向を負のRCピッチに修正する。機体前方はUnityの+Zで、座標変換と前方モータの描画とも一致する。ファームの制御ゲインは変更しない。
+
+修正後は1秒で前進1.0466 m、前進速度の増加2.6893 m/s、最低高度0.3271 mとなり、ALT_HOLDとFLYINGを維持した。EditMode260件・PlayMode124件が通過（`logs/unity/test-20260922T050316Z-f152ef62.xml`、`logs/unity/test-20260922T050356Z-1049b504.xml`）。
+
 部屋選択の常時表示が視界を塞ぐという指摘を受け、タッチ操縦時は部屋名と短い飛行状態を内容に合わせた幅で表示する。部屋の一覧はタップ時だけ開き、詳細な飛行状態は `Details` で表示する。48pxの操作領域を維持し、画面全幅へ伸びる部屋選択欄をなくす。
 
 `sf unity test --mode edit` は209件、`--mode play` は99件通過。新規試験で軸の割当、ARMパルス、2本の指の独立操作、捕捉喪失・停止時の解除、390×844／844×390の配置、LICENSEの原文コピーと失敗時の拒否を確認した。
@@ -378,6 +384,12 @@ Reset and persistence tests verify restoration of every pin's initial pose and v
 The first release WebGL check found that stripping removed `CapsuleCollider` and `SphereCollider` used only through `CreatePrimitive`. Explicit typed component references retain them in the player. Editor tests cannot detect this release-only omission, so browser runtime logs are also checked before publication.
 
 ### Touch UI verification (2026-09-22)
+
+Follow-up fix: touch display previously accepted buttons such as H but swallowed flight axes such as W. Idle touch sticks now allow keyboard axes; tests cover H on/off, key release and active-touch priority. The compact readout uses fixed width, monospaced character cells and fixed numeric columns so ARM state and altitude changes do not move the decimal point or adjacent room selector.
+
+A directional check found that one second of the previous W-equivalent input (+60% pitch) in ALT_HOLD moved -1.0472 m along the nose direction: backwards. Positive firmware pitch is nose-up, so W and upward right-touch-stick input now send negative RC pitch. Unity +Z is confirmed as body forward by the coordinate conversion and front-motor geometry. Firmware control gains are unchanged.
+
+After correction, one second produced 1.0466 m forward travel, a 2.6893 m/s increase in forward speed and a minimum altitude of 0.3271 m while remaining ALT_HOLD and FLYING. All 260 EditMode and 124 PlayMode tests passed (`logs/unity/test-20260922T050316Z-f152ef62.xml`, `logs/unity/test-20260922T050356Z-1049b504.xml`).
 
 Following feedback that room selection obscured the flight view, touch mode uses a content-sized room selector and a short flight readout. The room list opens only on tap; detailed flight information remains under `Details`. Controls retain 48 px touch targets without stretching the room field across the viewport.
 

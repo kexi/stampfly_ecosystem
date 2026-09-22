@@ -36,7 +36,7 @@ namespace StampFly.Tests.EditMode
             Assert.That(frame.Yaw, Is.EqualTo(RcScale.FromDeflection(-15f)));
             Assert.That(frame.Throttle, Is.EqualTo(RcScale.FromDeflection(30f)));
             Assert.That(frame.Roll, Is.EqualTo(RcScale.FromDeflection(45f)));
-            Assert.That(frame.Pitch, Is.EqualTo(RcScale.FromDeflection(-60f)));
+            Assert.That(frame.Pitch, Is.EqualTo(RcScale.FromDeflection(60f)));
         }
 
         /// <summary>Out-of-range diagonals clamp per axis, and release centres all axes. / 範囲外の斜め操作は軸別に制限され、解放で全軸が中央に戻る。</summary>
@@ -116,7 +116,7 @@ namespace StampFly.Tests.EditMode
             Assert.That(source.FlagsAt(source.Read(), 0L), Is.Zero);
         }
 
-        /// <summary>Touch overrides keyboard axes while retaining keyboard buttons and deflection. / タッチ使用中もキーのボタン・振れ幅が有効で、軸はタッチを使う。</summary>
+        /// <summary>Actively displaced touch sticks override keyboard axes while sharing buttons. / タッチスティック操作中はタッチ軸を優先し、ボタンは共通で使う。</summary>
         [Test]
         public void TouchOverridesKeyboardAxesButSharesButtonsAndDeflection()
         {
@@ -135,6 +135,35 @@ namespace StampFly.Tests.EditMode
                 Is.EqualTo(SfuAbi.FlagAltitudeMode | SfuAbi.FlagArm));
         }
 
+        /// <summary>Idle touch controls do not swallow flight keys before or after H. / タッチ未操作ならHの前後とも操縦キーを無視しない。</summary>
+        [TestCase(false)]
+        [TestCase(true)]
+        public void IdleTouchAllowsKeyboardFlightAxesAndRelease(bool altitudeHold)
+        {
+            Keyboard keyboard = InputSystem.AddDevice<Keyboard>();
+            var source = new KeyboardRc();
+            source.Touch.Enabled = true;
+            if (altitudeHold)
+            {
+                InputSystem.QueueStateEvent(keyboard, new KeyboardState(Key.H));
+                InputSystem.Update();
+                source.Read();
+            }
+            InputSystem.QueueStateEvent(keyboard, new KeyboardState(Key.W, Key.D, Key.Space, Key.Period));
+            InputSystem.Update();
+
+            RcFrame frame = source.Read();
+
+            Assert.That(frame.Pitch, Is.EqualTo(RcScale.FromDeflection(-60f)));
+            Assert.That(frame.Roll, Is.EqualTo(RcScale.FromDeflection(60f)));
+            Assert.That(frame.Throttle, Is.EqualTo(RcScale.FromDeflection(60f)));
+            Assert.That(frame.Yaw, Is.EqualTo(RcScale.FromDeflection(60f)));
+            Assert.That(source.IsAltitudeHold, Is.EqualTo(altitudeHold));
+            InputSystem.QueueStateEvent(keyboard, new KeyboardState());
+            InputSystem.Update();
+            AssertCentred(source.Read());
+        }
+
         /// <summary>Disabling touch restores keyboard axes and does not retain a stick displacement. / タッチを無効にするとキー軸に戻り、タッチの振れは残らない。</summary>
         [Test]
         public void DisablingTouchRestoresKeyboardAndClearsOldStickValues()
@@ -151,9 +180,11 @@ namespace StampFly.Tests.EditMode
             RcFrame frame = source.Read();
 
             Assert.That(frame.Roll, Is.EqualTo(RcScale.FromDeflection(-60f)));
-            Assert.That(frame.Pitch, Is.EqualTo(RcScale.FromDeflection(60f)));
+            Assert.That(frame.Pitch, Is.EqualTo(RcScale.FromDeflection(-60f)));
             Assert.That(frame.Yaw, Is.EqualTo(RcScale.FromDeflection(-60f)));
             Assert.That(frame.Throttle, Is.EqualTo(RcScale.FromDeflection(-60f)));
+            InputSystem.QueueStateEvent(keyboard, new KeyboardState());
+            InputSystem.Update();
             source.Touch.Enabled = true;
             AssertCentred(source.Read());
         }

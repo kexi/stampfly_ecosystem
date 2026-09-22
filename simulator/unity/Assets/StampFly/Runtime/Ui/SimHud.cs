@@ -39,6 +39,7 @@ namespace StampFly.Ui
     {
         /// <summary>How often the readout is refreshed [s]. / 表示を更新する間隔 [s]。</summary>
         public const float RefreshSeconds = 0.1f;
+        private const float CompactFlightWidth = 120;
 
         [Tooltip("The loop this reports on. 内容の元になるループ。")]
         public SimLoop simLoop;
@@ -163,6 +164,10 @@ namespace StampFly.Ui
             readout.style.flexWrap = Wrap.Wrap;
             readout.style.alignItems = compact ? Align.Center : Align.Stretch;
             flightLabel.style.marginRight = compact ? 6 : 0;
+            flightLabel.style.width = compact ? CompactFlightWidth : StyleKeyword.Auto;
+            flightLabel.style.flexShrink = compact ? 0 : 1;
+            flightLabel.style.whiteSpace = compact ? WhiteSpace.NoWrap : WhiteSpace.Normal;
+            flightLabel.style.overflow = compact ? Overflow.Hidden : Overflow.Visible;
             flightLabel.style.fontSize = 13;
             roomSelector?.SetCompact(compact);
             hostLabel.style.display = !touchEnabled || showDetails ? DisplayStyle.Flex : DisplayStyle.None;
@@ -306,6 +311,7 @@ namespace StampFly.Ui
             panel.style.backgroundColor = new Color(0.05f, 0.06f, 0.08f, 0.72f);
 
             flightLabel = MonospaceLabel(new Color(0.92f, 0.94f, 0.96f));
+            flightLabel.enableRichText = true;
             hostLabel = MonospaceLabel(new Color(0.62f, 0.78f, 0.90f));
             panel.Add(flightLabel);
             panel.Add(hostLabel);
@@ -441,7 +447,10 @@ namespace StampFly.Ui
             bool useCompactReadout = touchEnabled && !showDetails;
             if (useCompactReadout)
             {
-                return $"{armed}  {state.TruthPositionY:F2} m";
+                // Fixed character cells keep the decimal point and neighbouring controls still.
+                // 文字の幅を固定し、小数点と隣の操作欄の位置を変えない。
+                string compactArmed = isPressing ? "arming" : (state.Armed != 0 ? "ARMED" : "disarmed");
+                return $"<mspace=7px>{compactArmed,-8} {state.TruthPositionY,6:F2} m</mspace>";
             }
 
             return

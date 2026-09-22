@@ -271,7 +271,7 @@ Backspace）は `simulator/unity/README.md` の「操縦」の節にある。F�
 ### スマートフォンの操作
 
 スマートフォンは横持ちで、画面の左右のスティックを両親指で操作する（Mode 2）。
-`Touch` / `Keyboard` で入力を切り替えられる。
+`Touch` / `Keyboard` で操作パネルを切り替えられる。タッチ表示中も、スティックを操作していなければWなどの操縦キーを使える。タッチスティックを動かしている間はタッチ入力を優先する。
 
 | 操作 | 働き |
 |------|------|
@@ -852,7 +852,7 @@ Resizing furniture and JSON file import/export are not yet available in this scr
 ### Smartphone Controls
 
 Hold the phone in landscape and operate the two on-screen sticks with both thumbs (Mode 2).
-Switch the input with `Touch` / `Keyboard`.
+Switch the control panel with `Touch` / `Keyboard`. Flight keys such as W also work with touch controls visible when the sticks are idle. Displaced touch sticks take priority while being used.
 
 | Control | Effect |
 |---------|--------|
