@@ -238,6 +238,18 @@ Backspace）は `simulator/unity/README.md` の「操縦」の節にある。F�
 | 書斎 | 机、椅子、棚 |
 | 寝室 | ベッド、机、椅子、棚 |
 
+### ボーリングで遊ぶ
+
+`Room` → `Bowling` を選ぶと、小型のピンを10本並べた部屋へ切り替わる。ピンは1本12 g・高さ18 cm・直径5 cmで、動的なPhysX剛体としてドローンとの衝突を計算する。機体をピンへ当てて倒す。
+
+| 操作 | 働き |
+|------|------|
+| タッチの `RESTART` ／ キーボードのB | 機体を出発点へ戻し、全ピンを元の位置で立て直す |
+| 部屋を読み直す | 初期配置からやり直す |
+| `Edit` → `Save here` | 転倒状態ではなく初期配置を保存する。編集を開く時点でピンは立て直される |
+
+スコアや投球回数の表示はない。
+
 ### 家具を配置する
 
 状態表示の `Edit` を押すと、シミュレーションを一時停止し、部屋を上から表示する。
@@ -804,6 +816,18 @@ It replaces unsaved edits; use `Save here` before switching to retain an edited 
 | Living room | Sofa, table, chair, shelf |
 | Study | Tables, chairs, shelves |
 | Bedroom | Bed, table, chair, shelf |
+
+### Bowling
+
+Choose `Room` → `Bowling` to load ten miniature pins. Each pin weighs 12 g and measures 18 cm high by 5 cm in diameter. PhysX simulates the pins as dynamic rigidbodies; fly the drone into them to knock them down.
+
+| Control | Effect |
+|---------|--------|
+| Touch `RESTART` / keyboard B | Return the vehicle to spawn and stand every pin back at its initial position |
+| Reload the room | Start again from the initial layout |
+| `Edit` → `Save here` | Save the authored layout, not the fallen state. Opening the editor also stands the pins back up |
+
+There is no score or throw counter.
 
 ### Placing furniture
 

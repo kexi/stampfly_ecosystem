@@ -56,6 +56,7 @@ namespace StampFly.App
         public string firmwareUrl = Native.WebGlFirmware.DefaultModuleUrl;
 
         private SimLoop simLoop;
+        private WorldLoader loadedWorld;
 
         /// <summary>The loop this built, for a test or the command surface. / 組み立てたループ。試験と操作の受け口のため。</summary>
         public SimLoop Loop => simLoop;
@@ -65,9 +66,18 @@ namespace StampFly.App
             PhysicsStepSettings.Apply();
 
             WorldLoader world = BuildWorld();
+            loadedWorld = world;
             simLoop = BuildVehicle(world);
+            simLoop.PowerCycled += world.ResetDynamicBodies;
             BuildCamera(simLoop.transform);
             BuildHud(simLoop, world);
+        }
+
+        /// <summary>Release reset wiring before the scene disappears. / 場面の破棄前に再起動時の接続を解除する。</summary>
+        private void OnDestroy()
+        {
+            bool connected = simLoop != null && loadedWorld != null;
+            if (connected) simLoop.PowerCycled -= loadedWorld.ResetDynamicBodies;
         }
 
         /// <summary>

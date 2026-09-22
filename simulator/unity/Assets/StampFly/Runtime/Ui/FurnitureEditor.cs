@@ -169,6 +169,7 @@ namespace StampFly.Ui
             cameraControlsEnabled = cameraControls != null && cameraControls.enabled;
             flightCameraEnabled = flightCamera.enabled;
             loop.Clock.Pause();
+            loader.ResetDynamicBodies();
             (loop.RcSource as KeyboardRc)?.Reset();
             bool hasControls = controls != null;
             if (hasControls) controls.enabled = false;

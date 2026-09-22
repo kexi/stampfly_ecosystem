@@ -61,8 +61,10 @@ namespace StampFly.Ui
         public void ConfigureRooms(StampFly.World.WorldLoader loader, System.Action restart)
         {
             roomSelector?.Dispose();
+            roomSelector?.RemoveFromHierarchy();
             roomSelector = new RoomSelector(loader, CancelTouch, restart);
             worldActions.Insert(0, roomSelector);
+            roomSelector.SetCompact(touchEnabled && !showDetails);
         }
 
         /// <summary>Release the world subscription with the HUD. / HUDの破棄時に空間の購読を解除する。</summary>
@@ -117,7 +119,11 @@ namespace StampFly.Ui
                 TogglePause, Restart);
             root.Add(touchControls);
             touchControls.style.display = DisplayStyle.None;
-            root.RegisterCallback<GeometryChangedEvent>(_ => CancelTouch());
+            root.RegisterCallback<GeometryChangedEvent>(_ =>
+            {
+                CancelTouch();
+                ApplyReadoutLayout();
+            });
         }
 
         /// <summary>Bootstrap assigns the loop after OnEnable. / 起動処理がOnEnableの後でループを設定する。</summary>
@@ -148,8 +154,17 @@ namespace StampFly.Ui
         private void ApplyReadoutLayout()
         {
             readout.style.top = 72;
-            readout.style.right = touchEnabled ? 12 : StyleKeyword.Auto;
-            flightLabel.style.fontSize = touchEnabled ? 16 : 13;
+            bool compact = touchEnabled && !showDetails;
+            float panelWidth = GetComponent<UIDocument>().rootVisualElement.resolvedStyle.width;
+            bool hasWidth = panelWidth > 24 && !float.IsNaN(panelWidth);
+            readout.style.right = StyleKeyword.Auto;
+            readout.style.maxWidth = hasWidth ? panelWidth - 24 : StyleKeyword.None;
+            readout.style.flexDirection = compact ? FlexDirection.Row : FlexDirection.Column;
+            readout.style.flexWrap = Wrap.Wrap;
+            readout.style.alignItems = compact ? Align.Center : Align.Stretch;
+            flightLabel.style.marginRight = compact ? 6 : 0;
+            flightLabel.style.fontSize = 13;
+            roomSelector?.SetCompact(compact);
             hostLabel.style.display = !touchEnabled || showDetails ? DisplayStyle.Flex : DisplayStyle.None;
             help.style.display = touchEnabled ? DisplayStyle.None : DisplayStyle.Flex;
             Refresh();
@@ -280,7 +295,7 @@ namespace StampFly.Ui
         /// <summary>The two blocks of text, in a panel at the top left. / 左上の枠に入れた 2 つの文の塊。</summary>
         private VisualElement BuildPanel()
         {
-            var panel = new VisualElement();
+            var panel = new VisualElement { name = "flight-readout" };
             panel.style.position = Position.Absolute;
             panel.style.left = 12;
             panel.style.top = 12;
@@ -426,8 +441,7 @@ namespace StampFly.Ui
             bool useCompactReadout = touchEnabled && !showDetails;
             if (useCompactReadout)
             {
-                return $"{FlightStateNames.Mode(state.FlightMode)}  {armed}  {state.TruthPositionY:F2} m\n" +
-                       $"{FlightStateNames.State(state.FlightState)}  |  Mode 2  |  stick {keyboard?.Deflection:F0}";
+                return $"{armed}  {state.TruthPositionY:F2} m";
             }
 
             return

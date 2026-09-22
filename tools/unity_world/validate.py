@@ -60,6 +60,7 @@ OBSTACLE_TYPES = (
     "step",
     "ramp",
     "pad",
+    "bowling_pin",
 )
 
 #: Kinds that are hollow and therefore require a frame/tube thickness.
@@ -99,6 +100,10 @@ _COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 #: checks that use it, and compared against the schema's docs by the tests.
 #: size[0..2] の意味と原点の位置。検査のすぐ隣に置き、試験でスキーマと照合する。
 SIZE_SEMANTICS: dict[str, dict[str, str]] = {
+    "bowling_pin": {
+        "size": "overall diameter along x / overall diameter along y / total height (z)",
+        "origin": "centre of the bottom face",
+    },
     "box": {
         "size": "width (x) / depth (y) / height (z)",
         "origin": "centre of the bottom face",
@@ -502,7 +507,8 @@ def _local_bounds(kind: str, size: list[float], thickness: float) -> tuple[list[
     README §3 で決めたところなので、種類ごとに式が違う。
     """
     sx, sy, sz = size
-    if kind in ("box", "pillar", "wall", "step", "pad"):
+    is_bottom_centred = kind in ("box", "pillar", "wall", "step", "pad", "bowling_pin")
+    if is_bottom_centred:
         # Origin at the centre of the bottom face. / 原点は底面の中心。
         return [-sx / 2, -sy / 2, 0.0], [sx / 2, sy / 2, sz]
     is_furniture = kind in ("table", "chair", "sofa", "shelf", "bed")

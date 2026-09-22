@@ -145,7 +145,7 @@
         },
         "type": {
           "description": "Obstacle kind. Decides what the three numbers of \"size\" mean and where the origin sits — see Schemas/README.md §3. / 障害物の種類。size の 3 つの数の意味と原点の位置を決める（Schemas/README.md §3）。",
-          "enum": ["box", "pillar", "wall", "gate", "ring", "tunnel", "table", "chair", "sofa", "shelf", "bed", "step", "ramp", "pad"]
+          "enum": ["box", "pillar", "wall", "gate", "ring", "tunnel", "table", "chair", "sofa", "shelf", "bed", "step", "ramp", "pad", "bowling_pin"]
         },
         "position": {
           "description": "Position of the type's origin [x_east, y_north, z_up] in metres. / その種類の原点の位置 [東, 北, 上]（m）。",

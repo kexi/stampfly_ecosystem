@@ -233,22 +233,32 @@ simulator/unity/
 Assets/StampFly/
 ├── Runtime/World/                    StampFly.World アセンブリ
 │   ├── WorldFile.cs                  JsonUtility で読むデータクラス一式
-│   ├── WorldFormat.cs                形式が定める定数（目印・版・既定値・14 種の名前）
+│   ├── WorldFormat.cs                形式が定める定数（目印・版・既定値・15 種の名前）
 │   ├── WorldFileReader.cs            読み込みと、目印・版・座標系の確認
 │   ├── WorldWriter.cs                ENU のまま JSON へ書き戻す
 │   ├── WorldFrames.cs                ENU ⇔ Unity の変換（C# の座標の仕事はここだけ）
-│   ├── ObstacleFactory.cs            障害物14種の生成（家具5種を含む）
+│   ├── ObstacleFactory.cs            障害物15種の生成（家具5種と動的ピンを含む）
+│   ├── BowlingPinFactory.cs          小型軽量ピンの複合コライダと動的剛体
+│   ├── DynamicObstacleBody.cs        動的障害物の初期姿勢と速度の復元
 │   ├── WedgeMesh.cs                  ramp のくさびの手続き生成
 │   ├── RoomBuilder.cs                部屋・壁・天井・照明
 │   ├── FloorTexture.cs               床の模様 5 種の手続き生成（WebGL2 で動く）
 │   ├── WorldMaterials.cs             色ごとに使い回す URP Lit のマテリアル
 │   ├── ObstacleInfo.cs               面の素性（id・種類・flow_quality）
-│   ├── WorldCatalog.cs               同梱9空間を TextAsset で持つ ScriptableObject
+│   ├── WorldCatalog.cs               同梱10空間を TextAsset で持つ ScriptableObject
 │   ├── WorldLoader.cs                読み込み・生成・片付け（MonoBehaviour）
 │   └── StructuredLog.cs              ログの出し口（`IStructuredLog`）と既定の実装
 ├── Editor/WorldTools/                WorldCatalog.asset を作り直すメニュー
 └── Tests/EditMode/                   読み込み・変換・往復・一覧の試験
 ```
+
+### ボーリング部屋と動的障害物
+
+部屋選択の `Room` → `Bowling` から、12 g・高さ18 cm・直径5 cmのピン10本を並べた部屋を選ぶ。現在の実装は10空間・15種類の障害物を持つ。検証と公開の記録は `docs/plans/unity-simulator.md` §4を参照。
+
+`bowling_pin` だけが動的な剛体で、平底を含む複合コライダを通じてドローンや他のピンと衝突する。既存の `SimLoop` による400 HzのPhysX計算を使い、他の家具・障害物は静的なまま維持する。タッチの `RESTART` またはBで `SimLoop.PowerCycled` が再起動を通知し、`WorldLoader.ResetDynamicBodies()` が全ピンの初期姿勢と速度を復元する。
+
+空間ファイルとブラウザ内保存は初期配置を保持する。`WorldWriter.FromScene` は動的な根を除外し、転倒した姿勢を書き戻さない。家具編集を開く時にも初期姿勢へ戻し、姿勢だけの復元では配置のUndo履歴を変えない。スコアや投球回数は扱わない。
 
 ### 段階 3・5 への引き継ぎ
 
@@ -1195,22 +1205,32 @@ independent of flight and of the firmware.
 Assets/StampFly/
 ├── Runtime/World/                    the StampFly.World assembly
 │   ├── WorldFile.cs                  the data classes JsonUtility reads
-│   ├── WorldFormat.cs                the constants the format fixes (marker, version, defaults, the fourteen kinds)
+│   ├── WorldFormat.cs                the constants the format fixes (marker, version, defaults, the fifteen kinds)
 │   ├── WorldFileReader.cs            loading, and the marker / version / frame checks
 │   ├── WorldWriter.cs                writing back out, still in ENU
 │   ├── WorldFrames.cs                ENU <-> Unity (all the frame work C# does)
-│   ├── ObstacleFactory.cs            fourteen obstacle kinds, including five furniture kinds
+│   ├── ObstacleFactory.cs            fifteen obstacle kinds, including five furniture kinds and dynamic pins
+│   ├── BowlingPinFactory.cs          miniature pins with compound colliders and dynamic bodies
+│   ├── DynamicObstacleBody.cs        restoring authored poses and velocities of dynamic obstacles
 │   ├── WedgeMesh.cs                  the generated wedge a ramp is made of
 │   ├── RoomBuilder.cs                room, walls, ceiling, lighting
 │   ├── FloorTexture.cs               the five floor patterns, generated (WebGL2-safe)
 │   ├── WorldMaterials.cs             URP Lit materials, shared per colour
 │   ├── ObstacleInfo.cs               what a surface is (id, type, flow_quality)
-│   ├── WorldCatalog.cs               the nine shipped worlds, held as TextAssets
+│   ├── WorldCatalog.cs               the ten shipped worlds, held as TextAssets
 │   ├── WorldLoader.cs                load, build and clear (MonoBehaviour)
 │   └── StructuredLog.cs              the log sink (`IStructuredLog`) and its default
 ├── Editor/WorldTools/                the menu that rebuilds WorldCatalog.asset
 └── Tests/EditMode/                   loading, conversion, round trip and catalog tests
 ```
+
+### Bowling and dynamic obstacles
+
+Choose `Room` → `Bowling` for ten pins, each weighing 12 g and measuring 18 cm high by 5 cm in diameter. The current implementation contains ten worlds and fifteen obstacle kinds. See `docs/plans/unity-simulator.md` §4 for validation and publication records.
+
+Only `bowling_pin` is dynamic. Its compound colliders, including a flat base, collide with the drone and other pins under the existing 400 Hz PhysX stepping in `SimLoop`. Other furniture and obstacles remain static. Touch `RESTART` or B raises `SimLoop.PowerCycled`; `WorldLoader.ResetDynamicBodies()` restores every pin's initial pose and velocity.
+
+World files and browser saves retain authored initial layouts. `WorldWriter.FromScene` excludes dynamic roots rather than writing back fallen poses. Opening furniture editing also restores initial poses; resetting poses alone does not change layout undo history. There is no scoring or throw counter.
 
 ### Hand-off to Stages 3 and 5
 

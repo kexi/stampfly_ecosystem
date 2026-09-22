@@ -1,0 +1,253 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "bowling",
+  "description": {
+    "ja": "ドローンで軽いピンにぶつかり、10本を倒すボウリングの部屋。部屋をリセットするとピンも元に戻る。",
+    "en": "Drone bowling: collide with ten lightweight pins to knock them down. Reset the room to stand every pin up again."
+  },
+  "room": {
+    "size": [
+      6.0,
+      6.0,
+      3.0
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "stripes",
+    "pitch": 0.25,
+    "colors": [
+      "#d9b986",
+      "#cda775"
+    ],
+    "flow_quality": 0.9
+  },
+  "light": "indoor",
+  "spawn": {
+    "position": [
+      0,
+      -2,
+      0.05
+    ],
+    "yaw_deg": 90
+  },
+  "obstacles": [
+    {
+      "id": "pin_01",
+      "type": "bowling_pin",
+      "position": [
+        0.0,
+        0.8,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_02",
+      "type": "bowling_pin",
+      "position": [
+        -0.07,
+        0.94,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_03",
+      "type": "bowling_pin",
+      "position": [
+        0.07,
+        0.94,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_04",
+      "type": "bowling_pin",
+      "position": [
+        -0.14,
+        1.08,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_05",
+      "type": "bowling_pin",
+      "position": [
+        0.0,
+        1.08,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_06",
+      "type": "bowling_pin",
+      "position": [
+        0.14,
+        1.08,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_07",
+      "type": "bowling_pin",
+      "position": [
+        -0.21,
+        1.22,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_08",
+      "type": "bowling_pin",
+      "position": [
+        -0.07,
+        1.22,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_09",
+      "type": "bowling_pin",
+      "position": [
+        0.07,
+        1.22,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "pin_10",
+      "type": "bowling_pin",
+      "position": [
+        0.21,
+        1.22,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.05,
+        0.05,
+        0.18
+      ],
+      "color": "#f5f2e9",
+      "flow_quality": 0.8
+    }
+  ]
+}

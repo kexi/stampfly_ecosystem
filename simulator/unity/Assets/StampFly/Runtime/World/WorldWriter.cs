@@ -336,6 +336,11 @@ namespace StampFly.World
                     continue;
                 }
 
+                // A fallen pin is simulation state, not the initial layout to save.
+                // 倒れたピンはシミュレーション状態であり保存する初期配置ではない。
+                bool dynamicBody = placed.GetComponent<DynamicObstacleBody>() != null;
+                if (dynamicBody) continue;
+
                 obstacle.position = WorldFrames.UnityToEnu(placed.localPosition);
                 obstacle.rotation_deg = WorldFrames.UnityRotationToEnu(placed.localRotation);
             }

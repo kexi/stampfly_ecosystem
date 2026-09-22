@@ -52,7 +52,7 @@ namespace StampFly.Tests.PlayMode
 
         private static readonly string[] ShippedWorldNames =
         {
-            "bedroom", "corridor_tunnel", "empty_room", "featureless_floor",
+            "bedroom", "bowling", "corridor_tunnel", "empty_room", "featureless_floor",
             "gate_course", "living_room", "pillar_forest", "stepped_floor", "study",
         };
 

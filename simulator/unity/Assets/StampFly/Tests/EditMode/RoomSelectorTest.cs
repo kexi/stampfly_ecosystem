@@ -26,7 +26,7 @@ namespace StampFly.Tests.EditMode
             host = new GameObject("Room selector test");
             loader = host.AddComponent<WorldLoader>();
             catalog = ScriptableObject.CreateInstance<WorldCatalog>();
-            string[] names = { "empty_room", "bedroom", "study", "living_room" };
+            string[] names = { "empty_room", "bedroom", "study", "living_room", "bowling" };
             assets = new TextAsset[names.Length];
             var entries = new WorldCatalog.Entry[names.Length];
             for (int index = 0; index < names.Length; index++)
@@ -56,7 +56,7 @@ namespace StampFly.Tests.EditMode
         public void FurnishedRoomsComeFirstWithoutDroppingOtherWorlds()
         {
             Assert.That(selector.choices, Is.EqualTo(new[] {
-                "Room: Living room", "Room: Study", "Room: Bedroom", "Room: Empty room" }));
+                "Room: Bowling", "Room: Living room", "Room: Study", "Room: Bedroom", "Room: Empty room" }));
             Assert.That(selector.value, Is.EqualTo("Room: Living room"));
             Assert.That(restarted, Is.Zero);
         }

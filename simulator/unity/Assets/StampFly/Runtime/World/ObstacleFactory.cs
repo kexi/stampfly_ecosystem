@@ -4,7 +4,7 @@ using UnityEngine;
 namespace StampFly.World
 {
     /// <summary>
-    /// Builds the fourteen obstacle kinds from Unity primitives and generated
+    /// Builds the fifteen obstacle kinds from Unity primitives and generated
     /// meshes, with no imported assets, as the plan's §2 requires.
     ///
     /// Two rules shape the whole file:
@@ -19,7 +19,7 @@ namespace StampFly.World
     ///   the hollow kinds are therefore assembled from solid parts around the
     ///   opening, which also leaves the opening genuinely empty for a ToF ray.
     ///
-    /// 障害物 14 種を、Unity の基本形状と手続き生成のメッシュだけで作る（計画
+    /// 障害物 15 種を、Unity の基本形状と手続き生成のメッシュだけで作る（計画
     /// §2）。外部の素材は使わない。
     ///
     /// 全体を貫く 2 つの決まり:
@@ -115,6 +115,9 @@ namespace StampFly.World
                 case WorldObstacleTypes.Shelf:
                 case WorldObstacleTypes.Bed:
                     FurnitureFactory.Build(obstacle, root, material);
+                    return;
+                case WorldObstacleTypes.BowlingPin:
+                    BowlingPinFactory.Build(obstacle, root, material, materials);
                     return;
                 case WorldObstacleTypes.Ramp:
                     BuildRamp(obstacle, root, material, materials);

@@ -199,6 +199,21 @@ namespace StampFly.World
             Changed?.Invoke();
         }
 
+        /// <summary>
+        /// Restore simulated obstacles to their authored poses without changing the layout or undo history.
+        /// 配置と編集履歴を変えず、動く障害物を初期姿勢へ戻す。
+        /// </summary>
+        public void ResetDynamicBodies()
+        {
+            bool hasRoot = root != null;
+            if (!hasRoot) return;
+            foreach (DynamicObstacleBody obstacle in root.GetComponentsInChildren<DynamicObstacleBody>())
+            {
+                obstacle.ResetPose();
+            }
+            Physics.SyncTransforms();
+        }
+
         /// <summary>Clear without exposing the intermediate load state. / 読込途中の空状態は通知しない。</summary>
         private void ClearWorld()
         {

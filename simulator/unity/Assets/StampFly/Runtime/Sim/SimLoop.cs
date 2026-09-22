@@ -65,6 +65,9 @@ namespace StampFly.Sim
         /// <summary>Raised after every power cycle, once the firmware is up. / 電源の入れ直しのたび、ファームが起きた後に発火する。</summary>
         public event Action Booted;
 
+        /// <summary>Raised when the vehicle returns to its spawn, before asynchronous boot finishes. / 非同期起動の完了を待たず、機体を出発点へ戻した時点で通知する。</summary>
+        public event Action PowerCycled;
+
         /// <summary>
         /// Called once a frame with the firmware, so somebody else can drain its
         /// log ring. The loop does not decide where a line goes: the structured
@@ -199,6 +202,7 @@ namespace StampFly.Sim
             powerCycles += 1;
 
             (rcSource as KeyboardRc)?.Reset();
+            PowerCycled?.Invoke();
         }
 
         /// <summary>Put the vehicle back at its spawn, without restarting the firmware. / ファームを再起動せず、機体を出発点へ戻す。</summary>

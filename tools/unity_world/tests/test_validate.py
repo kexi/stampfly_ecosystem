@@ -3,7 +3,7 @@ What these tests guarantee about the world-file checks.
 空間ファイル検査が保証すること。
 
 1. Every shipped world passes with no errors (and no warnings, so the shipped
-   set stays exemplary). / 同梱の 9 空間が誤り無しで通る。
+   set stays exemplary). / 同梱の 10 空間が誤り無しで通る。
 2. Each way of breaking a world is rejected by a message that names the field
    and the reason. / 壊した空間が、的確な文で不合格になる。
 3. The JSON Schema and the checking code agree on the obstacle types, the
@@ -49,6 +49,7 @@ WORLDS_DIR = os.path.join(REPO_ROOT, "simulator", "unity", "Assets", "StampFly",
 SCHEMA_PATH = os.path.join(REPO_ROOT, "simulator", "unity", "Schemas", "world.schema.json")
 
 SHIPPED_WORLDS = (
+    "bowling",
     "bedroom",
     "living_room",
     "study",
@@ -120,7 +121,7 @@ def test_shipped_world_name_matches_file(name: str) -> None:
 
 
 def test_list_worlds_reports_every_shipped_world() -> None:
-    """list_worlds() finds all nine with their description and obstacle count."""
+    """list_worlds() finds all ten with their description and obstacle count."""
     entries = list_worlds(WORLDS_DIR)
     assert [entry["name"] for entry in entries] == sorted(SHIPPED_WORLDS)
     for entry in entries:
@@ -472,3 +473,26 @@ def test_furniture_remains_a_flat_version_one_obstacle(kind: str) -> None:
     assert not validate_world(world)["errors"]
     furniture["position"][0] = world["room"]["size"][0]
     assert validate_world(world)["errors"]
+
+
+def test_bowling_room_has_ten_separate_upright_pins_and_clear_spawn() -> None:
+    """The bowling room starts with a clear approach and four pin rows. / 離陸経路と 4 列のピンを保証する。"""
+    world = load_world("bowling")
+    pins = world["obstacles"]
+    assert len(pins) == 10
+    assert all(pin["type"] == "bowling_pin" for pin in pins)
+    assert all(pin["position"][2] == 0 for pin in pins)
+    assert all(pin["rotation_deg"] == [0, 0, 0] for pin in pins)
+    rows = sorted({pin["position"][1] for pin in pins})
+    assert [sum(pin["position"][1] == row for pin in pins) for row in rows] == [1, 2, 3, 4]
+    assert validate_world(world) == {"errors": [], "warnings": []}
+
+
+def test_bowling_pin_accepts_elliptical_bottom_centred_extent() -> None:
+    """Pin width and depth stay independent flat dimensions. / ピンの幅と奥行きを独立に保持する。"""
+    world = load_world("bowling")
+    world["obstacles"][0]["size"] = [0.06, 0.04, 0.18]
+    assert validate_world(world) == {"errors": [], "warnings": []}
+    assert _local_bounds("bowling_pin", [0.06, 0.04, 0.18], 0) == (
+        [-0.03, -0.02, 0.0], [0.03, 0.02, 0.18]
+    )

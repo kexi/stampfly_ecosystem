@@ -39,7 +39,7 @@
 | 物理 | 剛体の運動と接触は Unity（PhysX）。モータ・推力・電池・風・センサ合成は既存の自作 C++ を使う |
 | 目的 | リアルタイム操縦／センサの模擬（下向き・前向き ToF、オプティカルフロー、カメラ）／見た目と環境 |
 | 障害物 | 自由に置ける（置く・動かす・回す・寸法変更・消す・保存・読み込み）。衝突とセンサに反映する |
-| プリセット | 障害物14種（家具5種を含む自作の基本形状、ファイルで寸法変更可）と、配置済みの空間9個を同梱する。利用者の保存ファイルと同じ形式にする |
+| プリセット | 障害物15種（家具5種と動的なボーリングピンを含む自作の基本形状、ファイルで寸法変更可）と、配置済みの空間10個を同梱する。利用者の保存ファイルと同じ形式にする |
 | 操作 | 公式 Unity CLI（`unity` コマンド）を使う。利用者向けは `sf` コマンドとして公開し、動いているシミュレータも端末から操作できるようにする |
 | 開発環境 | `nix develop` ＋ flake ＋ direnv（リポジトリ直下に新設。`just`・`lefthook` も）。ESP-IDF と sf CLI は従来どおり `setup_env.sh` で有効化する |
 
@@ -92,7 +92,7 @@
 
 ### 家具の配置（2026-09-22）
 
-家具のある部屋としてリビング・書斎・寝室を追加し、従来の6空間と合わせて9空間を同梱する。起動時はリビングを表示し、画面の部屋選択で切り替える。自由配置は同じ空間データを編集する追加機能とする。
+家具版ではリビング・書斎・寝室を追加し、従来の6空間と合わせて9空間を同梱した。起動時はリビングを表示し、画面の部屋選択で切り替える。自由配置は同じ空間データを編集する追加機能とする。
 
 机・椅子・ソファ・棚・ベッドを画面から追加し、移動・回転・削除できる。編集中はシミュレーションと操縦を止め、上から部屋を表示する。終了時は機体を出発点へ戻して再起動し、編集前の一時停止状態を復元する。家具の下や棚の開口を一体の衝突箱で塞がず、部品ごとに衝突形状とセンサ用の面情報を持たせる。
 
@@ -101,9 +101,36 @@
 配置は既存のバージョン1の空間形式で表し、`PlayerPrefs` に1件保存する。WebGLでは同じブラウザ・配信元で読み戻すための保存であり、端末間の共有やJSONファイルのダウンロードではない。ブラウザのサイトデータを消すと保存も失われる。操作処理は公開用ビルドでも使える `World` に置き、開発用の遠隔操作機能には依存させない。
 
 検証: `sf unity test --mode edit` 250件、`--mode play` 115件、`pytest tools/unity_world/tests` 89件が通過。新規試験で部屋切り替え、保存復元、室外・離陸空間への配置拒否、天井越しの家具選択、脚と棚の隙間、スマホ縦横の操作領域を確認した。同梱9空間はPythonの形式・配置検査で警告もなく通過した。
-WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×390と390×844の表示、家具追加・保存・削除・読み戻しを確認した。標準テーマが配布物に入らず部屋選択が暗くなる問題は、テーマを `Resources/UnityThemes` に同梱して修正した。狭幅では家具一覧の横スクロール用に高さを確保し、不要な縦スクロールバーを隠す。ブラウザ確認は `?raf=worker` を使用し、実機での速度測定は含まない。公開サイトにはまだ反映していない。
+WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×390と390×844の表示、家具追加・保存・削除・読み戻しを確認した。標準テーマが配布物に入らず部屋選択が暗くなる問題は、テーマを `Resources/UnityThemes` に同梱して修正した。狭幅では家具一覧の横スクロール用に高さを確保し、不要な縦スクロールバーを隠す。ブラウザ確認は `?raf=worker` を使用し、実機での速度測定は含まない。家具版はソース `a0c2ebf6`、GitHub Pagesへの配信 `689ce66c` で公開済み。
+
+### ボーリング部屋（2026-09-22、ブラウザ確認・公開待ち）
+
+`Room` の一覧の先頭に `Bowling`（`bowling`）を追加する。家具版の9空間にこの部屋を加え、同梱は10空間・障害物は15種類となる。起動時のリビングは変えない。
+
+| 項目 | 実装 |
+|------|------|
+| ピン | 10本。1本12 g・高さ18 cm・直径5 cmの小型軽量ピン。37 gのドローンの衝突で倒す用途を想定する |
+| 物理 | `bowling_pin` の根だけに動的な `Rigidbody` を持たせ、平底・胴・頭などの複合コライダで形を作る。他の家具・障害物は従来どおり静的 |
+| 計算 | 既存の400 Hzの `Physics.Simulate` が全ピンを進める。衝突による力で倒し、アニメーションで倒れたことにしない |
+| やり直し | タッチの `RESTART` またはBで機体を出発点へ戻し、全ピンの姿勢と速度を初期化する。部屋の読み直しでも初期配置に戻る |
+| 保存と編集 | JSONは初期配置を保持し、転倒した姿勢は保存しない。編集を開いた時もピンを戻す。ピンの復元だけでは配置のUndo履歴を変更しない |
+| 範囲 | スコア、投球回数、ボールの追加は含まない |
+
+検証: EditMode 258件、PlayMode 123件、Pythonの空間試験96件が通過。記録は `logs/unity/test-20260922T032116Z-7a8c4705.xml`（EditMode）と `logs/unity/test-20260922T032018Z-3d7ff22d.xml`（PlayMode）。ブラウザ確認・公開は未完了。
+
+剛体衝突の単体試験では、本番の `PhysicsStepSettings.Apply()` と400 Hz刻みを使い、質量37 g・81.6 × 20.6 × 81.6 mmの箱を高さ105 mmでピンへ衝突させた。揚力の代わりに機体側の重力を無効化しており、実ファームウェアでの飛行操作を検証したものではない。
+
+| 条件 | 3秒間の最大傾斜角 | 3秒後の状態 |
+|------|-----------------|-------------|
+| 0.5 m/sで衝突 | 94.915° | 90°で転倒 |
+| 1.0 m/sで衝突 | 95.730° | 90°で転倒 |
+| 衝突なし | 0° | 位置の変化0、速度0で直立を維持 |
+
+復元と保存の試験では、全ピンの初期姿勢・速度の復元、Undo履歴の維持、転倒姿勢を保存しないことを確認した。
 
 ### タッチUIの検証（2026-09-22）
+
+部屋選択の常時表示が視界を塞ぐという指摘を受け、タッチ操縦時は部屋名と短い飛行状態を内容に合わせた幅で表示する。部屋の一覧はタップ時だけ開き、詳細な飛行状態は `Details` で表示する。48pxの操作領域を維持し、画面全幅へ伸びる部屋選択欄をなくす。
 
 `sf unity test --mode edit` は209件、`--mode play` は99件通過。新規試験で軸の割当、ARMパルス、2本の指の独立操作、捕捉喪失・停止時の解除、390×844／844×390の配置、LICENSEの原文コピーと失敗時の拒否を確認した。
 `sf unity build --release` が成功し、出力の `LICENSE.txt` と元の `LICENSE` がバイト単位で一致した。Chromeの画面サイズを縦横に変更して配置を目視し、3つのアイコンからリポジトリ・Fork元・ライセンス全文を開けることを確認した。ブラウザ確認は `?raf=worker` を使用したため、実時間速度の測定ではない。Android／iPhone実機での操作感と速度は未検証。
@@ -118,7 +145,7 @@ WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×
 | 1 技術検証 | **(a) 最優先・Unity を使わず素の HTML と Node.js で**: 無改変ファームウェア＋シミュレータ＋`rtos` を Emscripten でコンパイルし、fiber 版スケジューラの最小版で `rtos_smoke` のトレースが現行と一致することを確かめる。続いて `app_main` ＋ 14 タスク ＋ `plant_external` ＋ C++ 内の簡易剛体積分を **Chrome で回して速度を測る**。同じものを案 1（`-pthread`、COOP/COEP ヘッダ付きのローカルサーバ）でも測る。**(b)** Unity WebGL から `.jslib` 経由で別モジュールの `sfu_step` を同期で呼べるか、モジュールの作り直しで再起動できるか。**(c)** PhysX で質量 37g・慣性 1e-5 桁の剛体が 400Hz で安定するか（トルク応答 ±1%、着地で振動しない、ジャイロ項 ω×Iω の扱い）。**(d)** WebGL での標準入出力（`prompt()` が開かないこと）。**(e)** Unity CLI の `install -m webgl` ／ `build` ／ `test` が手元で通るか、`unity command` がエディタの再生中に届くか。**(f)** 実機コントローラが **Chrome の Gamepad API** でどう見えるか | シミュレーション 1 秒を実時間 0.3 秒以下で処理でき、離陸してホバリングが成立する。スレッドの案を数値付きで決定する。満たさなければ Asyncify の対象を絞って再計測し、それでもだめなら案 1 に切り替える。**どちらも満たさなければ計画を見直す判断点** |
 | 2 ネイティブコア | `scheduler_step.cpp`、`plant.hpp` の囲み、`plant_external.cpp`、`actuator_model.hpp`、`frames_unity.hpp`、`simulator/unity/native/bridge/`（`sfu_api.h`、ログのリングバッファ）、`sfu_bridge_smoke`（Unity なしで C++ 内の簡易剛体積分により ARM → 離陸 → ホバリング） | `sf sils regression` が 34 件とも変更前と同じ結果で、ログの sha256 が一致する。`actuator_parity_test`・`frames_unity_test` が通る。最小動作確認が 2 回走って出力が一致する |
 | 3 最小の WebGL 版 | Unity プロジェクト（Unity 6 LTS、URP、UI Toolkit、Input System）、`SimLoop`、`VehicleBody`（PhysX 設定）、`IFirmware` の 2 実装（WebGL は `.jslib`、エディタは開発用 dylib ＋ ローダ）、キーボード操縦、何もない部屋（ビルドに埋め込み）、自作形状の機体（2026-09-21 に既存の STL 13 個の見た目へ移植。自作形状は切り替え用に残す。§4「機体の見た目」）、追跡カメラの寄せ具合（2026-09-21 追加。既定 0.28 m・範囲 0.15〜3.0 m・1 段 1.15 倍。ホイール ／ F ／ G ／ C と `camera.zoom` ／ `camera.state`。§4「追跡カメラの寄せ具合」）、下向き ToF（レイ 1 本）、`GeneratedParams.cs`、`sf unity setup` ／ `build` ／ `serve` | **Chrome で ARM → 離陸 → ALT_HOLD → 着地ができ、60fps で実時間比 1.0 を保つ**（1 刻みの所要時間を計測済みであること）。エディタの再生ボタンでも同じく飛ぶ。スレッド版と fiber 版で同じ入力に対する出力が一致する。`sf params check` が通る。**2026-09-21: ARM → 離陸 → ALT_HOLD → 着地までを Chrome で自動で飛ばし、構造化ログで端から端まで追えることを確かめた（§9 (g)）。60fps と実時間比 1.0 は前面のタブでの人の確認が未実施** |
-| 4 障害物と空間 | ゲームパッド（`GamepadBridge.jslib`、割り当て画面）、`WorldFile`、`ObstacleFactory`（box・pillar・wall・gate・ring・tunnel・table・chair・sofa・shelf・bed・step・ramp・pad）、編集 UI（グリッド吸着、元に戻す）、同梱9空間（何もない部屋／柱の林／通過枠のコース／狭い廊下・トンネル／段差のある床／模様の少ない床／リビング／書斎／寝室）、ブラウザでの保存と読み込み（`FileIO.jslib`）、`sf unity world validate` | 置く・動かす・回す・寸法変更・消すができ、保存 → 読み込みで一致する。壁に当たる。机の上で ToF の値が変わる |
+| 4 障害物と空間 | ゲームパッド（`GamepadBridge.jslib`、割り当て画面）、`WorldFile`、`ObstacleFactory`（box・pillar・wall・gate・ring・tunnel・table・chair・sofa・shelf・bed・step・ramp・pad・bowling_pin）、編集 UI（グリッド吸着、元に戻す）、同梱10空間（何もない部屋／柱の林／通過枠のコース／狭い廊下・トンネル／段差のある床／模様の少ない床／リビング／書斎／寝室／ボーリング）、ブラウザでの保存と読み込み（`FileIO.jslib`）、`sf unity world validate` | 置く・動かす・回す・寸法変更・消すができ、保存 → 読み込みで一致する。壁に当たる。机の上で ToF の値が変わる |
 | 5 センサとカメラ | ToF の円錐化（中心 1 ＋ 外周 8 本）、前向き ToF、オプティカルフローの SQUAL（面ごとの `flow_quality` × 距離の減衰）、下向き・FPV カメラの小窓、視点切り替え | 「模様の少ない床」で SQUAL が下がり POS_HOLD の挙動が変わる。段差で ToF の値が急変する |
 | 6 端末からの操作と再生 | `ISimCommands`、`sf unity cmd`（sim・world・obstacle・vehicle・param・plant・rc・scenario・log・view・sensor の各群）、エディタ用 `[CliCommand]`、URL の引数、`.scn` の再生（合否は見ない）、`.sflog.zip` の書き出し、`sf sim list` への登録 | 端末から空間の読み込み・リセット・一時停止・障害物の追加・パラメータ変更・状態取得ができる。書き出したログを `sf log viz` で開ける |
 | 7 試験と文書 | EditMode ／ PlayMode 試験、`sf unity test`、`docs/commands/sf-unity.md`・`coordinate-systems.md`・`simulator/README.md`（全て 2 言語）、配布用ビルドの検査、公開サイトへの掲載（任意） | 手元で全て合格する。配布物に操作用の受け口が入っていない。完了後に本文書を削除する（`PROJECT_PLAN.md` §15 規則 7） |
@@ -166,7 +193,7 @@ WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×
 1. **既存を壊していないこと**: 変更前後で `sf sils build` → `sf sils regression` を実行し、34 件の結果とログの sha256 が一致することを確かめる
 2. **ネイティブ単体**: `just unity-native-test` で `actuator_parity_test`（MuJoCo 版と電池電圧がビット一致）、`frames_unity_test`（往復変換、右ヨー・右ロール・機首上げの符号、静止時の加速度計の測定値）、`sfu_bridge_smoke`（ホバリング成立、2 回実行で出力一致）を回す。このレシピは段階 2 で対象の実装と一緒に `justfile` へ足す
 3. **ブラウザ**: `sf unity build webgl` → `sf unity serve` で Chrome を開き、キーボードで ARM → 離陸 → ALT_HOLD → 着地。画面の実時間比が 1.0、ブラウザのコンソールにエラーが無いことを確かめる。各段階の合格基準を同じ手順で確かめる
-4. **障害物とセンサ**: 同梱9空間を順に読み込み、壁への衝突、机の上での ToF の変化、「模様の少ない床」での SQUAL 低下を確かめる。空間を保存して読み込み直し、`sf unity world validate` を通す
+4. **障害物とセンサ**: 同梱10空間を順に読み込み、壁への衝突、机の上での ToF の変化、「模様の少ない床」での SQUAL 低下を確かめる。空間を保存して読み込み直し、`sf unity world validate` を通す
 5. **端末からの操作**: `sf unity cmd world load --name gate_course`、`sim pause`、`obstacle add --type box ...`、`vehicle state` を端末から実行し、ブラウザの画面に反映されることを確かめる
 6. **自動試験**: `sf unity test`（EditMode と PlayMode）、`sf params check`、`sf params generate --check`
 
@@ -253,7 +280,7 @@ The overall simulation policy is set by [`../architecture/simulation-policy.md`]
 | Physics | Rigid-body motion and contact come from Unity (PhysX). Motor, thrust, battery, wind, and sensor synthesis come from the existing in-house C++ |
 | Purpose | Real-time piloting; sensor emulation (downward and forward ToF, optical flow, cameras); appearance and environment |
 | Obstacles | Freely placed (add, move, rotate, resize, delete, save, load), affecting collisions and sensors |
-| Presets | 14 obstacle types including 5 furniture types (in-house primitives, resizable in files) and 9 pre-arranged worlds, shipped in the same file format users save |
+| Presets | 15 obstacle types including 5 furniture types and dynamic bowling pins (in-house primitives, resizable in files) and 10 pre-arranged worlds, shipped in the same file format users save |
 | Control surface | The official Unity CLI (`unity`). User-facing operations are exposed as `sf` commands, and a running simulator can also be driven from the terminal |
 | Development environment | `nix develop` + flake + direnv (newly added at the repository root, along with `just` and `lefthook`). ESP-IDF and the sf CLI are still activated by `setup_env.sh` |
 
@@ -306,7 +333,7 @@ When processing cannot keep up with real time, no firmware tick is skipped: virt
 
 ### Furniture placement (2026-09-22)
 
-A living room, study and bedroom extend the existing six worlds to nine. The simulator starts in the living room and offers a room selector. Free placement edits the same world data as an additional feature.
+The furniture release added a living room, study and bedroom to the existing six worlds, bringing that release to nine. The simulator starts in the living room and offers a room selector. Free placement edits the same world data as an additional feature.
 
 The UI adds, moves, rotates and removes tables, chairs, sofas, shelves and beds. Editing pauses the simulation and piloting and shows the room from above. Finishing returns the vehicle to its spawn, restarts the firmware and restores the previous pause state. Individual parts carry colliders and sensor surface information so leg gaps and shelf openings remain open.
 
@@ -315,9 +342,36 @@ The UI adds, moves, rotates and removes tables, chairs, sofas, shelves and beds.
 Layouts use the existing version 1 world format and one `PlayerPrefs` save slot. In WebGL this is a local save for the same browser and origin, not cross-device sharing or a downloadable JSON file. Clearing site data removes the save. Editing lives in the release-compatible `World` assembly and does not depend on development-only remote controls.
 
 Verification: all 250 EditMode tests, 115 PlayMode tests and 89 Python world tests passed. New checks cover room selection, save/load, refusal of out-of-room or blocked-spawn placement, selection through the ceiling, leg and shelf openings, and phone portrait/landscape controls. All nine shipped worlds also pass Python structure and placement checks without warnings.
-A release WebGL build succeeded. Chrome checks covered all three room choices, 844×390 and 390×844 layouts, and adding, saving, deleting and restoring furniture. A missing runtime theme made the room selector hard to read; embedding the theme under `Resources/UnityThemes` fixed it. The narrow catalog reserves height for horizontal scrolling and hides its unused vertical scrollbar. Browser checks used `?raf=worker`, not physical-device performance measurements. The public site has not yet been updated.
+A release WebGL build succeeded. Chrome checks covered all three room choices, 844×390 and 390×844 layouts, and adding, saving, deleting and restoring furniture. A missing runtime theme made the room selector hard to read; embedding the theme under `Resources/UnityThemes` fixed it. The narrow catalog reserves height for horizontal scrolling and hides its unused vertical scrollbar. Browser checks used `?raf=worker`, not physical-device performance measurements. The furniture release is public: source `a0c2ebf6`, GitHub Pages deployment `689ce66c`.
+
+### Bowling room (2026-09-22, browser verification and publication pending)
+
+`Bowling` (`bowling`) is added first in the `Room` list. It extends the nine furniture-release worlds to ten worlds and fifteen obstacle kinds. The simulator still starts in the living room.
+
+| Item | Implementation |
+|------|----------------|
+| Pins | Ten miniature lightweight pins, each 12 g, 18 cm high and 5 cm in diameter, intended for impacts from the 37 g drone |
+| Physics | Only `bowling_pin` roots receive dynamic rigidbodies, with compound colliders for the flat base, body, head and other parts. Other furniture and obstacles remain static |
+| Stepping | The existing 400 Hz `Physics.Simulate` advances all pins. Contact forces topple them rather than a falling animation |
+| Retry | Touch `RESTART` or B returns the vehicle to spawn and restores every pin's pose and velocity. Reloading the room also restores its initial layout |
+| Saving and editing | JSON retains authored initial poses, not fallen runtime poses. Opening the editor also restores the pins. Resetting pins alone preserves layout undo history |
+| Scope | No scoring, throw counter or ball is added |
+
+Verification: all 258 EditMode tests, 123 PlayMode tests and 96 Python world tests passed. Reports: `logs/unity/test-20260922T032116Z-7a8c4705.xml` (EditMode) and `logs/unity/test-20260922T032018Z-3d7ff22d.xml` (PlayMode). Browser verification and publication remain pending.
+
+The rigidbody collision unit test used production `PhysicsStepSettings.Apply()` at 400 Hz, with a 37 g, 81.6 × 20.6 × 81.6 mm box impacting a pin at a height of 105 mm. Gravity was disabled on the vehicle-equivalent body as a substitute for lift; this does not verify flight control by the real firmware.
+
+| Condition | Maximum tilt over 3 seconds | State after 3 seconds |
+|-----------|----------------------------|-----------------------|
+| Impact at 0.5 m/s | 94.915° | Fallen, 90° |
+| Impact at 1.0 m/s | 95.730° | Fallen, 90° |
+| No impact | 0° | Upright, zero drift and zero speed |
+
+Reset and persistence tests verify restoration of every pin's initial pose and velocity, retained undo history, and exclusion of fallen runtime poses from saves.
 
 ### Touch UI verification (2026-09-22)
+
+Following feedback that room selection obscured the flight view, touch mode uses a content-sized room selector and a short flight readout. The room list opens only on tap; detailed flight information remains under `Details`. Controls retain 48 px touch targets without stretching the room field across the viewport.
 
 `sf unity test --mode edit` passed 209 tests; `--mode play` passed 99. New checks cover axis mapping, ARM pulses, independent fingers, capture loss and pause, layout at 390×844 and 844×390, and verbatim license copying with failure propagation.
 `sf unity build --release` succeeded; the output `LICENSE.txt` matches the original `LICENSE` byte for byte. Chrome viewport checks confirmed both layouts and all three icon links opening the repository, upstream and complete license. Browser checks used `?raf=worker`, so they do not establish real-time performance. Handling and speed on physical Android/iPhone devices remain unverified.
@@ -332,7 +386,7 @@ A release WebGL build succeeded. Chrome checks covered all three room choices, 8
 | 1 Feasibility measurement | **(a) Highest priority, with plain HTML and Node.js rather than Unity**: compile the unmodified firmware, the simulator, and `rtos` with Emscripten; confirm that a minimal fiber scheduler reproduces the current `rtos_smoke` trace; then run `app_main` + 14 tasks + `plant_external` + a simple rigid-body integrator inside C++ and **measure the speed in Chrome**. Measure the same thing under approach 1 (`-pthread`, local server with COOP/COEP headers). **(b)** Whether Unity WebGL can call a separate module's `sfu_step` synchronously through `.jslib`, and whether recreating the module restarts it. **(c)** Whether PhysX is stable at 400Hz for a 37 g body with inertia on the order of 1e-5 (torque response within ±1%, no oscillation on landing, treatment of the ω×Iω gyroscopic term). **(d)** Standard I/O under WebGL (that `prompt()` does not open). **(e)** Whether the Unity CLI's `install -m webgl` / `build` / `test` work locally, and whether `unity command` reaches the editor during play. **(f)** How the real controller appears through **Chrome's Gamepad API** | One second of simulation is processed in 0.3 s of real time or less, and takeoff followed by a hover succeeds. The threading approach is decided with numbers. If the target is missed, Asyncify's scope is narrowed and the measurement repeated; if it is still missed, approach 1 is adopted. **If neither meets the target, this is the decision point to revise the plan** |
 | 2 Native core | `scheduler_step.cpp`, the `plant.hpp` guard, `plant_external.cpp`, `actuator_model.hpp`, `frames_unity.hpp`, `simulator/unity/native/bridge/` (`sfu_api.h`, a log ring buffer), and `sfu_bridge_smoke` (ARM → takeoff → hover using the simple in-C++ rigid-body integrator, without Unity) | `sf sils regression` gives the same result for all 34 cases as before the change, with matching log sha256 values. `actuator_parity_test` and `frames_unity_test` pass. The minimum-operation check produces identical output across two runs |
 | 3 Minimal WebGL version | Unity project (Unity 6 LTS, URP, UI Toolkit, Input System), `SimLoop`, `VehicleBody` (PhysX settings), two `IFirmware` implementations (WebGL via `.jslib`, editor via the development dylib and a loader), keyboard piloting, an empty room (embedded in the build), the primitive-shape vehicle (ported on 2026-09-21 to the appearance of the existing 13 STL files, with the primitives kept so they can be switched back to; §4, "Vehicle appearance"), chase-camera zoom (added 2026-09-21: default 0.28 m, range 0.15–3.0 m, one step of 1.15x, on the wheel / F / G / C and `camera.zoom` / `camera.state`; §4, "Chase-camera zoom"), downward ToF (a single ray), `GeneratedParams.cs`, `sf unity setup` / `build` / `serve` | **In Chrome, ARM → takeoff → ALT_HOLD → landing works, holding a real-time ratio of 1.0 at 60fps** (with per-tick timings measured). The same flight works from the editor's play button. The thread-based and fiber-based builds produce identical output for identical input. `sf params check` passes. **2026-09-21: ARM → takeoff → ALT_HOLD → landing was flown automatically in Chrome and followed end to end in the structured log (§9 (g)). 60 fps and a real-time ratio of 1.0 in a foreground tab remain unverified by a person** |
-| 4 Obstacles and worlds | Gamepad support (`GamepadBridge.jslib`, assignment screen), `WorldFile`, `ObstacleFactory` (box, pillar, wall, gate, ring, tunnel, table, chair, sofa, shelf, bed, step, ramp, pad), the editing UI (grid snapping, undo), the 9 shipped worlds (empty room, pillar forest, gate course, narrow corridor and tunnel, stepped floor, low-texture floor, living room, study, bedroom), browser save and load (`FileIO.jslib`), `sf unity world validate` | Adding, moving, rotating, resizing, and deleting all work, and a save-then-load round trip matches. The vehicle collides with walls. ToF readings change above a table |
+| 4 Obstacles and worlds | Gamepad support (`GamepadBridge.jslib`, assignment screen), `WorldFile`, `ObstacleFactory` (box, pillar, wall, gate, ring, tunnel, table, chair, sofa, shelf, bed, step, ramp, pad, bowling_pin), the editing UI (grid snapping, undo), the 10 shipped worlds (empty room, pillar forest, gate course, narrow corridor and tunnel, stepped floor, low-texture floor, living room, study, bedroom, bowling), browser save and load (`FileIO.jslib`), `sf unity world validate` | Adding, moving, rotating, resizing, and deleting all work, and a save-then-load round trip matches. The vehicle collides with walls. ToF readings change above a table |
 | 5 Sensors and cameras | ToF cone modelling (1 central plus 8 peripheral rays), forward ToF, optical-flow SQUAL (per-surface `flow_quality` with distance falloff), downward and FPV camera insets, view switching | SQUAL drops on the "low-texture floor" and POS_HOLD behaves differently. ToF readings jump at a step |
 | 6 Terminal control and replay | `ISimCommands`, `sf unity cmd` (the sim, world, obstacle, vehicle, param, plant, rc, scenario, log, view, and sensor groups), the editor's `[CliCommand]`, URL arguments, `.scn` replay (without pass/fail judgment), `.sflog.zip` export, registration in `sf sim list` | Loading a world, resetting, pausing, adding an obstacle, changing a parameter, and querying state all work from a terminal. The exported log opens in `sf log viz` |
 | 7 Tests and documentation | EditMode and PlayMode tests, `sf unity test`, `docs/commands/sf-unity.md`, `coordinate-systems.md`, `simulator/README.md` (all bilingual), the distribution-build check, optional publication on the public site | Everything passes locally. The distributed build contains no control endpoint. This document is deleted once the work is complete (`PROJECT_PLAN.md` §15, rule 7) |
@@ -380,7 +434,7 @@ A release WebGL build succeeded. Chrome checks covered all three room choices, 8
 1. **Nothing existing is broken**: run `sf sils build` → `sf sils regression` before and after the change, and confirm that all 34 results and the log sha256 values match
 2. **Native unit checks**: `just unity-native-test` runs `actuator_parity_test` (battery voltage bit-identical to the MuJoCo version), `frames_unity_test` (round-trip conversion; signs for right yaw, right roll, and nose-up; the accelerometer reading at rest), and `sfu_bridge_smoke` (hover achieved, identical output across two runs). This recipe is added to the `justfile` in stage 2, together with the implementation it covers
 3. **Browser**: `sf unity build webgl` → `sf unity serve`, then in Chrome fly ARM → takeoff → ALT_HOLD → landing with the keyboard. Confirm the on-screen real-time ratio is 1.0 and the browser console is free of errors. Each stage's pass criteria are checked the same way
-4. **Obstacles and sensors**: load each of the 9 shipped worlds in turn and confirm wall collisions, the ToF change above a table, and the SQUAL drop on the "low-texture floor." Save a world, load it back, and run `sf unity world validate`
+4. **Obstacles and sensors**: load each of the 10 shipped worlds in turn and confirm wall collisions, the ToF change above a table, and the SQUAL drop on the "low-texture floor." Save a world, load it back, and run `sf unity world validate`
 5. **Terminal control**: run `sf unity cmd world load --name gate_course`, `sim pause`, `obstacle add --type box ...`, and `vehicle state` from a terminal, and confirm each is reflected on screen
 6. **Automated tests**: `sf unity test` (EditMode and PlayMode), `sf params check`, `sf params generate --check`
 

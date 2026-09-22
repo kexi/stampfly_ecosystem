@@ -87,7 +87,7 @@ Unity 版シミュレータが読み込む**空間ファイル**（`*.world.json
 | 項目 | 型 | 必須 | 内容 |
 |------|-----|------|------|
 | `id` | 文字列 | 必須 | ファイル内で重複しない識別子。英小文字・数字・下線 |
-| `type` | 文字列 | 必須 | §3.1 の 14 種のいずれか |
+| `type` | 文字列 | 必須 | §3.1 の 15 種のいずれか |
 | `position` | 数 3 つ | 必須 | **その種類の原点**の位置 `[x, y, z]`（m）。§3.1 |
 | `rotation_deg` | 数 3 つ | 必須 | `[roll, pitch, yaw]`（度）。§3.2 |
 | `size` | 数 3 つ | 必須 | 3 つの長さ（m）。意味は種類ごとに決まる。§3.1 |
@@ -116,8 +116,11 @@ Unity 版シミュレータが読み込む**空間ファイル**（`*.world.json
 | `step` | 幅 | 奥行き | 高さ | 底面の中心 | 不可 |
 | `ramp` | 幅 | 水平距離（+y 方向） | 立ち上がり | **低い辺**の中心（底） | 不可 |
 | `pad` | 幅 | 奥行き | 厚み | 底面の中心 | 不可 |
+| `bowling_pin` | x 方向の最大径 | y 方向の最大径 | 全高 | 底面の中心 | 不可 |
 
 **注意点:**
+
+- `bowling_pin` は衝突で動く軽いピン。`size` は最大外形で、底面の中心を指定する。x と y の径は異なってもよい。ファイルは初期配置を保持し、部屋のリセットで立て直す。質量と形状の比率は Unity の生成処理が持ち、JSON に物理設定を追加しない。
 
 - `gate`・`tunnel` の `size` は**開口**の寸法であり、外形ではない。外形は開口に `thickness` を足した大きさになる
 - `ring` は丸いので `size[0]` と `size[1]` は等しくなければならない（検査が確かめる）。輪は **x-z 平面**にあり、y 方向の厚みが `thickness` である。つまり回転が無いとき、輪を**北向きに**くぐることになる
@@ -423,7 +426,7 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 5. 同梱の空間として足すなら、`tools/unity_world/tests/test_validate.py` の `SHIPPED_WORLDS` に名前を足す
 6. `.meta` ファイルは**作らない**（Unity エディタが自分で作る）
 
-### 8.1 同梱の 9 空間
+### 8.1 同梱の 10 空間
 
 | 名前 | ねらい | 主な障害物 |
 |------|--------|-----------|
@@ -436,6 +439,7 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 | `living_room` | リビング。低い机の下と家具の間の操縦 | `sofa`・`table`・`chair`・`shelf` |
 | `study` | 書斎。机と椅子の脚、背の高い棚の周囲を飛ぶ | `table`・`chair`・`shelf` |
 | `bedroom` | 寝室。ベッドの下や両脇の小机の間の操縦 | `bed`・`table`・`chair`・`shelf` |
+| `bowling` | 軽いピン 10 本をドローンの衝突で倒す | `bowling_pin` |
 
 ## 9. Unity の C# 側が守る約束
 
@@ -479,7 +483,7 @@ using UnityEngine;
 
 [Serializable] public class WorldObstacle {
     public string id;
-    public string type;         // one of the fourteen kinds / 14 種のいずれか
+    public string type;         // one of the fifteen kinds / 15 種のいずれか
     public float[] position;    // the type's origin / その種類の原点
     public float[] rotationDeg; // [roll, pitch, yaw], intrinsic yaw->pitch->roll
     public float[] size;        // meaning depends on `type` / 意味は type ごと
@@ -614,7 +618,7 @@ Obstacles carry only **flat, common members**: no per-type nesting, no dictionar
 | Member | Type | Required | Content |
 |--------|------|----------|---------|
 | `id` | string | yes | Unique within the file; lower-case letters, digits and underscore |
-| `type` | string | yes | One of the fourteen kinds in §3.1 |
+| `type` | string | yes | One of the fifteen kinds in §3.1 |
 | `position` | 3 numbers | yes | Position of **the type's origin** `[x, y, z]` in metres. §3.1 |
 | `rotation_deg` | 3 numbers | yes | `[roll, pitch, yaw]` in degrees. §3.2 |
 | `size` | 3 numbers | yes | Three lengths in metres, meaning set by the type. §3.1 |
@@ -643,6 +647,7 @@ The **origin** is the point `position` refers to. It is the centre of the bottom
 | `step` | width | depth | height | centre of the bottom face | not allowed |
 | `ramp` | width | run (along +y) | rise | centre of the **low edge**, at the bottom | not allowed |
 | `pad` | width | depth | thickness | centre of the bottom face | not allowed |
+| `bowling_pin` | maximum diameter along x | maximum diameter along y | total height | centre of the bottom face | not allowed |
 
 **Points to note:**
 
@@ -733,6 +738,8 @@ The **origin** is the point `position` refers to. It is the centre of the bottom
         origin = centre of the low edge
                 |- size[1] -|  <- run (along +y)
 ```
+
+`bowling_pin` is a lightweight pin that responds to collisions. Its size is the maximum overall extent and its origin is the bottom centre; the x and y diameters may differ. The file stores the initial arrangement, restored on a room reset. Mass and shape proportions belong to the Unity builder, with no additional physics fields in JSON.
 
 Furniture (`chair`, `sofa`, `shelf`, `bed`) is assembled from boxes without external assets. Each solid part has its own collider, leaving leg and shelf spaces open. Backs and headboards face local ENU +y; the front faces -y. Total height includes the back or headboard.
 
@@ -941,7 +948,7 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 5. If it ships with the simulator, add its name to `SHIPPED_WORLDS` in `tools/unity_world/tests/test_validate.py`
 6. Do **not** create `.meta` files; the Unity editor generates them
 
-### 8.1 The Nine Shipped Worlds
+### 8.1 The Ten Shipped Worlds
 
 | Name | Purpose | Main obstacles |
 |------|---------|----------------|
@@ -954,6 +961,7 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 | `living_room` | Living room: fly beneath a low table and between furniture | `sofa`, `table`, `chair`, `shelf` |
 | `study` | Study: explore desk and chair legs and fly around tall shelves | `table`, `chair`, `shelf` |
 | `bedroom` | Bedroom: fly under the bed and between bedside tables | `bed`, `table`, `chair`, `shelf` |
+| `bowling` | Knock down ten lightweight pins by colliding with the drone | `bowling_pin` |
 
 ## 9. What the Unity C# Side Must Honour
 
@@ -997,7 +1005,7 @@ using UnityEngine;
 
 [Serializable] public class WorldObstacle {
     public string id;
-    public string type;         // one of the fourteen kinds
+    public string type;         // one of the fifteen kinds
     public float[] position;    // the type's origin
     public float[] rotationDeg; // [roll, pitch, yaw], intrinsic yaw->pitch->roll
     public float[] size;        // meaning depends on `type`
