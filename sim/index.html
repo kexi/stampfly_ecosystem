@@ -2,32 +2,97 @@
 <html lang="en-us">
   <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
     <title>StampFly Simulator</title>
     <!--
       The page the simulator is served from. It differs from Unity's own
-      template in exactly two ways, both for the browser checks:
+      template for browser checks and touch controls:
 
-        * the canvas fills the window, so the readout and the vehicle are
+        * the canvas fills the safe area, so the readout and the vehicle are
           legible without resizing anything, and
         * `?raf=worker` replaces requestAnimationFrame with a Worker timer.
 
-      シミュレータを配信するページ。Unity 自身の雛形と違うのは 2 点だけで、
-      どちらもブラウザでの検証のためである。
+      シミュレータを配信するページ。ブラウザでの検証とタッチ操作のために、
+      Unity 自身の雛形を変更している。
 
-        * キャンバスが窓いっぱいに広がる。表示と機体が、窓の大きさを変えずに
+        * キャンバスが画面の切欠きを避けて広がる。表示と機体が、窓の大きさを変えずに
           読めるようにするため。
         * `?raf=worker` で requestAnimationFrame を Worker のタイマーに差し替える。
 
       @design docs/plans/unity-simulator.md §9 (e)
     -->
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; background: #0d0f13; }
-      #unity-canvas { width: 100%; height: 100%; display: block; }
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0d0f13; }
+      /* Keep Unity's entire canvas clear of notches and the home indicator.
+         Unity のキャンバス全体を切欠きとホームインジケータから離す。 */
+      body {
+        box-sizing: border-box;
+        height: 100vh;
+        height: 100dvh;
+        padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+                 env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+      }
+      #unity-canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+      /* Native links work before Unity loads and preserve browser link behaviour.
+         通常のリンクは Unity 読込前にも動き、ブラウザ本来のリンク操作を保つ。 */
+      .project-links {
+        position: fixed;
+        top: calc(env(safe-area-inset-top, 0px) + 8px);
+        right: calc(env(safe-area-inset-right, 0px) + 8px);
+        z-index: 1;
+        display: flex;
+        gap: 6px;
+        padding: 4px;
+        border-radius: 12px;
+        background: #17222e;
+      }
+      .project-links a {
+        display: grid;
+        place-items: center;
+        width: 48px;
+        height: 48px;
+        box-sizing: border-box;
+        border: 1px solid #526779;
+        border-radius: 8px;
+        color: #f0f6fc;
+      }
+      .project-links a:hover { background: #304658; }
+      .project-links a:focus-visible { outline: 3px solid #79c8ff; outline-offset: 2px; }
+      .project-links svg {
+        width: 24px;
+        height: 24px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.8;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
     </style>
   </head>
   <body>
     <canvas id="unity-canvas" tabindex="-1"></canvas>
+    <nav class="project-links" aria-label="Project links">
+      <a href="https://github.com/kexi/stampfly_ecosystem" target="_blank" rel="noopener noreferrer"
+         title="GitHub repository" aria-label="GitHub repository (opens in a new tab)">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 3h14v18H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z M3 17h16 M7 3v9l3-2 3 2V3" />
+        </svg>
+      </a>
+      <a href="https://github.com/M5Fly-kanazawa/stampfly_ecosystem" target="_blank" rel="noopener noreferrer"
+         title="Fork source" aria-label="Fork source (opens in a new tab)">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <circle cx="6" cy="5" r="2" /><circle cx="18" cy="5" r="2" /><circle cx="12" cy="19" r="2" />
+          <path d="M6 7v3a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7 M12 12v5" />
+        </svg>
+      </a>
+      <a href="LICENSE.txt" target="_blank" rel="noopener noreferrer"
+         title="MIT license" aria-label="MIT license (opens in a new tab)">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path d="M5 3h9l5 5v13H5Z M14 3v5h5 M8 12h8 M8 16h8" />
+        </svg>
+      </a>
+    </nav>
 
     <script>
       /*
@@ -91,18 +156,37 @@
       }());
     </script>
 
-    <script src="Build/webgl-release3.loader.js"></script>
+    <script src="Build/stampfly-mobile-webgl.loader.js"></script>
     <script>
+      // A touch release may never arrive after a tab switch or viewport change.
+      // タブ切替や画面サイズ変更の後には、指を離した通知が届かないことがある。
+      function cancelTouchInput() {
+        var isPlayerReady = window.stampflyReady && window.stampflyUnity;
+        if (!isPlayerReady) { return; }
+        window.stampflyUnity.SendMessage('Hud', 'CancelTouch');
+      }
+
+      window.addEventListener('blur', cancelTouchInput);
+      window.addEventListener('resize', cancelTouchInput);
+      window.addEventListener('orientationchange', cancelTouchInput);
+      document.addEventListener('visibilitychange', function () {
+        var isPageHidden = document.visibilityState === 'hidden';
+        if (isPageHidden) { cancelTouchInput(); }
+      });
+
       createUnityInstance(document.querySelector("#unity-canvas"), {
         arguments: [],
-        dataUrl: "Build/webgl-release3.data.unityweb",
-        frameworkUrl: "Build/webgl-release3.framework.js.unityweb",
-        codeUrl: "Build/webgl-release3.wasm.unityweb",
+        dataUrl: "Build/stampfly-mobile-webgl.data.unityweb",
+        frameworkUrl: "Build/stampfly-mobile-webgl.framework.js.unityweb",
+        codeUrl: "Build/stampfly-mobile-webgl.wasm.unityweb",
         streamingAssetsUrl: "StreamingAssets",
         companyName: "DefaultCompany",
         productName: "StampFlySim",
         productVersion: "0.1.0",
         matchWebGLToCanvasSize: true,
+        // Match touch targets to CSS pixels and limit high-DPI rendering cost.
+        // タッチ領域を CSS ピクセルに合わせ、高密度画面の描画負荷を抑える。
+        devicePixelRatio: 1,
       }).then(function (unityInstance) {
         window.stampflyUnity = unityInstance;
         window.stampflyReady = true;
