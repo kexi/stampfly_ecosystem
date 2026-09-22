@@ -103,7 +103,7 @@
 検証: `sf unity test --mode edit` 250件、`--mode play` 115件、`pytest tools/unity_world/tests` 89件が通過。新規試験で部屋切り替え、保存復元、室外・離陸空間への配置拒否、天井越しの家具選択、脚と棚の隙間、スマホ縦横の操作領域を確認した。同梱9空間はPythonの形式・配置検査で警告もなく通過した。
 WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×390と390×844の表示、家具追加・保存・削除・読み戻しを確認した。標準テーマが配布物に入らず部屋選択が暗くなる問題は、テーマを `Resources/UnityThemes` に同梱して修正した。狭幅では家具一覧の横スクロール用に高さを確保し、不要な縦スクロールバーを隠す。ブラウザ確認は `?raf=worker` を使用し、実機での速度測定は含まない。家具版はソース `a0c2ebf6`、GitHub Pagesへの配信 `689ce66c` で公開済み。
 
-### ボーリング部屋（2026-09-22、ブラウザ確認・公開待ち）
+### ボーリング部屋（2026-09-22、公開済み）
 
 `Room` の一覧の先頭に `Bowling`（`bowling`）を追加する。家具版の9空間にこの部屋を加え、同梱は10空間・障害物は15種類となる。起動時のリビングは変えない。
 
@@ -116,7 +116,9 @@ WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×
 | 保存と編集 | JSONは初期配置を保持し、転倒した姿勢は保存しない。編集を開いた時もピンを戻す。ピンの復元だけでは配置のUndo履歴を変更しない |
 | 範囲 | スコア、投球回数、ボールの追加は含まない |
 
-検証: EditMode 258件、PlayMode 123件、Pythonの空間試験96件が通過。記録は `logs/unity/test-20260922T032116Z-7a8c4705.xml`（EditMode）と `logs/unity/test-20260922T032018Z-3d7ff22d.xml`（PlayMode）。ブラウザ確認・公開は未完了。
+検証: EditMode 258件、PlayMode 123件、Pythonの空間試験96件が通過。最終修正後の記録は `logs/unity/test-20260922T033359Z-5fd4a650.xml`（EditMode）と `logs/unity/test-20260922T033309Z-1c13e7b5.xml`（PlayMode）。
+
+ソース `9046ce01` の配布用WebGLを配信コミット `a84d89d4` で公開した。GitHub Pagesの完了と、公開HTML・LICENSE・Unityデータ・WebAssemblyがローカル成果物とSHA-256で一致することを確認。Chromeの390×844／844×390で小型パネルと展開メニュー、ボーリング部屋への切り替えを確認し、修正後はコライダ欠落エラーが出ないことを実行ログで確認した。常時パネルは横画面で約820×120pxから約320×70pxになった。確認には `?raf=worker` を使い、Android／iPhone実機での速度・操作感の測定は含まない。公開版には既存の `StampFlyBridge` 欠落に伴う起動時の直列化ログが残るが、今回の部屋読み込みとUI操作は成功している。
 
 剛体衝突の単体試験では、本番の `PhysicsStepSettings.Apply()` と400 Hz刻みを使い、質量37 g・81.6 × 20.6 × 81.6 mmの箱を高さ105 mmでピンへ衝突させた。揚力の代わりに機体側の重力を無効化しており、実ファームウェアでの飛行操作を検証したものではない。
 
@@ -346,7 +348,7 @@ Layouts use the existing version 1 world format and one `PlayerPrefs` save slot.
 Verification: all 250 EditMode tests, 115 PlayMode tests and 89 Python world tests passed. New checks cover room selection, save/load, refusal of out-of-room or blocked-spawn placement, selection through the ceiling, leg and shelf openings, and phone portrait/landscape controls. All nine shipped worlds also pass Python structure and placement checks without warnings.
 A release WebGL build succeeded. Chrome checks covered all three room choices, 844×390 and 390×844 layouts, and adding, saving, deleting and restoring furniture. A missing runtime theme made the room selector hard to read; embedding the theme under `Resources/UnityThemes` fixed it. The narrow catalog reserves height for horizontal scrolling and hides its unused vertical scrollbar. Browser checks used `?raf=worker`, not physical-device performance measurements. The furniture release is public: source `a0c2ebf6`, GitHub Pages deployment `689ce66c`.
 
-### Bowling room (2026-09-22, browser verification and publication pending)
+### Bowling room (2026-09-22, published)
 
 `Bowling` (`bowling`) is added first in the `Room` list. It extends the nine furniture-release worlds to ten worlds and fifteen obstacle kinds. The simulator still starts in the living room.
 
@@ -359,7 +361,9 @@ A release WebGL build succeeded. Chrome checks covered all three room choices, 8
 | Saving and editing | JSON retains authored initial poses, not fallen runtime poses. Opening the editor also restores the pins. Resetting pins alone preserves layout undo history |
 | Scope | No scoring, throw counter or ball is added |
 
-Verification: all 258 EditMode tests, 123 PlayMode tests and 96 Python world tests passed. Reports: `logs/unity/test-20260922T032116Z-7a8c4705.xml` (EditMode) and `logs/unity/test-20260922T032018Z-3d7ff22d.xml` (PlayMode). Browser verification and publication remain pending.
+Verification: all 258 EditMode tests, 123 PlayMode tests and 96 Python world tests passed. Final reports: `logs/unity/test-20260922T033359Z-5fd4a650.xml` (EditMode) and `logs/unity/test-20260922T033309Z-1c13e7b5.xml` (PlayMode).
+
+The release WebGL build from source `9046ce01` was published in deployment `a84d89d4`. GitHub Pages completed; SHA-256 comparisons matched public HTML, LICENSE, Unity data and WebAssembly to the local artifacts. Chrome checks at 390×844 and 844×390 covered the compact panel, expanded menu and Bowling selection. Runtime logs confirmed the missing-collider errors were resolved. The landscape panel shrank from approximately 820×120 px to 320×70 px. Checks used `?raf=worker`, not physical Android/iPhone performance or handling measurements. The pre-existing startup serialization log associated with the missing `StampFlyBridge` remains, while room loading and UI operations succeed.
 
 The rigidbody collision unit test used production `PhysicsStepSettings.Apply()` at 400 Hz, with a 37 g, 81.6 × 20.6 × 81.6 mm box impacting a pin at a height of 105 mm. Gravity was disabled on the vehicle-equivalent body as a substitute for lift; this does not verify flight control by the real firmware.
 
