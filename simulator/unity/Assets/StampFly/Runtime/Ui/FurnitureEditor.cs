@@ -89,8 +89,9 @@ namespace StampFly.Ui
             root.style.left = root.style.top = root.style.right = root.style.bottom = 0;
             root.style.display = DisplayStyle.None;
             var choices = new ScrollView(ScrollViewMode.Horizontal);
+            choices.verticalScrollerVisibility = ScrollerVisibility.Hidden;
             choices.style.flexShrink = 0;
-            choices.style.height = 62;
+            choices.style.height = 82;
             choices.style.flexGrow = 0;
             bool hasBrowserLinks = Application.platform == RuntimePlatform.WebGLPlayer;
             choices.style.marginRight = hasBrowserLinks ? 180 : 0;
@@ -282,7 +283,7 @@ namespace StampFly.Ui
                 Vector3 hit = ray.GetPoint(distance);
                 bool added = session.TryAdd(adding, new Vector3(hit.x, hit.z, 0), out string id);
                 if (added) { selected = id; adding = null; }
-                Report(added, $"Selected {id}. Move with arrows, or rotate / delete.");
+                Report(added, $"Selected {id}. Use move / turn / delete buttons.");
                 return;
             }
             SelectAt(ray);
@@ -304,7 +305,7 @@ namespace StampFly.Ui
                 break;
             }
             RefreshSelection();
-            status.text = selected == null ? "Tap furniture to select, or choose furniture above." : $"Selected {selected}. Move with arrows, or rotate / delete.";
+            status.text = selected == null ? "Tap furniture to select, or choose furniture above." : $"Selected {selected}. Use move / turn / delete buttons.";
         }
 
         /// <summary>Use the serialized ENU pose, not a renderer's centre. / 描画物の中心ではなく保存対象のENU位置を使う。</summary>

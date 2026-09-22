@@ -101,6 +101,7 @@
 配置は既存のバージョン1の空間形式で表し、`PlayerPrefs` に1件保存する。WebGLでは同じブラウザ・配信元で読み戻すための保存であり、端末間の共有やJSONファイルのダウンロードではない。ブラウザのサイトデータを消すと保存も失われる。操作処理は公開用ビルドでも使える `World` に置き、開発用の遠隔操作機能には依存させない。
 
 検証: `sf unity test --mode edit` 250件、`--mode play` 115件、`pytest tools/unity_world/tests` 89件が通過。新規試験で部屋切り替え、保存復元、室外・離陸空間への配置拒否、天井越しの家具選択、脚と棚の隙間、スマホ縦横の操作領域を確認した。同梱9空間はPythonの形式・配置検査で警告もなく通過した。
+WebGLの配布用ビルドが成功し、Chromeで3部屋の切り替え、844×390と390×844の表示、家具追加・保存・削除・読み戻しを確認した。標準テーマが配布物に入らず部屋選択が暗くなる問題は、テーマを `Resources/UnityThemes` に同梱して修正した。狭幅では家具一覧の横スクロール用に高さを確保し、不要な縦スクロールバーを隠す。ブラウザ確認は `?raf=worker` を使用し、実機での速度測定は含まない。公開サイトにはまだ反映していない。
 
 ### タッチUIの検証（2026-09-22）
 
@@ -314,6 +315,7 @@ The UI adds, moves, rotates and removes tables, chairs, sofas, shelves and beds.
 Layouts use the existing version 1 world format and one `PlayerPrefs` save slot. In WebGL this is a local save for the same browser and origin, not cross-device sharing or a downloadable JSON file. Clearing site data removes the save. Editing lives in the release-compatible `World` assembly and does not depend on development-only remote controls.
 
 Verification: all 250 EditMode tests, 115 PlayMode tests and 89 Python world tests passed. New checks cover room selection, save/load, refusal of out-of-room or blocked-spawn placement, selection through the ceiling, leg and shelf openings, and phone portrait/landscape controls. All nine shipped worlds also pass Python structure and placement checks without warnings.
+A release WebGL build succeeded. Chrome checks covered all three room choices, 844×390 and 390×844 layouts, and adding, saving, deleting and restoring furniture. A missing runtime theme made the room selector hard to read; embedding the theme under `Resources/UnityThemes` fixed it. The narrow catalog reserves height for horizontal scrolling and hides its unused vertical scrollbar. Browser checks used `?raf=worker`, not physical-device performance measurements. The public site has not yet been updated.
 
 ### Touch UI verification (2026-09-22)
 
