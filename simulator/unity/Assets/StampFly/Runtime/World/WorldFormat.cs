@@ -43,8 +43,8 @@ namespace StampFly.World
     }
 
     /// <summary>
-    /// The ten obstacle kinds, spelled exactly as the format writes them.
-    /// 障害物の 10 種。形式が書くとおりの綴り。
+    /// The fourteen obstacle kinds, spelled exactly as the format writes them.
+    /// 障害物の 14 種。形式が書くとおりの綴り。
     /// </summary>
     public static class WorldObstacleTypes
     {
@@ -55,6 +55,10 @@ namespace StampFly.World
         public const string Ring = "ring";
         public const string Tunnel = "tunnel";
         public const string Table = "table";
+        public const string Chair = "chair";
+        public const string Sofa = "sofa";
+        public const string Shelf = "shelf";
+        public const string Bed = "bed";
         public const string Step = "step";
         public const string Ramp = "ramp";
         public const string Pad = "pad";
@@ -62,20 +66,20 @@ namespace StampFly.World
         /// <summary>Every kind, in the order the schema lists them. / スキーマの並び順。</summary>
         public static readonly string[] All =
         {
-            Box, Pillar, Wall, Gate, Ring, Tunnel, Table, Step, Ramp, Pad,
+            Box, Pillar, Wall, Gate, Ring, Tunnel, Table, Chair, Sofa, Shelf, Bed, Step, Ramp, Pad,
         };
 
         /// <summary>Kinds that are hollow and carry a thickness. / 中空で肉厚を持つ種類。</summary>
         public static readonly string[] Hollow = { Gate, Ring, Tunnel };
 
         /// <summary>
-        /// Whether a kind is one of the ten. / その綴りが 10 種のいずれかか。
+        /// Whether a kind is one of the fourteen. / その綴りが 14 種のいずれかか。
         /// </summary>
         public static bool IsKnown(string type)
         {
-            // A linear scan over ten short strings is cheaper than a hash set
+            // A linear scan over fourteen short strings is cheaper than a hash set
             // and keeps the order of `All` as the single listing.
-            // 10 個の短い文字列の走査は集合より安く、並びを All 1 か所に保てる。
+            // 14 個の短い文字列の走査は集合より安く、並びを All 1 か所に保てる。
             foreach (string known in All)
             {
                 if (known == type)

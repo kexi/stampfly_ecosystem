@@ -87,7 +87,7 @@ Unity 版シミュレータが読み込む**空間ファイル**（`*.world.json
 | 項目 | 型 | 必須 | 内容 |
 |------|-----|------|------|
 | `id` | 文字列 | 必須 | ファイル内で重複しない識別子。英小文字・数字・下線 |
-| `type` | 文字列 | 必須 | §3.1 の 10 種のいずれか |
+| `type` | 文字列 | 必須 | §3.1 の 14 種のいずれか |
 | `position` | 数 3 つ | 必須 | **その種類の原点**の位置 `[x, y, z]`（m）。§3.1 |
 | `rotation_deg` | 数 3 つ | 必須 | `[roll, pitch, yaw]`（度）。§3.2 |
 | `size` | 数 3 つ | 必須 | 3 つの長さ（m）。意味は種類ごとに決まる。§3.1 |
@@ -109,6 +109,10 @@ Unity 版シミュレータが読み込む**空間ファイル**（`*.world.json
 | `ring` | **内径** | 内径（`size[0]` と同値） | 同上 | **開口の中心** | 必須（輪の太さ） |
 | `tunnel` | **開口**の幅 | 管の長さ | **開口**の高さ | 入口の開口の下辺の中心 | 必須（管の肉厚） |
 | `table` | 天板の幅 | 天板の奥行き | **天板上面**の高さ | 接地面の中心 | 不可 |
+| `chair` | 外形の幅 | 外形の奥行き | 全高 | 底面の中心 | 不可 |
+| `sofa` | 外形の幅 | 外形の奥行き | 全高 | 底面の中心 | 不可 |
+| `shelf` | 外形の幅 | 外形の奥行き | 全高 | 底面の中心 | 不可 |
+| `bed` | 外形の幅 | 外形の奥行き | 全高 | 底面の中心 | 不可 |
 | `step` | 幅 | 奥行き | 高さ | 底面の中心 | 不可 |
 | `ramp` | 幅 | 水平距離（+y 方向） | 立ち上がり | **低い辺**の中心（底） | 不可 |
 | `pad` | 幅 | 奥行き | 厚み | 底面の中心 | 不可 |
@@ -119,6 +123,7 @@ Unity 版シミュレータが読み込む**空間ファイル**（`*.world.json
 - `ring` は丸いので `size[0]` と `size[1]` は等しくなければならない（検査が確かめる）。輪は **x-z 平面**にあり、y 方向の厚みが `thickness` である。つまり回転が無いとき、輪を**北向きに**くぐることになる
 - `ring` は `segments` 本の直線の棒で近似し、その棒を**半径 `size[0]/2 + thickness` の円に内接させる**（棒の長さはその外円の弦、すなわち `2·(size[0]/2 + thickness)·sin(π/segments)`）。検査が使う外形はこの外円を囲む箱なので、**外接**させると棒の角がその箱からはみ出してしまう。内接させれば分割数によらず外形が検査と一致し、内径の穴も塞がらない
 - `tunnel` は側壁 2 枚と天井だけで、**床は作らない**。管は部屋の床の上に置かれる前提であり、中に床をもう 1 枚作ると機体が越える段差になるためである（`size[2]` の開口の高さは部屋の床から測る）
+- `chair`・`sofa`・`shelf`・`bed` は外部素材を使わず箱を組み合わせて作る。各部品に衝突形状があり、脚の間や棚の空間を通れる。背もたれ・背板・頭板は局所 ENU +y 側、正面は -y 側。全高には背もたれ・頭板を含む。
 - `table` の `size[2]` は**天板上面**の高さである（天板の厚みではない）。脚は Unity 側が天板の四隅から床まで伸ばす
 - `ramp` は +y 方向に向かって上がる。向きを変えるには `rotation_deg` の yaw を使う
 
@@ -418,7 +423,7 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 5. 同梱の空間として足すなら、`tools/unity_world/tests/test_validate.py` の `SHIPPED_WORLDS` に名前を足す
 6. `.meta` ファイルは**作らない**（Unity エディタが自分で作る）
 
-### 8.1 同梱の 6 空間
+### 8.1 同梱の 9 空間
 
 | 名前 | ねらい | 主な障害物 |
 |------|--------|-----------|
@@ -428,6 +433,9 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 | `corridor_tunnel` | 壁の近くでの位置保持。幅 0.70 m の L 字の廊下とトンネル | `wall`・`tunnel` |
 | `stepped_floor` | 下向き ToF が急変するときの高度保持。着陸用の `pad` あり | `step`・`ramp`・`box`・`table`・`pad` |
 | `featureless_floor` | フローが効きにくい条件。模様のある `pad` の上だけ位置保持が効く | `pad`・`box` |
+| `living_room` | リビング。低い机の下と家具の間の操縦 | `sofa`・`table`・`chair`・`shelf` |
+| `study` | 書斎。机と椅子の脚、背の高い棚の周囲を飛ぶ | `table`・`chair`・`shelf` |
+| `bedroom` | 寝室。ベッドの下や両脇の小机の間の操縦 | `bed`・`table`・`chair`・`shelf` |
 
 ## 9. Unity の C# 側が守る約束
 
@@ -471,7 +479,7 @@ using UnityEngine;
 
 [Serializable] public class WorldObstacle {
     public string id;
-    public string type;         // one of the ten kinds / 10 種のいずれか
+    public string type;         // one of the fourteen kinds / 14 種のいずれか
     public float[] position;    // the type's origin / その種類の原点
     public float[] rotationDeg; // [roll, pitch, yaw], intrinsic yaw->pitch->roll
     public float[] size;        // meaning depends on `type` / 意味は type ごと
@@ -606,7 +614,7 @@ Obstacles carry only **flat, common members**: no per-type nesting, no dictionar
 | Member | Type | Required | Content |
 |--------|------|----------|---------|
 | `id` | string | yes | Unique within the file; lower-case letters, digits and underscore |
-| `type` | string | yes | One of the ten kinds in §3.1 |
+| `type` | string | yes | One of the fourteen kinds in §3.1 |
 | `position` | 3 numbers | yes | Position of **the type's origin** `[x, y, z]` in metres. §3.1 |
 | `rotation_deg` | 3 numbers | yes | `[roll, pitch, yaw]` in degrees. §3.2 |
 | `size` | 3 numbers | yes | Three lengths in metres, meaning set by the type. §3.1 |
@@ -628,6 +636,10 @@ The **origin** is the point `position` refers to. It is the centre of the bottom
 | `ring` | **inner diameter** | inner diameter (equal to `size[0]`) | same | **centre of the opening** | required (ring thickness) |
 | `tunnel` | **opening** width | tube length | **opening** height | centre of the entry opening's bottom edge | required (tube wall thickness) |
 | `table` | top width | top depth | height of the **top surface** | centre of the footprint | not allowed |
+| `chair` | overall width | overall depth | total height | centre of the bottom face | not allowed |
+| `sofa` | overall width | overall depth | total height | centre of the bottom face | not allowed |
+| `shelf` | overall width | overall depth | total height | centre of the bottom face | not allowed |
+| `bed` | overall width | overall depth | total height | centre of the bottom face | not allowed |
 | `step` | width | depth | height | centre of the bottom face | not allowed |
 | `ramp` | width | run (along +y) | rise | centre of the **low edge**, at the bottom | not allowed |
 | `pad` | width | depth | thickness | centre of the bottom face | not allowed |
@@ -721,6 +733,8 @@ The **origin** is the point `position` refers to. It is the centre of the bottom
         origin = centre of the low edge
                 |- size[1] -|  <- run (along +y)
 ```
+
+Furniture (`chair`, `sofa`, `shelf`, `bed`) is assembled from boxes without external assets. Each solid part has its own collider, leaving leg and shelf spaces open. Backs and headboards face local ENU +y; the front faces -y. Total height includes the back or headboard.
 
 ### 3.2 Rotation Order
 
@@ -927,7 +941,7 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 5. If it ships with the simulator, add its name to `SHIPPED_WORLDS` in `tools/unity_world/tests/test_validate.py`
 6. Do **not** create `.meta` files; the Unity editor generates them
 
-### 8.1 The Six Shipped Worlds
+### 8.1 The Nine Shipped Worlds
 
 | Name | Purpose | Main obstacles |
 |------|---------|----------------|
@@ -937,6 +951,9 @@ worlds = list_worlds(worlds_dir)             # name / path / description / obsta
 | `corridor_tunnel` | Position hold near walls; a 0.70 m L-shaped corridor and a tunnel | `wall`, `tunnel` |
 | `stepped_floor` | Altitude hold when the downward ToF jumps; includes a landing `pad` | `step`, `ramp`, `box`, `table`, `pad` |
 | `featureless_floor` | Conditions where flow barely works; position hold holds only over the textured pads | `pad`, `box` |
+| `living_room` | Living room: fly beneath a low table and between furniture | `sofa`, `table`, `chair`, `shelf` |
+| `study` | Study: explore desk and chair legs and fly around tall shelves | `table`, `chair`, `shelf` |
+| `bedroom` | Bedroom: fly under the bed and between bedside tables | `bed`, `table`, `chair`, `shelf` |
 
 ## 9. What the Unity C# Side Must Honour
 
@@ -980,7 +997,7 @@ using UnityEngine;
 
 [Serializable] public class WorldObstacle {
     public string id;
-    public string type;         // one of the ten kinds
+    public string type;         // one of the fourteen kinds
     public float[] position;    // the type's origin
     public float[] rotationDeg; // [roll, pitch, yaw], intrinsic yaw->pitch->roll
     public float[] size;        // meaning depends on `type`

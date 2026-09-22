@@ -53,6 +53,10 @@ OBSTACLE_TYPES = (
     "ring",
     "tunnel",
     "table",
+    "chair",
+    "sofa",
+    "shelf",
+    "bed",
     "step",
     "ramp",
     "pad",
@@ -118,6 +122,22 @@ SIZE_SEMANTICS: dict[str, dict[str, str]] = {
     "tunnel": {
         "size": "opening width (x) / length along y / opening height (z)",
         "origin": "centre of the entry opening's bottom edge",
+    },
+    "chair": {
+        "size": "footprint width (x) / footprint depth (y) / total height (z)",
+        "origin": "centre of the bottom face",
+    },
+    "sofa": {
+        "size": "footprint width (x) / footprint depth (y) / total height (z)",
+        "origin": "centre of the bottom face",
+    },
+    "shelf": {
+        "size": "footprint width (x) / footprint depth (y) / total height (z)",
+        "origin": "centre of the bottom face",
+    },
+    "bed": {
+        "size": "footprint width (x) / footprint depth (y) / total height (z)",
+        "origin": "centre of the bottom face",
     },
     "table": {
         "size": "top width (x) / top depth (y) / height of the top surface (z)",
@@ -485,9 +505,10 @@ def _local_bounds(kind: str, size: list[float], thickness: float) -> tuple[list[
     if kind in ("box", "pillar", "wall", "step", "pad"):
         # Origin at the centre of the bottom face. / 原点は底面の中心。
         return [-sx / 2, -sy / 2, 0.0], [sx / 2, sy / 2, sz]
-    if kind == "table":
-        # Origin at the centre of the footprint; the top surface is at z=sz.
-        # 原点は接地面の中心。天板の上面が z=sz。
+    is_furniture = kind in ("table", "chair", "sofa", "shelf", "bed")
+    if is_furniture:
+        # Bound the complete furniture; openings are represented by Unity parts.
+        # 家具全体の外形。隙間は Unity の部品形状で表す。
         return [-sx / 2, -sy / 2, 0.0], [sx / 2, sy / 2, sz]
     if kind == "ramp":
         # Origin at the centre of the low edge; it rises toward +y.

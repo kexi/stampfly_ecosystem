@@ -52,8 +52,8 @@ namespace StampFly.Tests.PlayMode
 
         private static readonly string[] ShippedWorldNames =
         {
-            "corridor_tunnel", "empty_room", "featureless_floor",
-            "gate_course", "pillar_forest", "stepped_floor",
+            "bedroom", "corridor_tunnel", "empty_room", "featureless_floor",
+            "gate_course", "living_room", "pillar_forest", "stepped_floor", "study",
         };
 
         [SetUp]
@@ -108,7 +108,7 @@ namespace StampFly.Tests.PlayMode
         }
 
         [Test]
-        public void EveryObstacleKindIsCoveredByTheShippedWorlds()
+        public void ShippedWorldsAndFurnitureCatalogCoverEveryObstacleKind()
         {
             // The bounds check above is only worth as much as its coverage, so
             // the kinds the shipped worlds exercise are counted here.
@@ -125,8 +125,21 @@ namespace StampFly.Tests.PlayMode
                 loader.Clear();
             }
 
+            // Catalog defaults are also buildable geometry, not just type names.
+            // カタログの既定値も、名前だけでなく生成した形状を検査する。
+            foreach (string type in FurnitureCatalog.Types)
+            {
+                WorldFile world = Load("empty_room");
+                WorldObstacle obstacle = FurnitureCatalog.CreateDefault(type, "catalog_item");
+                world.obstacles = new[] { obstacle };
+                loader.Build(world);
+                AssertSameBounds(ExpectedWorldBounds(obstacle), ColliderBounds(loader.Find(obstacle.id)), type);
+                seen.Add(type);
+                loader.Clear();
+            }
+
             Assert.That(seen, Is.EquivalentTo(WorldObstacleTypes.All),
-                        "the shipped worlds must exercise all ten kinds; "
+                        "shipped worlds and catalog defaults must exercise every kind; "
                       + $"missing: {string.Join(", ", Missing(seen))}");
         }
 

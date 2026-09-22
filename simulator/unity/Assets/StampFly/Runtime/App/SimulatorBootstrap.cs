@@ -43,7 +43,7 @@ namespace StampFly.App
     public sealed class SimulatorBootstrap : MonoBehaviour
     {
         /// <summary>The world loaded when nothing says otherwise. / 指定が無いときに読む空間。</summary>
-        public const string DefaultWorldName = "empty_room";
+        public const string DefaultWorldName = "living_room";
 
         [Tooltip("Which shipped world to load. 読み込む同梱の空間。")]
         public string worldName = DefaultWorldName;
@@ -67,7 +67,7 @@ namespace StampFly.App
             WorldLoader world = BuildWorld();
             simLoop = BuildVehicle(world);
             BuildCamera(simLoop.transform);
-            BuildHud(simLoop);
+            BuildHud(simLoop, world);
         }
 
         /// <summary>
@@ -203,7 +203,7 @@ namespace StampFly.App
         }
 
         /// <summary>The on-screen readout. / 画面の表示。</summary>
-        private void BuildHud(SimLoop loop)
+        private void BuildHud(SimLoop loop, WorldLoader world)
         {
             var holder = new GameObject("Hud");
             holder.transform.SetParent(transform, false);
@@ -213,6 +213,23 @@ namespace StampFly.App
 
             var hud = holder.AddComponent<SimHud>();
             hud.simLoop = loop;
+            hud.ConfigureRooms(world, () =>
+            {
+                bool wasPaused = loop.Clock.IsPaused;
+                loop.SetSpawn(SpawnPosition(world), world.SpawnRotation);
+                loop.PowerOn();
+                if (wasPaused) loop.Clock.Pause();
+            });
+
+            // Keep editing available in release builds, without the remote bridge.
+            // 公開ビルドでも遠隔操作の橋に依存せず家具を配置できるようにする。
+            var editorHost = new GameObject("FurnitureEditor");
+            editorHost.transform.SetParent(transform, false);
+            var editorDocument = editorHost.AddComponent<UIDocument>();
+            editorDocument.panelSettings = document.panelSettings;
+            editorDocument.sortingOrder = 10;
+            var editor = editorHost.AddComponent<FurnitureEditor>();
+            editor.Initialize(world, loop, hud, GetComponentInChildren<FollowCamera>());
         }
     }
 

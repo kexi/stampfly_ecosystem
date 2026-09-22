@@ -226,6 +226,36 @@ Backspace）は `simulator/unity/README.md` の「操縦」の節にある。F�
 
 一時停止中（P、または `sim.pause`）でも寄せられる。機体をよく見たいのはまさにそのときである。
 
+### 家具のある部屋を選ぶ
+
+画面の部屋選択から、リビング（`living_room`）、書斎（`study`）、寝室（`bedroom`）を切り替えられる。
+起動時はリビングを表示する。部屋を切り替えると機体はその部屋の出発点へ戻り、ファームウェアを再起動する。
+編集途中の配置は切り替えで置き換わるため、残したい場合は先に `Save here` を使う。
+
+| 部屋 | 主な家具 |
+|------|----------|
+| リビング | ソファ、机、椅子、棚 |
+| 書斎 | 机、椅子、棚 |
+| 寝室 | ベッド、机、椅子、棚 |
+
+### 家具を配置する
+
+状態表示の `Edit` を押すと、シミュレーションを一時停止し、部屋を上から表示する。
+上の一覧で `table`（机）、`chair`（椅子）、`sofa`（ソファ）、`shelf`（棚）、`bed`（ベッド）を選び、床をクリックまたはタップすると配置できる。狭い画面では一覧を横にスクロールする。
+
+| 操作 | 働き |
+|------|------|
+| Select → 家具をタップ | 操作する家具を選択 |
+| Left / Up / Down / Right | 選択した家具を床面上で0.2 mずつ移動 |
+| Turn 45° / Delete | 選択した家具を回転 / 削除 |
+| Undo | 最大20操作を元に戻す |
+| Save here / Load saved | 同じブラウザ内に配置を1件保存 / 読み戻す |
+| Done & restart | 編集を終え、機体を出発点へ戻して再起動 |
+
+室外や出発点の離陸空間を塞ぐ配置は、理由を表示して拒否する。家具同士の重なりは許可する。
+保存は同じブラウザ・配信元に限られ、サイトデータを消すと失われる。再保存は前の配置を上書きする。
+終了時は編集前の一時停止状態へ戻る。家具の寸法変更やJSONファイルの入出力は、この画面にはまだない。
+
 ### スマートフォンの操作
 
 スマートフォンは横持ちで、画面の左右のスティックを両親指で操作する（Mode 2）。
@@ -762,6 +792,38 @@ player). Which one it is is decided from the reading's own size, so one notch is
 
 Zooming works while the simulation is paused (P, or `sim.pause`) — which is exactly when somebody
 wants a closer look at the airframe.
+
+### Choosing a furnished room
+
+Use the room selector to switch between the living room (`living_room`), study (`study`) and bedroom (`bedroom`).
+The simulator opens in the living room. Switching rooms returns the vehicle to that room's spawn and restarts its firmware.
+It replaces unsaved edits; use `Save here` before switching to retain an edited layout.
+
+| Room | Main furniture |
+|------|----------------|
+| Living room | Sofa, table, chair, shelf |
+| Study | Tables, chairs, shelves |
+| Bedroom | Bed, table, chair, shelf |
+
+### Placing furniture
+
+Press `Edit` in the status panel to pause the simulation and view the room from above.
+Choose `table`, `chair`, `sofa`, `shelf` or `bed`, then click or tap the floor to place it.
+Scroll the catalog horizontally on narrow screens.
+
+| Control | Effect |
+|---------|--------|
+| Select → tap furniture | Select an item |
+| Left / Up / Down / Right | Move the selected item by 0.2 m on the floor plane |
+| Turn 45° / Delete | Rotate / remove the selected item |
+| Undo | Undo up to 20 edits |
+| Save here / Load saved | Save / reload one layout in this browser |
+| Done & restart | Finish editing, return to spawn and restart the vehicle |
+
+Placement outside the room or blocking the spawn's takeoff space is refused with a message.
+Furniture overlap is allowed. Saves are local to the browser and origin; clearing site data removes them,
+and saving again replaces the previous layout. Finishing restores the pause state from before editing.
+Resizing furniture and JSON file import/export are not yet available in this screen.
 
 ### Smartphone Controls
 

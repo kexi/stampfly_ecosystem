@@ -3,7 +3,7 @@ What these tests guarantee about the world-file checks.
 空間ファイル検査が保証すること。
 
 1. Every shipped world passes with no errors (and no warnings, so the shipped
-   set stays exemplary). / 同梱の 6 空間が誤り無しで通る。
+   set stays exemplary). / 同梱の 9 空間が誤り無しで通る。
 2. Each way of breaking a world is rejected by a message that names the field
    and the reason. / 壊した空間が、的確な文で不合格になる。
 3. The JSON Schema and the checking code agree on the obstacle types, the
@@ -40,13 +40,18 @@ from unity_world import (  # noqa: E402
 from unity_world.validate import (  # noqa: E402
     HOLLOW_TYPES,
     SIZE_SEMANTICS,
+    _local_bounds,
     validate_world,
 )
+
 
 WORLDS_DIR = os.path.join(REPO_ROOT, "simulator", "unity", "Assets", "StampFly", "Worlds")
 SCHEMA_PATH = os.path.join(REPO_ROOT, "simulator", "unity", "Schemas", "world.schema.json")
 
 SHIPPED_WORLDS = (
+    "bedroom",
+    "living_room",
+    "study",
     "empty_room",
     "pillar_forest",
     "gate_course",
@@ -115,7 +120,7 @@ def test_shipped_world_name_matches_file(name: str) -> None:
 
 
 def test_list_worlds_reports_every_shipped_world() -> None:
-    """list_worlds() finds all six with their description and obstacle count."""
+    """list_worlds() finds all nine with their description and obstacle count."""
     entries = list_worlds(WORLDS_DIR)
     assert [entry["name"] for entry in entries] == sorted(SHIPPED_WORLDS)
     for entry in entries:
@@ -136,8 +141,7 @@ def test_shipped_worlds_cover_every_obstacle_type_that_is_placed() -> None:
         for name in SHIPPED_WORLDS
         for obstacle in load_world(name)["obstacles"]
     }
-    assert {"box", "pillar", "wall", "gate", "ring", "tunnel", "table", "step", "ramp", "pad"} >= used
-    assert len(used) >= 8
+    assert set(OBSTACLE_TYPES) == used
 
 
 # ---------------------------------------------------------------------------
@@ -445,3 +449,26 @@ def test_shipped_file_is_utf8_and_ends_with_newline(name: str) -> None:
         raw = handle.read()
     raw.decode("utf-8")
     assert raw.endswith(b"\n")
+
+@pytest.mark.parametrize("kind", ["table", "chair", "sofa", "shelf", "bed"])
+def test_furniture_uses_bottom_centred_overall_bounds(kind: str) -> None:
+    """Furniture keeps its declared footprint and total height. / 家具の外形と全高を保証する。"""
+    assert _local_bounds(kind, [1.2, 0.8, 1.6], 0) == (
+        [-0.6, -0.4, 0.0], [0.6, 0.4, 1.6]
+    )
+
+
+@pytest.mark.parametrize("kind", ["chair", "sofa", "shelf", "bed"])
+def test_furniture_remains_a_flat_version_one_obstacle(kind: str) -> None:
+    """New furniture validates and room overflow is rejected. / 家具の受理と室外配置の拒否を保証する。"""
+    world = load_world("empty_room")
+    furniture = {
+        "id": "furniture_test", "type": kind,
+        "position": [0, 0, 0], "rotation_deg": [0, 0, 0],
+        "size": [0.5, 0.5, 0.8], "color": "#b88b60",
+    }
+    world["obstacles"] = [furniture]
+    world["spawn"]["position"] = [-1, -1, 0.1]
+    assert not validate_world(world)["errors"]
+    furniture["position"][0] = world["room"]["size"][0]
+    assert validate_world(world)["errors"]

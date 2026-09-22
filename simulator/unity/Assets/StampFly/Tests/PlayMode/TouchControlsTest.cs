@@ -6,6 +6,7 @@ using NUnit.Framework;
 using StampFly.Input;
 using StampFly.Sim;
 using StampFly.Ui;
+using StampFly.World;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.TestTools;
@@ -24,6 +25,8 @@ namespace StampFly.Tests.PlayMode
         private PanelSettings settings;
         private RenderTexture texture;
         private UIDocument document;
+        private WorldCatalog roomCatalog;
+        private TextAsset roomJson;
 
         /// <summary>Give events a real runtime panel with fixed dimensions. / 一定寸法の実行時パネルでイベントを送る。</summary>
         public override void Setup()
@@ -46,6 +49,8 @@ namespace StampFly.Tests.PlayMode
             Object.DestroyImmediate(vehicle);
             Object.DestroyImmediate(settings);
             Object.DestroyImmediate(texture);
+            Object.DestroyImmediate(roomCatalog);
+            Object.DestroyImmediate(roomJson);
             base.TearDown();
         }
 
@@ -222,6 +227,13 @@ namespace StampFly.Tests.PlayMode
             loop.enabled = false;
             SimHud hud = host.AddComponent<SimHud>();
             hud.simLoop = loop;
+            var roomLoader = vehicle.AddComponent<WorldLoader>();
+            roomCatalog = ScriptableObject.CreateInstance<WorldCatalog>();
+            roomJson = new TextAsset(System.IO.File.ReadAllText("Assets/StampFly/Worlds/empty_room.world.json"));
+            roomCatalog.SetEntries(new[] { new WorldCatalog.Entry { name = "empty_room", json = roomJson } });
+            roomLoader.Catalog = roomCatalog;
+            roomLoader.LoadByName("empty_room");
+            hud.ConfigureRooms(roomLoader, () => { });
             yield return null;
             hud.SetTouchEnabled(true);
 
@@ -241,6 +253,7 @@ namespace StampFly.Tests.PlayMode
                 var screen = new Rect(0, 0, size.x, size.y);
                 TouchFlightControls controls = root.Q<TouchFlightControls>();
                 var targets = root.Query<Button>().ToList().ConvertAll(button => (VisualElement)button);
+                targets.Add(root.Q<RoomSelector>());
                 targets.Add(controls.Q<TouchStick>("THROTTLE / YAW"));
                 targets.Add(controls.Q<TouchStick>("PITCH / ROLL"));
                 foreach (VisualElement target in targets)
@@ -263,6 +276,20 @@ namespace StampFly.Tests.PlayMode
                 AssertInside(screen, readout, $"{size}: readout");
                 foreach (VisualElement target in targets)
                 {
+                    // The furniture button belongs inside the status panel.
+                    // 家具ボタンは状態表示の内部に配置する。
+                    bool belongsToReadout = readout.Contains(target);
+                    if (belongsToReadout)
+                    {
+                        AssertInside(readout.worldBound, target, $"{size}: status action");
+                        foreach (Label label in readout.Query<Label>().ToList())
+                        {
+                            bool visible = label.resolvedStyle.display != DisplayStyle.None;
+                            bool isTargetContent = target.Contains(label);
+                            if (visible && !isTargetContent) Assert.That(label.worldBound.Overlaps(target.worldBound), Is.False);
+                        }
+                        continue;
+                    }
                     Assert.That(readout.worldBound.Overlaps(target.worldBound), Is.False,
                         $"{size}: readout overlaps {target.name}");
                 }

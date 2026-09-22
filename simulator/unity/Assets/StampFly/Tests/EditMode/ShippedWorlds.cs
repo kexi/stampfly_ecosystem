@@ -5,11 +5,11 @@ using StampFly.World;
 namespace StampFly.Tests.EditMode
 {
     /// <summary>
-    /// The six shipped worlds, as the tests reach them. They are read straight
+    /// The nine shipped worlds, as the tests reach them. They are read straight
     /// from Assets/StampFly/Worlds rather than through the WorldCatalog asset,
     /// so the tests check the files themselves and still pass on a checkout
     /// where the catalog has not been rebuilt yet.
-    /// 同梱の 6 空間を試験から読むための入口。WorldCatalog の資産ではなく
+    /// 同梱の 9 空間を試験から読むための入口。WorldCatalog の資産ではなく
     /// Assets/StampFly/Worlds から直接読む。ファイルそのものを試験でき、一覧を
     /// まだ作り直していない作業ツリーでも通るためである。
     /// </summary>
@@ -23,12 +23,15 @@ namespace StampFly.Tests.EditMode
         /// </summary>
         public static readonly string[] Names =
         {
+            "bedroom",
             "corridor_tunnel",
             "empty_room",
             "featureless_floor",
             "gate_course",
+            "living_room",
             "pillar_forest",
             "stepped_floor",
+            "study",
         };
 
         /// <summary>Folder holding the shipped worlds. / 同梱の空間の置き場。</summary>

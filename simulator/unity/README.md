@@ -233,17 +233,17 @@ simulator/unity/
 Assets/StampFly/
 ├── Runtime/World/                    StampFly.World アセンブリ
 │   ├── WorldFile.cs                  JsonUtility で読むデータクラス一式
-│   ├── WorldFormat.cs                形式が定める定数（目印・版・既定値・10 種の名前）
+│   ├── WorldFormat.cs                形式が定める定数（目印・版・既定値・14 種の名前）
 │   ├── WorldFileReader.cs            読み込みと、目印・版・座標系の確認
 │   ├── WorldWriter.cs                ENU のまま JSON へ書き戻す
 │   ├── WorldFrames.cs                ENU ⇔ Unity の変換（C# の座標の仕事はここだけ）
-│   ├── ObstacleFactory.cs            障害物 10 種の生成
+│   ├── ObstacleFactory.cs            障害物14種の生成（家具5種を含む）
 │   ├── WedgeMesh.cs                  ramp のくさびの手続き生成
 │   ├── RoomBuilder.cs                部屋・壁・天井・照明
 │   ├── FloorTexture.cs               床の模様 5 種の手続き生成（WebGL2 で動く）
 │   ├── WorldMaterials.cs             色ごとに使い回す URP Lit のマテリアル
 │   ├── ObstacleInfo.cs               面の素性（id・種類・flow_quality）
-│   ├── WorldCatalog.cs               同梱 6 空間を TextAsset で持つ ScriptableObject
+│   ├── WorldCatalog.cs               同梱9空間を TextAsset で持つ ScriptableObject
 │   ├── WorldLoader.cs                読み込み・生成・片付け（MonoBehaviour）
 │   └── StructuredLog.cs              ログの出し口（`IStructuredLog`）と既定の実装
 ├── Editor/WorldTools/                WorldCatalog.asset を作り直すメニュー
@@ -1195,17 +1195,17 @@ independent of flight and of the firmware.
 Assets/StampFly/
 ├── Runtime/World/                    the StampFly.World assembly
 │   ├── WorldFile.cs                  the data classes JsonUtility reads
-│   ├── WorldFormat.cs                the constants the format fixes (marker, version, defaults, the ten kinds)
+│   ├── WorldFormat.cs                the constants the format fixes (marker, version, defaults, the fourteen kinds)
 │   ├── WorldFileReader.cs            loading, and the marker / version / frame checks
 │   ├── WorldWriter.cs                writing back out, still in ENU
 │   ├── WorldFrames.cs                ENU <-> Unity (all the frame work C# does)
-│   ├── ObstacleFactory.cs            the ten obstacle kinds
+│   ├── ObstacleFactory.cs            fourteen obstacle kinds, including five furniture kinds
 │   ├── WedgeMesh.cs                  the generated wedge a ramp is made of
 │   ├── RoomBuilder.cs                room, walls, ceiling, lighting
 │   ├── FloorTexture.cs               the five floor patterns, generated (WebGL2-safe)
 │   ├── WorldMaterials.cs             URP Lit materials, shared per colour
 │   ├── ObstacleInfo.cs               what a surface is (id, type, flow_quality)
-│   ├── WorldCatalog.cs               the six shipped worlds, held as TextAssets
+│   ├── WorldCatalog.cs               the nine shipped worlds, held as TextAssets
 │   ├── WorldLoader.cs                load, build and clear (MonoBehaviour)
 │   └── StructuredLog.cs              the log sink (`IStructuredLog`) and its default
 ├── Editor/WorldTools/                the menu that rebuilds WorldCatalog.asset

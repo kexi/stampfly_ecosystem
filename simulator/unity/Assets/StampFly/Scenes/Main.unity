@@ -194,7 +194,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 7e435e645cda648b5b09527f47563216, type: 3}
   m_Name: 
   m_EditorClassIdentifier: StampFly.App::StampFly.App.SimulatorBootstrap
-  worldName: empty_room
+  worldName: living_room
   worldCatalog: {fileID: 11400000, guid: 32e8d7f66d2e04c63bc07c98aa98f18d, type: 2}
   firmwareUrl: StreamingAssets/sfu_firmware.js
 --- !u!4 &2111219138

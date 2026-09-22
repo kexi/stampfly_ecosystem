@@ -1,0 +1,148 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "study",
+  "description": {
+    "ja": "書斎。机、椅子、本棚、作業台を配置。机の下や椅子の脚の間、背の高い棚の周囲を飛んでみる。",
+    "en": "A study with a desk, chair, bookshelf and workbench. Explore beneath the desk, between chair legs and around tall shelves."
+  },
+  "room": {
+    "size": [
+      6.0,
+      6.0,
+      3.0
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "checker",
+    "pitch": 0.5,
+    "colors": [
+      "#dce0df",
+      "#a5b4b0"
+    ],
+    "flow_quality": 0.9
+  },
+  "light": "indoor",
+  "spawn": {
+    "position": [
+      0,
+      -2,
+      0.05
+    ],
+    "yaw_deg": 90
+  },
+  "obstacles": [
+    {
+      "id": "desk",
+      "type": "table",
+      "position": [
+        0,
+        1.75,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.6,
+        0.75,
+        0.75
+      ],
+      "color": "#a87950",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "desk_chair",
+      "type": "chair",
+      "position": [
+        0,
+        0.65,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        180
+      ],
+      "size": [
+        0.5,
+        0.5,
+        0.9
+      ],
+      "color": "#b88b60",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "bookshelf",
+      "type": "shelf",
+      "position": [
+        -2,
+        1.6,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.2,
+        0.35,
+        1.8
+      ],
+      "color": "#ad865c",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "workbench",
+      "type": "table",
+      "position": [
+        2,
+        1.5,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.8,
+        0.6,
+        0.7
+      ],
+      "color": "#a87950",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "workbench_chair",
+      "type": "chair",
+      "position": [
+        1.9,
+        0.5,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        180
+      ],
+      "size": [
+        0.5,
+        0.5,
+        0.9
+      ],
+      "color": "#b88b60",
+      "flow_quality": 0.8
+    }
+  ]
+}

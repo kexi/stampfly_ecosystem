@@ -378,7 +378,9 @@ simulator/
   小さな剛体の検証（`Assets/StampFly/Tests/PlayMode/`）、同梱の空間ファイル
   （`Assets/StampFly/Worlds/`、形式は `Schemas/`）まで。段階 3 の中核（`SimLoop`、ファームウェアとのつなぎ `StampFly.Native`、キーボード操縦、ログと命令の受け口
   `StampFly.Core`／`StampFly.Remote`）まで入っている。エディタでは実ファームウェアで離陸から着地まで飛ぶ。ブラウザでの
-  操縦の確認、障害物の編集 UI、ゲームパッド、カメラと前向き ToF はこれから**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
+  操縦の確認を進めており、タッチ操縦と家具5種（机・椅子・ソファ・棚・ベッド）の配置・移動・回転・削除・ブラウザ内保存に対応する。
+  家具編集では一時停止して部屋を上から表示し、終了時に機体を出発点へ戻す。
+  ゲームパッド、カメラと前向き ToF はこれから**。ファームウェアのソース一覧は `sils/cmake/firmware_sources.cmake` に
   切り出してあり、SILS と `unity/native/` の両方のビルドが同じ一覧を使う
 
 ---

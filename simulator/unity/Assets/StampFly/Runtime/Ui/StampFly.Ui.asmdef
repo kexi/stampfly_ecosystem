@@ -5,7 +5,8 @@
         "Unity.InputSystem",
         "StampFly.Native",
         "StampFly.Sim",
-        "StampFly.Input"
+        "StampFly.Input",
+        "StampFly.World"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

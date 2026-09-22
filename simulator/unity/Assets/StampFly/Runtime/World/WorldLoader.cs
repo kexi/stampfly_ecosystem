@@ -47,6 +47,9 @@ namespace StampFly.World
         /// <summary>The world now in the scene, or null. / いま場面にある空間。</summary>
         public WorldFile Current { get; private set; }
 
+        /// <summary>Loaded data changed; editors discard old undo history. / 読込変更時に編集履歴を破棄する。</summary>
+        public event System.Action Changed;
+
         /// <summary>Whether a world is loaded. / 空間が読み込まれているか。</summary>
         public bool HasWorld => Current != null;
 
@@ -153,7 +156,7 @@ namespace StampFly.World
         public void Build(WorldFile world)
         {
             Stopwatch clock = Stopwatch.StartNew();
-            Clear();
+            ClearWorld();
 
             materials = new WorldMaterials();
             root = new GameObject($"World:{world.name}");
@@ -181,6 +184,7 @@ namespace StampFly.World
             Current = world;
             clock.Stop();
             ReportLoaded(world, clock.Elapsed.TotalMilliseconds);
+            Changed?.Invoke();
         }
 
         /// <summary>
@@ -190,6 +194,13 @@ namespace StampFly.World
         /// 呼んでよい。
         /// </summary>
         public void Clear()
+        {
+            ClearWorld();
+            Changed?.Invoke();
+        }
+
+        /// <summary>Clear without exposing the intermediate load state. / 読込途中の空状態は通知しない。</summary>
+        private void ClearWorld()
         {
             string cleared = Current?.name ?? string.Empty;
             bool hadWorld = root != null;

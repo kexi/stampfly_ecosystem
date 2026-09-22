@@ -4,7 +4,7 @@ using UnityEngine;
 namespace StampFly.World
 {
     /// <summary>
-    /// Builds the ten obstacle kinds from Unity primitives and generated
+    /// Builds the fourteen obstacle kinds from Unity primitives and generated
     /// meshes, with no imported assets, as the plan's §2 requires.
     ///
     /// Two rules shape the whole file:
@@ -19,7 +19,7 @@ namespace StampFly.World
     ///   the hollow kinds are therefore assembled from solid parts around the
     ///   opening, which also leaves the opening genuinely empty for a ToF ray.
     ///
-    /// 障害物 10 種を、Unity の基本形状と手続き生成のメッシュだけで作る（計画
+    /// 障害物 14 種を、Unity の基本形状と手続き生成のメッシュだけで作る（計画
     /// §2）。外部の素材は使わない。
     ///
     /// 全体を貫く 2 つの決まり:
@@ -109,6 +109,12 @@ namespace StampFly.World
                     return;
                 case WorldObstacleTypes.Table:
                     BuildTable(obstacle, root, material);
+                    return;
+                case WorldObstacleTypes.Chair:
+                case WorldObstacleTypes.Sofa:
+                case WorldObstacleTypes.Shelf:
+                case WorldObstacleTypes.Bed:
+                    FurnitureFactory.Build(obstacle, root, material);
                     return;
                 case WorldObstacleTypes.Ramp:
                     BuildRamp(obstacle, root, material, materials);
@@ -349,8 +355,9 @@ namespace StampFly.World
                 return;
             }
 
-            float legWidth = Mathf.Max(TableLegMinimumWidth,
-                                       Mathf.Min(topWidth, topDepth) * TableLegFraction);
+            float smallerDimension = Mathf.Min(topWidth, topDepth);
+            float legWidth = Mathf.Min(smallerDimension,
+                Mathf.Max(TableLegMinimumWidth, smallerDimension * TableLegFraction));
             float insetX = topWidth * TableLegInsetFraction + legWidth / 2.0f;
             float insetZ = topDepth * TableLegInsetFraction + legWidth / 2.0f;
             float legCentreX = Mathf.Max(0.0f, topWidth / 2.0f - insetX);
@@ -415,7 +422,7 @@ namespace StampFly.World
         /// Add a box part at a local centre, with a box collider of the same
         /// size. / 局所座標の中心に箱の部品を足す。同じ大きさの箱コライダ付き。
         /// </summary>
-        private static GameObject AddBox(Transform root, string name, Material material,
+        internal static GameObject AddBox(Transform root, string name, Material material,
                                          WorldObstacle obstacle, Vector3 localCentre, Vector3 size)
         {
             GameObject part = GameObject.CreatePrimitive(PrimitiveType.Cube);

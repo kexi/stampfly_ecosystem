@@ -13,6 +13,8 @@ MonoBehaviour:
   m_Name: WorldCatalog
   m_EditorClassIdentifier: StampFly.World::StampFly.World.WorldCatalog
   entries:
+  - name: bedroom
+    json: {fileID: 4900000, guid: facb21e31b4240adbb1b2db230943b5f, type: 3}
   - name: corridor_tunnel
     json: {fileID: 4900000, guid: dc9c470babf914cfda56968c7791245f, type: 3}
   - name: empty_room
@@ -21,7 +23,11 @@ MonoBehaviour:
     json: {fileID: 4900000, guid: a7beabd9793fa439e92505220e86e2bd, type: 3}
   - name: gate_course
     json: {fileID: 4900000, guid: 00596ca69965b493491d694ddc363989, type: 3}
+  - name: living_room
+    json: {fileID: 4900000, guid: 35e75690d18e4c9bb15c2053a1006736, type: 3}
   - name: pillar_forest
     json: {fileID: 4900000, guid: c69e68a1c72814c55a8281e9be7082a1, type: 3}
   - name: stepped_floor
     json: {fileID: 4900000, guid: 477075a490d934c8ba1e3e25cf30c550, type: 3}
+  - name: study
+    json: {fileID: 4900000, guid: 00601a52de82462f80402003dac12684, type: 3}

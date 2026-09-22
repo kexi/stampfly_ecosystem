@@ -110,7 +110,7 @@ namespace StampFly.World
     {
         public string id;
 
-        /// <summary>One of the ten kinds listed by WorldObstacleTypes. / 10 種のいずれか。</summary>
+        /// <summary>One of the fourteen kinds listed by WorldObstacleTypes. / 14 種のいずれか。</summary>
         public string type;
 
         /// <summary>The type's own origin, per Schemas/README.md §3.1. / その種類の原点。</summary>

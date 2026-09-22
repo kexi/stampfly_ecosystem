@@ -54,6 +54,30 @@ namespace StampFly.Ui
         private bool touchEnabled;
         private bool showDetails;
         private int powerCycles;
+        private VisualElement worldActions;
+        private RoomSelector roomSelector;
+
+        /// <summary>Make room selection the first scene action. / 部屋選択を空間操作の先頭に置く。</summary>
+        public void ConfigureRooms(StampFly.World.WorldLoader loader, System.Action restart)
+        {
+            roomSelector?.Dispose();
+            roomSelector = new RoomSelector(loader, CancelTouch, restart);
+            worldActions.Insert(0, roomSelector);
+        }
+
+        /// <summary>Release the world subscription with the HUD. / HUDの破棄時に空間の購読を解除する。</summary>
+        private void OnDestroy() => roomSelector?.Dispose();
+
+        /// <summary>Open the furniture tools. / 家具の配置画面を開く。</summary>
+        public System.Action FurnitureRequested;
+
+        /// <summary>Hide every flight action during editing. / 編集中は操縦操作を全て隠す。</summary>
+        public void SetEditing(bool editing)
+        {
+            CancelTouch();
+            GetComponent<UIDocument>().rootVisualElement.style.display =
+                editing ? DisplayStyle.None : DisplayStyle.Flex;
+        }
 
         public const string RepositoryUrl = "https://github.com/kexi/stampfly_ecosystem";
         public const string UpstreamUrl = "https://github.com/M5Fly-kanazawa/stampfly_ecosystem";
@@ -270,6 +294,13 @@ namespace StampFly.Ui
             hostLabel = MonospaceLabel(new Color(0.62f, 0.78f, 0.90f));
             panel.Add(flightLabel);
             panel.Add(hostLabel);
+            worldActions = new VisualElement();
+            worldActions.style.flexDirection = FlexDirection.Row;
+            var furniture = TouchFlightControls.ActionButton("Edit", () => FurnitureRequested?.Invoke());
+            furniture.tooltip = "Edit furniture layout";
+            furniture.name = "furniture-open";
+            worldActions.Add(furniture);
+            panel.Add(worldActions);
             return panel;
         }
 

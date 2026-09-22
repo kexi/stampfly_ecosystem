@@ -1,0 +1,148 @@
+{
+  "format": "stampfly-world",
+  "version": 1,
+  "units": {
+    "length": "m",
+    "angle": "deg"
+  },
+  "frame": "ENU",
+  "name": "living_room",
+  "description": {
+    "ja": "リビング。ソファ、ローテーブル、椅子、本棚を避けながら広い通路を飛び、机の下にも入れる。",
+    "en": "A living room with a sofa, low table, chair and bookshelf. Fly along the open paths or beneath the table."
+  },
+  "room": {
+    "size": [
+      6.0,
+      6.0,
+      3.0
+    ],
+    "walls": true,
+    "ceiling": true
+  },
+  "floor": {
+    "pattern": "checker",
+    "pitch": 0.5,
+    "colors": [
+      "#e4ddcc",
+      "#c6bda7"
+    ],
+    "flow_quality": 0.9
+  },
+  "light": "indoor",
+  "spawn": {
+    "position": [
+      0,
+      -2,
+      0.05
+    ],
+    "yaw_deg": 90
+  },
+  "obstacles": [
+    {
+      "id": "sofa",
+      "type": "sofa",
+      "position": [
+        0,
+        1.7,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.8,
+        0.85,
+        0.85
+      ],
+      "color": "#527d91",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "coffee_table",
+      "type": "table",
+      "position": [
+        0,
+        0.3,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        1.2,
+        0.8,
+        0.45
+      ],
+      "color": "#a87950",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "armchair",
+      "type": "chair",
+      "position": [
+        -1.6,
+        0.4,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        90
+      ],
+      "size": [
+        0.5,
+        0.5,
+        0.9
+      ],
+      "color": "#b88b60",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "bookshelf",
+      "type": "shelf",
+      "position": [
+        2.3,
+        1.6,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        -90
+      ],
+      "size": [
+        1,
+        0.35,
+        1.6
+      ],
+      "color": "#ad865c",
+      "flow_quality": 0.8
+    },
+    {
+      "id": "side_table",
+      "type": "table",
+      "position": [
+        -2,
+        1.8,
+        0
+      ],
+      "rotation_deg": [
+        0,
+        0,
+        0
+      ],
+      "size": [
+        0.6,
+        0.6,
+        0.55
+      ],
+      "color": "#a87950",
+      "flow_quality": 0.8
+    }
+  ]
+}
