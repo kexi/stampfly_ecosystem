@@ -45,6 +45,9 @@ namespace StampFly.Ui
         public SimLoop simLoop;
 
         private Label flightLabel;
+        private VisualElement compactFlight;
+        private Label compactArmLabel;
+        private Label compactAltitudeLabel;
         private Label hostLabel;
         private float secondsSinceRefresh;
         private KeyboardRc localInput;
@@ -163,12 +166,8 @@ namespace StampFly.Ui
             readout.style.flexDirection = compact ? FlexDirection.Row : FlexDirection.Column;
             readout.style.flexWrap = Wrap.Wrap;
             readout.style.alignItems = compact ? Align.Center : Align.Stretch;
-            flightLabel.style.marginRight = compact ? 6 : 0;
-            flightLabel.style.width = compact ? CompactFlightWidth : StyleKeyword.Auto;
-            flightLabel.style.flexShrink = compact ? 0 : 1;
-            flightLabel.style.whiteSpace = compact ? WhiteSpace.NoWrap : WhiteSpace.Normal;
-            flightLabel.style.overflow = compact ? Overflow.Hidden : Overflow.Visible;
-            flightLabel.style.fontSize = 13;
+            flightLabel.style.display = compact ? DisplayStyle.None : DisplayStyle.Flex;
+            compactFlight.style.display = compact ? DisplayStyle.Flex : DisplayStyle.None;
             roomSelector?.SetCompact(compact);
             hostLabel.style.display = !touchEnabled || showDetails ? DisplayStyle.Flex : DisplayStyle.None;
             help.style.display = touchEnabled ? DisplayStyle.None : DisplayStyle.Flex;
@@ -314,6 +313,7 @@ namespace StampFly.Ui
             flightLabel.enableRichText = true;
             hostLabel = MonospaceLabel(new Color(0.62f, 0.78f, 0.90f));
             panel.Add(flightLabel);
+            panel.Add(BuildCompactFlight());
             panel.Add(hostLabel);
             worldActions = new VisualElement();
             worldActions.style.flexDirection = FlexDirection.Row;
@@ -323,6 +323,32 @@ namespace StampFly.Ui
             worldActions.Add(furniture);
             panel.Add(worldActions);
             return panel;
+        }
+
+        /// <summary>Separate fixed boxes prevent state text from shifting the altitude. / 状態と高度を別の固定幅欄にして表示位置の移動を防ぐ。</summary>
+        private VisualElement BuildCompactFlight()
+        {
+            compactFlight = new VisualElement();
+            compactFlight.style.width = CompactFlightWidth;
+            compactFlight.style.flexShrink = 0;
+            compactFlight.style.flexDirection = FlexDirection.Row;
+            compactFlight.style.marginRight = 6;
+            compactFlight.style.display = DisplayStyle.None;
+            Color color = new Color(0.92f, 0.94f, 0.96f);
+            compactArmLabel = MonospaceLabel(color);
+            compactAltitudeLabel = MonospaceLabel(color);
+            foreach (Label label in new[] { compactArmLabel, compactAltitudeLabel })
+            {
+                label.style.width = CompactFlightWidth / 2;
+                label.style.marginLeft = label.style.marginRight = 0;
+                label.style.flexShrink = 0;
+                label.style.whiteSpace = WhiteSpace.NoWrap;
+                label.style.overflow = Overflow.Hidden;
+                compactFlight.Add(label);
+            }
+            compactAltitudeLabel.enableRichText = true;
+            compactAltitudeLabel.style.unityTextAlign = TextAnchor.MiddleRight;
+            return compactFlight;
         }
 
         /// <summary>The key bindings, along the bottom. / 画面の下に置くキーの案内。</summary>
@@ -379,11 +405,17 @@ namespace StampFly.Ui
             if (!isRunning)
             {
                 flightLabel.text = FirmwareStatusText(firmware);
+                compactArmLabel.text = firmware?.Status.ToString() ?? "loading";
+                compactAltitudeLabel.text = "—";
                 hostLabel.text = string.Empty;
                 return;
             }
 
             flightLabel.text = FlightText();
+            var keyboard = simLoop.RcSource as KeyboardRc;
+            bool pressing = keyboard != null && keyboard.IsArmPulseOn(simLoop.Clock.VirtualMicroseconds);
+            compactArmLabel.text = pressing ? "arming" : (simLoop.LastResult.Armed != 0 ? "ARMED" : "disarmed");
+            compactAltitudeLabel.text = $"<mspace=7px>{simLoop.LastResult.TruthPositionY:F2} m</mspace>";
             hostLabel.text = HostText();
         }
 
@@ -443,15 +475,6 @@ namespace StampFly.Ui
             string rangeText = range.IsValid
                 ? $"{range.Distance:F3} m"
                 : "(invalid)";
-
-            bool useCompactReadout = touchEnabled && !showDetails;
-            if (useCompactReadout)
-            {
-                // Fixed character cells keep the decimal point and neighbouring controls still.
-                // 文字の幅を固定し、小数点と隣の操作欄の位置を変えない。
-                string compactArmed = isPressing ? "arming" : (state.Armed != 0 ? "ARMED" : "disarmed");
-                return $"<mspace=7px>{compactArmed,-8} {state.TruthPositionY,6:F2} m</mspace>";
-            }
 
             return
                 $"state      {FlightStateNames.State(state.FlightState)}  " +
